@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import ts from 'typescript';
 import { checkArchitecture, checkSource } from '../../scripts/check-architecture.mjs';
 
 test('online runtime rejects offline migration imports and re-exports', () => {
@@ -20,8 +21,12 @@ test('online runtime rejects offline migration imports and re-exports', () => {
         `import { ${name} as run } from '${specifier}';`,
         `import * as tool from '${specifier}';`,
         `import '${specifier}';`,
+        `import {} from '${specifier}';`,
+        `import { type Capability } from '${specifier}';`,
         `export { ${name} as run } from '${specifier}';`,
         `export * from '${specifier}';`,
+        `export {} from '${specifier}';`,
+        `export { type Capability } from '${specifier}';`,
         `const tool = await import('${specifier}');`,
         `const tool = require('${specifier}');`,
       ]) {
@@ -45,6 +50,41 @@ test('online runtime rejects offline migration imports and re-exports', () => {
         error.includes('write call'),
       ),
     );
+  }
+});
+
+test('type erasure preserves empty runtime imports and exports', async () => {
+  const marker = Symbol.for('novelai.architecture.type-erasure');
+  const specifier = '../scripts/migrate-legacy-database.mjs';
+  const declarations = [
+    `import {} from '${specifier}';`,
+    `export {} from '${specifier}';`,
+    `import { type Capability } from '${specifier}';`,
+    `export { type Capability } from '${specifier}';`,
+    `import type { Capability } from '${specifier}';`,
+    `export type { Capability } from '${specifier}';`,
+  ];
+  try {
+    for (const [index, source] of declarations.entries()) {
+      globalThis[marker] = 0;
+      const dependency = `data:text/javascript,${encodeURIComponent(`globalThis[Symbol.for('novelai.architecture.type-erasure')]++; // ${index}`)}`;
+      const emitted = ts.transpileModule(
+        source.replace(`'${specifier}'`, JSON.stringify(dependency)),
+        {
+          compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.ESNext,
+            verbatimModuleSyntax: true,
+          },
+        },
+      ).outputText;
+      await import(`data:text/javascript,${encodeURIComponent(emitted)}`);
+      const loadsModule = index < 4;
+      assert.equal(globalThis[marker], Number(loadsModule), source);
+      assert.equal(checkSource('server/index.ts', source).length > 0, loadsModule, source);
+    }
+  } finally {
+    delete globalThis[marker];
   }
 });
 
@@ -593,7 +633,7 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
   for (const [filename, source] of [
     [
       'server/events/quota-projections.ts',
-      "import type { JsonStore } from '../storage/sqlite-store.ts'; import { type AccountingJob } from '../generation/accounting.ts';",
+      "import type { JsonStore } from '../storage/sqlite-store.ts'; import type { AccountingJob } from '../generation/accounting.ts';",
     ],
     [
       'server/generation/request-queries.ts',
@@ -623,7 +663,7 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
     [
       'server/protocols/native-http.ts',
-      "import { type RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberContext'>; function read(inputStore: Reader) { return inputStore.readMemberContext('r','m'); }",
+      "import type { RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberContext'>; function read(inputStore: Reader) { return inputStore.readMemberContext('r','m'); }",
     ],
     [
       'server/protocols/native-http.ts',
@@ -694,7 +734,7 @@ test('mixed writer modules retain pure named readers and type-only capability de
     }
     for (const [name, modulePath] of [...writerFactories, ...mixedWriterSources]) {
       assert.deepEqual(
-        checkSource(filename, `import { type ${name} as Capability } from '${modulePath}';`),
+        checkSource(filename, `import type { ${name} as Capability } from '${modulePath}';`),
         [],
       );
       assert.deepEqual(checkSource(filename, `export type * from '${modulePath}';`), []);
