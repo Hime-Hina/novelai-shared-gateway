@@ -29,7 +29,10 @@ import {
   relationalAccountFacts,
 } from '../../server/storage/relational-account-store.ts';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
-import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import {
+  RelationalCommitReplayer,
+  relationalReplayFacts,
+} from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
@@ -272,11 +275,12 @@ test('管理员组合proxy与enable实际发起只用目标连接，最终单提
   assert.equal(new Set(result.events.map((e) => e.commitSeq)).size, 1);
 });
 
-test('真实注册、配置和原观察完整回放，不安装私有代理/PST或触发网络', async (t) => {
+test('新80事实真实注册、配置和原观察完整回放，不安装私有代理/PST或触发网络', async (t) => {
   const f = await fixture(t),
     { configure } = setup(f);
   configure('name-weight', { displayName: 'x'.repeat(79) + '😀'.slice(0, 1), weight: 1.125 });
   configure('proxy-change', { proxyUrl: 'socks5://127.0.0.1:19001' });
+  assert.equal(relationalReplayFacts().size, 80);
   const target = new Database(':memory:');
   t.after(() => target.close());
   initializeRelationalStorage(target, 'generation-history');
