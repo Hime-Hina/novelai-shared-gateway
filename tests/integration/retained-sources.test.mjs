@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, rename, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
@@ -20,8 +20,11 @@ import {
 } from '../helpers/relational-generation.mjs';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { R2Storage } from '../../server/storage/r2-storage.ts';
 import { describeStoredResult } from '../../server/storage/result-files.ts';
 import { describeRetainedSnapshot } from '../../scripts/retained-sources.mjs';
+import { resolveLegacyRetainedDependencies } from '../../scripts/resolve-legacy-retained-dependencies.mjs';
+import { createRetainedReleaseFixture } from '../helpers/retained-release.mjs';
 import {
   initializeRetainedSources,
   readRetainedSourceProtection,
@@ -39,10 +42,19 @@ import {
   restoreRetainedSources,
   inspectRetainedLease,
   recoverRetainedLease,
+  withRetainedArtifactRelease,
 } from '../../server/storage/retained-sources.ts';
 async function temporary(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'nai-retained-sources-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    const actual = await realpath(root),
+      parent = await realpath(tmpdir()),
+      info = await lstat(root);
+    assert.equal(info.isSymbolicLink(), false);
+    assert.equal(path.dirname(actual), parent);
+    assert.ok(path.basename(actual).startsWith('nai-retained-sources-'));
+    await rm(root, { recursive: true, force: true });
+  });
   const registry = path.join(root, 'registry');
   await initializeRetainedSources(registry);
   return { root, registry };
@@ -197,7 +209,84 @@ async function retainSelectedArchive(f, pin) {
   await publishRetainedArchive(f.registry, capture.sourceId, f.source, f.manifest);
   return { capture, binding };
 }
-async function archiveCli(f, pin) {
+async function resolvedArchive(t, preparedResults = 0) {
+  const f = await selectedArchive(t),
+    archive = path.join(f.root, 'archive-body');
+  await mkdir(archive);
+  const moved = path.join(archive, 'source.sqlite');
+  assert.equal(path.dirname(f.source), f.root);
+  assert.equal(path.dirname(moved), archive);
+  await rename(f.source, moved);
+  f.source = moved;
+  const original = JSON.parse(f.artifactBytes.toString('utf8'));
+  original.r2 = {
+    bucket: 'legacy-bucket',
+    key: `images/original/${'c'.repeat(64)}`,
+    byteLength: null,
+    sha256: null,
+    verifiedAt: 0,
+    localRemovedAt: null,
+    removedAt: null,
+  };
+  f.artifactBytes = Buffer.from(JSON.stringify(original) + '\n');
+  await writeFile(f.artifacts, f.artifactBytes);
+  f.audit.exports.artifacts.byteLength = f.artifactBytes.length;
+  f.audit.exports.artifacts.sha256 = archiveDigest(f.artifactBytes);
+  await writeFile(f.manifest, JSON.stringify(f.audit));
+  f.pin = await retainedFileSha256(f.manifest);
+  const proofs = {};
+  for (const name of ['sourceCapture', 'namespaceReceipt']) {
+    const file = path.join(f.root, name + '.json');
+    await writeFile(
+      file,
+      JSON.stringify({ sourceSha256: f.audit.sourceSha256, cut: f.audit.lastCommitSeq }),
+    );
+    proofs[name] = { file, sha256: await retainedFileSha256(file) };
+  }
+  const authority = path.join(f.root, 'original-namespace.json'),
+    inventory = path.join(f.root, 'original-inventory.json'),
+    resolved = path.join(f.root, 'resolved.jsonl');
+  await writeFile(
+    authority,
+    JSON.stringify({
+      format: 'novelai-legacy-cut-config-v1',
+      sourceSha256: f.audit.sourceSha256,
+      sourceCommit: f.audit.sourceCommit,
+      cut: f.audit.lastCommitSeq,
+      sourceNamespaces: {
+        dataDir: '/original/data',
+        r2AccountId: 'a'.repeat(32),
+        r2Bucket: 'legacy-bucket',
+        pikpakUrl: null,
+      },
+      ...proofs,
+    }),
+  );
+  await writeFile(
+    inventory,
+    JSON.stringify({
+      format: 'legacy-v4-inventory-v1',
+      integrity: true,
+      foreignKeyViolations: 0,
+      source: { databaseSha256: f.audit.sourceSha256, declaredCommit: f.audit.sourceCommit },
+      cut: { lastCommitSeq: f.audit.lastCommitSeq, openingComplete: true },
+      liabilities: { preparedResults },
+    }),
+  );
+  await resolveLegacyRetainedDependencies({
+    source: f.source,
+    audit: f.manifest,
+    auditSha256: f.pin,
+    artifacts: f.artifacts,
+    namespaceAuthority: authority,
+    namespaceAuthoritySha256: await retainedFileSha256(authority),
+    inventory,
+    inventorySha256: await retainedFileSha256(inventory),
+    output: resolved,
+  });
+  return { ...f, resolved, resolvedSha256: await retainedFileSha256(resolved), original };
+}
+async function archiveCli(f, pin, resolvedPin, requestExtra = {}) {
   const preload =
     'data:text/javascript,' +
     encodeURIComponent(`
@@ -215,6 +304,9 @@ async function archiveCli(f, pin) {
   if (pin !== undefined) {
     args.push(pin);
   }
+  if (resolvedPin !== undefined) {
+    args.push(resolvedPin);
+  }
   const child = spawn(process.execPath, args, {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
@@ -229,7 +321,12 @@ async function archiveCli(f, pin) {
   });
   const exited = once(child, 'exit');
   child.stdin.end(
-    JSON.stringify({ source: f.source, manifest: f.manifest, dependencies: f.artifacts }),
+    JSON.stringify({
+      source: f.source,
+      manifest: f.manifest,
+      dependencies: f.artifacts,
+      ...requestExtra,
+    }),
   );
   const [code] = await exited;
   return { code, stdout, stderr };
@@ -265,6 +362,210 @@ test('archive selected export: independent CLI pin saves original tuples through
   assert.equal(
     await retainedFileSha256(path.join(restored, 'sources', sourceId, 'manifest.json')),
     f.pin,
+  );
+});
+
+test('legacy generic proof refines only its original Source, preserves raw export and survives checkpoint/restore; same proof repeats zero metadata writes', async (t) => {
+  const f = await resolvedArchive(t, 2),
+    old = await retainSelectedArchive(f, f.pin),
+    unknown = await readRetainedSourceProtection(f.registry),
+    binding = await readRetainedArchiveBinding(f.source, f.manifest, f.artifacts, f.pin, {
+      file: f.resolved,
+      sha256: f.resolvedSha256,
+    });
+  assert.equal(binding.historyId, null);
+  assert.equal(binding.dependencies, 'known');
+  assert.equal(binding.dependenciesSha256, old.binding.dependenciesSha256);
+  assert.equal(binding.resolvedDependenciesSha256, f.resolvedSha256);
+  const accepted = await archiveCli(f, f.pin, f.resolvedSha256, {
+    sourceId: old.capture.sourceId,
+    resolvedDependencies: f.resolved,
+  });
+  assert.equal(accepted.code, 0, accepted.stderr);
+  assert.equal(JSON.parse(accepted.stdout).sourceId, old.capture.sourceId);
+  const known = await readRetainedSourceProtection(f.registry);
+  assert.deepEqual(known.sources[0].holds, unknown.sources[0].holds);
+  assert.equal(known.sources[0].id, old.capture.sourceId);
+  assert.deepEqual(
+    await readFile(path.join(f.registry, 'sources', old.capture.sourceId, 'dependencies.jsonl')),
+    f.artifactBytes,
+  );
+  const registryBytes = await readFile(path.join(f.registry, 'registry.json'));
+  await bindRetainedCapture(
+    f.registry,
+    old.capture.sourceId,
+    f.manifest,
+    binding,
+    f.artifacts,
+    undefined,
+    f.resolved,
+  );
+  assert.deepEqual(await readFile(path.join(f.registry, 'registry.json')), registryBytes);
+  const checkpoint = path.join(f.root, 'resolved-checkpoint'),
+    sealed = await checkpointRetainedSources(f.registry, checkpoint),
+    restored = path.join(f.root, 'resolved-restored');
+  await restoreRetainedSources(restored, checkpoint, sealed.sha256);
+  assert.equal(
+    (await readRetainedSourceProtection(restored)).sources[0].binding.resolvedDependenciesSha256,
+    f.resolvedSha256,
+  );
+  assert.deepEqual(
+    await readFile(
+      path.join(restored, 'sources', old.capture.sourceId, 'resolved-dependencies.jsonl'),
+    ),
+    await readFile(f.resolved),
+  );
+});
+
+test('legacy resolved proof needs independent positional pin and exact original rows; immutable-copy tail leaves unknown binding and healthy retry works', async (t) => {
+  const f = await resolvedArchive(t),
+    old = await retainSelectedArchive(f, f.pin),
+    before = await readFile(path.join(f.registry, 'registry.json')),
+    selected = { file: f.resolved, sha256: f.resolvedSha256 };
+  const denied = await archiveCli(f, f.pin, undefined, {
+    resolvedDependencies: f.resolved,
+    resolvedDependenciesSha256: f.resolvedSha256,
+    sourceId: old.capture.sourceId,
+  });
+  assert.equal(denied.code, 1);
+  assert.deepEqual(await readFile(path.join(f.registry, 'registry.json')), before);
+  const badLines = (await readFile(f.resolved, 'utf8')).trimEnd().split('\n').map(JSON.parse);
+  badLines[1].originalRow.sha256 = '0'.repeat(64);
+  const badFile = path.join(f.root, 'wrong-origin.jsonl'),
+    bad = Buffer.from(badLines.map(JSON.stringify).join('\n') + '\n');
+  await writeFile(badFile, bad);
+  await assert.rejects(
+    readRetainedArchiveBinding(f.source, f.manifest, f.artifacts, f.pin, {
+      file: badFile,
+      sha256: archiveDigest(bad),
+    }),
+  );
+  const binding = await readRetainedArchiveBinding(
+      f.source,
+      f.manifest,
+      f.artifacts,
+      f.pin,
+      selected,
+    ),
+    copy = filesystem.copyFile;
+  let reached = false;
+  filesystem.copyFile = async function (from, to, ...args) {
+    const result = await Reflect.apply(copy, this, [from, to, ...args]);
+    if (path.basename(to) === 'resolved-dependencies.jsonl') {
+      reached = true;
+      throw Error('synthetic resolved-copy-tail');
+    }
+    return result;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      bindRetainedCapture(
+        f.registry,
+        old.capture.sourceId,
+        f.manifest,
+        binding,
+        f.artifacts,
+        undefined,
+        f.resolved,
+      ),
+      /synthetic resolved-copy-tail/,
+    );
+  } finally {
+    filesystem.copyFile = copy;
+    syncBuiltinESMExports();
+  }
+  assert.equal(reached, true);
+  assert.deepEqual(await readFile(path.join(f.registry, 'registry.json')), before);
+  await bindRetainedCapture(
+    f.registry,
+    old.capture.sourceId,
+    f.manifest,
+    binding,
+    f.artifacts,
+    undefined,
+    f.resolved,
+  );
+  assert.equal(
+    (await readRetainedSourceProtection(f.registry)).sources[0].binding.dependencies,
+    'known',
+  );
+});
+
+test('resolved legacy unknown descriptor pins its exact key and prepared count pins only the original Local domain', async (t) => {
+  const f = await resolvedArchive(t, 2),
+    live = await fixture(t),
+    r2 = new R2Storage({
+      accountId: 'b'.repeat(32),
+      bucket: 'current-bucket',
+      accessKeyId: 'synthetic',
+      secretAccessKey: 'synthetic',
+    });
+  t.mock.method(r2, 'listBackups', async () => []);
+  const held = await createRetainedReleaseFixture(t, live.db, live.dir, { r2 }),
+    binding = await readRetainedArchiveBinding(f.source, f.manifest, f.artifacts, f.pin, {
+      file: f.resolved,
+      sha256: f.resolvedSha256,
+    }),
+    capture = await beginRetainedCapture(held.registry, 'archive', f.source);
+  await bindRetainedCapture(
+    held.registry,
+    capture.sourceId,
+    f.manifest,
+    binding,
+    f.artifacts,
+    undefined,
+    f.resolved,
+  );
+  await publishRetainedArchive(held.registry, capture.sourceId, f.source, f.manifest);
+  await held.addSnapshot(live.db, live.dir);
+  const claim = {
+    artifactId: 'new-artifact',
+    sha256: 'c'.repeat(64),
+    byteLength: 1,
+    source: {
+      kind: 'local',
+      namespace: 'images',
+      objectKey: 'new.webp',
+      encoding: 'identity',
+      dataDir: live.dir,
+    },
+    destination: {
+      kind: 'r2',
+      namespace: `r2://${'b'.repeat(32)}/current-bucket`,
+      objectKey: `images/new/${'c'.repeat(64)}`,
+      encoding: 'identity',
+    },
+  };
+  assert.equal(
+    await withRetainedArtifactRelease(held.registry, claim, async () => 'allowed', { r2 }),
+    'allowed',
+  );
+  assert.equal(
+    await withRetainedArtifactRelease(
+      held.registry,
+      { ...claim, source: { ...claim.source, dataDir: '/original/data' } },
+      async () => assert.fail('Original prepared Local domain must remain pinned'),
+      { r2 },
+    ),
+    null,
+  );
+  assert.equal(
+    await withRetainedArtifactRelease(
+      held.registry,
+      {
+        ...claim,
+        source: {
+          kind: 'r2',
+          namespace: `r2://${'a'.repeat(32)}/legacy-bucket`,
+          objectKey: f.original.r2.key,
+          encoding: 'identity',
+        },
+      },
+      async () => assert.fail('Unknown original descriptor must pin its physical key'),
+      { r2 },
+    ),
+    null,
   );
 });
 test('archive selected export: a self-consistent empty rewrite cannot replace the externally selected pin', async (t) => {

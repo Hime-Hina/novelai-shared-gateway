@@ -65,7 +65,11 @@ PikPak 上传确认并持久记录后才删除 R2 原件；上传后不立即回
 
 自动复制沿原政策：PNG/JPEG/WebP Local 超过 24h，R2 原 verifiedAt 超过 7d 或当前本站 R2 水位 `8,550,000,000 B`，失败 1h 重试。首轮/无候选/错误等 60s，真实目的 sourceEventId 变化才视为进展并 1s 后再试；R2 uploaded 未 verified 走原 verify，Pik uploaded 不重复 PUT。水位仅算当前 target 的未 deleted identity 登记/预留，按物理 objectKey 去重及原字节长度计，不充当全云容量或压缩对象实占量。未知 publishedAt 不取得年龄资格，未知错误时刻不借 import header 补 1h；Opening 不从文件 MIME 补原 operation、mock标记或规范路径。
 
-复制/核验复用原 IO owner，不删除 Local/R2/PikPak 源。每轮复核当前 ready、queue phase、真实 controls 和 queued/pending/running/未发布 prepared 责任；文件/云 IO 在 SQL 外。关闭先清 timer、阻止新复制，再等待真正 inflight promise 后结束 HTTP 和关库，不能以逻辑终态、清 Map 或 fake cancel 代替物理结束。错误仅输出安全类别。来源释放仍须[保留源权威](../operations/production-release.md#保留源登记工具)覆盖归档、备份引用与恢复责任。
+复制/核验和源释放分别复用原 IO owner。Local超过24h且R2的原字节回读与verified已提交，才可移除Local；R2超过7d或达到本站水位且PikPak uploaded已提交，才可移除R2，不增加立即PikPak回读或最终PikPak删除。`RETAINED_SOURCES_DIR`必须指向同一[保留源权威](../operations/production-release.md#保留源登记工具)：先核所选受保护inventory及实际来源集合，再按具体物理root/namespace/key证明各保留源已有可用替代；旧快照只有R2时，当前新增PikPak不解除该R2责任。未知、缺失或不完整证明继续保留来源。
+
+捕获前pin与释放共用registry lease，授权、有限删除IO与SQL确认期间不能开始新capture。每轮复核当前ready、queue phase、真实controls和queued/pending/running/未发布prepared责任；文件/云IO在SQL外。删除事实仍用ArtifactReplicaRecorded.deletedAt，完整回执绑定原源/目的事件及保留源证明；回放只核原决定，不执行GET/PUT/DELETE。外部已删而SQL尾错时只回滚SQL，保留原未确认行，重试以ENOENT/404完成同来源确认，不重新PUT或假称外部删除已回滚。DELETE回执不明沿原1h重试；保留pin的候选以(id,kind)游标继续，不能阻挡其他复制或释放。复制与释放共用原timer与真实inflight promise。
+
+关闭先清timer、阻止新维护，再等真正inflight promise后结束HTTP和关库，不能以逻辑终态、清Map或fake cancel代替物理结束。错误仅输出安全类别。Win32没有同等目录fsync保证，后台只复制、不执行源释放；Windows合成IO检查不能替代Linux实际发布包与断电/恢复验收。人工退休继续只撤下展示/领取，不触发新D8期限或最终内容删除。
 
 失败 Opening 可以保存未知 parent/operation/不可执行输入的原 prepared 描述符。`readGenerationResultDependency()` 仅为 retained describe 声明真实 final/part 位置和原摘要，不读验文件、不执行/扣退/写账，不授予发布或 ready。它与严格 getter 共用唯一准备事实/完整 commit，Opening 核先行来源和 request/member/account/attempt 角色，已知保护输入与 seed 不降 NULL 绕过。未知操作只过 readable descriptor，file/MIME/hash/len 与投影逐字段一致；普通 ArtifactPrepared、结果恢复和唯一 installer 仍走严格完成条件。
 

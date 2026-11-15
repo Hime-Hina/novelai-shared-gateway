@@ -803,7 +803,7 @@ WebDAV 使用[Connected Apps 传输额度](https://mypikpak.com/en-US/help-cente
 
 ## 保留源登记工具
 
-此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放仍关闭，不能用一个新空registry推断旧保留物不存在。下文维护登记、保护、恢复和释放边界；原首片执行证据见[历史 9.93](../history/database-model-execution-records.md#993-保留源登记与捕获保护首片未开放源删除)。
+此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放默认关闭，须先完成下述受保护域资格，不能用一个新空registry推断旧保留物不存在。下文维护登记、保护、恢复和释放边界；原首片执行证据见[历史 9.93](../history/database-model-execution-records.md#993-保留源登记与捕获保护首片未开放源删除)。
 
 正常发布包新增 `scripts/retained-sources.mjs`。`backup-production.py`默认选择备份目录的同级`<备份目录名>-retained-sources`，所以生产路径对应`/var/backups/novelai-shared-gateway-retained-sources`，不进入`daily-*`轮换。该目录必须先由部署者显式init且保留私有权限；丢失/损坏时备份捕获在SQLite前拒绝，不自动重建。此首片并未执行该生产init。
 
@@ -829,7 +829,7 @@ printf '%s' '{"source":"/sealed/library.sqlite","manifest":"/selected/export/aud
 | 保存与重读 | 复用原 `manifestSha256`、`dependenciesSha256` 和不可变 audit/产物清单副本，不加认证布尔、第二份 pin 或派生对象目录。读取、checkpoint、restore 继续核已存副本与共同元组，原交接文件移除也不能使保护丢失；有 exports 不等于独立来源已认证。旧无 exports 报告保持未知。            |
 | 失败保全   | CLI 先登记 durable preparing，再验证/复制，最后才 publish retained。错误不能删除 preparing 或发布成功；复制尾错可留下诊断文件，但 registry 的原 binding/hold 不得越过相应完成点。源与原清单不改，不把文件操作冒充 SQL/文件共同事务。                                            |
 
-有 exports 即声明一份必须存在的产物清单，未提供外部 pin 也不能省略该文件；保存后的 `dependenciesSha256` 必须等于 audit 元组且实文件通过核验，不能置 NULL 脱离证明。旧无 exports 报告仍保持未知。本片所有 `dependencies`、coverage 仍为 unknown、releaseAllowed 为 false，产物源 DELETE 为零。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
+有 exports 即声明一份必须存在的产物清单，未提供外部 pin 也不能省略该文件；保存后的 `dependenciesSha256` 必须等于 audit 元组且实文件通过核验，不能置 NULL 脱离证明。旧无 exports 报告仍保持未知。单独接收原导出仍是 `dependencies:unknown`，没有下面独立选定的物理解释证明就不能升级。`read` 的 `releaseAllowed` 仍为 false，不是删除凭据。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
 
 验收沿原 retained 测试：外部固定 pin 正向；同源手写自洽空清单并重算 audit 仍与已选 pin 不符；同长篡改、错 cut/tool、缺元组/清单拒绝；可信真实空清单正向；复制确实完成后注入尾错仍保 preparing；原文件移除后 checkpoint/restore 的已存证明仍保护。当前实现与实际验证状态由后继交付证据记录，不将这些要求预写为已通过。
 
@@ -840,3 +840,40 @@ registry的不可变manifest/依赖证明不在local daily退休时删除，remo
 lease恢复还要求Linux host/platform、boot ID及PID namespace与当前域精确相同；跨WSL/container、foreign或无法证明同域均拒绝。Windows记录不可证明域，不能用本机PID不存在接管；必要时从外部验证过的checkpoint向全新目录恢复，并保留未完责任。checkpoint的独立类型标记不是自认证，仍须原包/receipt的外部SHA；restore不接受带lease/recovery文件的输入。
 
 远端hold另绑定实际R2 account/bucket namespace。失败上传的preparing不会因过期消失：只有同可证Linux PID域的原uploader已退出、原source/object绑定一致、当前完整listing及七份保留对象全部通过GCM后，原R2 owner才可先标retiring，再凭实际DELETE完成退休。Windows/未知域保持pin，保留份数可超过七份；cutover/archive不随daily轮换。不可变manifest/依赖JSONL副本是remote-only时离线重算引用所需的证明，维护成本为每个来源一份元数据及checkpoint复制；没有另存对象目录或派生refcount。该协议依赖私有目录和合作的单机caller，不宣称可抵抗任意外部文件替换或分布式writer。
+
+### 物理解释证明与部署资格
+
+旧格式解释只由离线 `resolve-legacy-retained-dependencies.mjs` 完成。它核原 source/audit/artifacts、原 namespace authority 及独立选定的完整 inventory，生成 generic JSONL；原 audit、出口和 Source 不改。接收端仍保存原 `dependenciesSha256`，另以 `resolvedDependenciesSha256` 保存外部选定的整份解释证明，逐原 artifact 的行号、含 LF 摘要和 ID 严格一一核对。header 的 source/commit/cut、audit/出口元组及 inventory/prepared 证据必须闭合；没有这一证明不能把未发布准备数量填零。数量大于零时，证明末尾的 `prepared-domain` 保守保护原 Local 域的全部 final/part，不影响不同根或 R2 域。
+
+```sh
+node /verified/package/scripts/resolve-legacy-retained-dependencies.mjs \
+  --source=/sealed/library.sqlite \
+  --audit=/selected/audit.json \
+  --audit-sha256=SELECTED_AUDIT_SHA256 \
+  --artifacts=/selected/artifacts.jsonl \
+  --namespace-authority=/selected/namespace-authority.json \
+  --namespace-authority-sha256=SELECTED_NAMESPACE_AUTHORITY_SHA256 \
+  --inventory=/selected/inventory.json \
+  --inventory-sha256=SELECTED_INVENTORY_SHA256 \
+  --output=/private/resolved.jsonl
+```
+
+`archive` 的第四位置参数是独立选定的 resolved SHA，stdin 只加 `resolvedDependencies` 文件；二者必须整对，body 自报摘要拒绝。显式 `sourceId` 可给原 Source 追加解释：只允许原 unknown→known 加新证明，原 source/audit/出口/history/cut、ID 和 hold/state 完全不变；相同证明重复不改 registry。另一实体即使同 SHA 也不合并。错误或复制尾错保原 unknown，已完整复制的同一证明可健康重试。
+
+```sh
+printf '%s' '{"source":"/sealed/library.sqlite","manifest":"/selected/audit.json","dependencies":"/selected/artifacts.jsonl","resolvedDependencies":"/selected/resolved.jsonl","sourceId":"ORIGINAL_SOURCE_ID"}' | node /verified/package/scripts/retained-sources.mjs archive /private/retained-sources SELECTED_AUDIT_SHA256 SELECTED_RESOLVED_SHA256
+```
+
+释放资格另需独立 pin 的、已验证包内的 retained checkpoint。范围文件 `config/retained-inventory-scope.json` 必须已经被该 checkpoint 的一个已知关系 Source 的原 manifest.files 保护，不能临时手写完整性布尔或 sources 数组当权威。现备份 owner 已把配置目录文件纳入 manifest，部署者应先选定这个配置文件，再做真实受保护 snapshot/checkpoint。其格式为 `novelai-retained-inventory-scope-v1`，字段是原 `registryId`、`localRoots`、`archiveRoots`、`r2Namespaces`；它只定义完整保护域，不自报域成员。
+
+```sh
+printf '%s' '{"checkpoint":"/verified/checkpoint","scope":"/verified/snapshot/config/retained-inventory-scope.json","scopeSha256":"SELECTED_SCOPE_SHA256"}' | node /verified/package/scripts/retained-sources.mjs adopt-inventory /private/retained-sources SELECTED_CHECKPOINT_SHA256
+```
+
+owner 在同一 lease 内实际枚举目录和原 R2 client 的完整 backup listing，对照全部 anchor/current Source 与独立 hold。每个目录直属项都必须有对应 hold；未知目录、partial、未登记备份、opaque、preparing 或缺原 namespace 均拒绝。当前实现要求 archive 根是已登记原文件的独占目录，不能把混有未解释文件的目录当空清单。新捕获会使旧 roster 不再闭合；其真实完成并进入新的独立 checkpoint 后才能重新 adopt，不自动抹 pin。
+
+adopt 完整核验本地 Source 的 SHA/格式/history/cut，再写不可变 qualification receipt，仅含原摘要、部署 root 与原文件的 BigInt dev/ino/size/mtimeNs/ctimeNs。它是资格证据，不是对象目录、缓存或引用计数。每次释放仍在 held lease 内重核该 receipt、文件身份、不可变 manifest/依赖和实际 roster，不为每一张图重读整份大数据库。checkpoint 导出及 restore 的 coverage 都是 unknown；不能把原部署的 qualification 带入新的 lease 域直接用。原 hold 与不可变解释证明仍完整保留。
+
+只有 `withRetainedArtifactRelease` 的活跃 WeakMap 能力可进入具体 DELETE/SQL ack，外部 JSON、布尔或 Map 不能替代。能力绑定当前 registry/revision、同一物理 claim 和证明摘要；SQL 前还要同步复核 lease/root/证据身份，callback 完成即失效。旧 Source 只有 R2 时，当前已有 Pik 不能替旧 Source 补声明；必须该 Source 自身已有精确、已确认的目的副本。Local/R2 按原 verified，Pik 按原 uploaded，不增加立即 Pik GET。退休 artifact、共享物理 key、reserved 引用仍纳入判断；同 key 不同 encoding 或未知摘要保守 pin，未知字段不得被改成不存在。
+
+运行期未配置 `RETAINED_SOURCES_DIR` 时源释放关闭。自动释放还须具备实际目录持久性资格；Windows 合成用例证明逻辑闭包，不代表 POSIX fsync/断电安全或生产放行。实际生产配置、完整旧来源解释、真实端点与切换验收仍另行完成；本节没有执行生产初始化、删除或切换。

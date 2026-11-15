@@ -232,6 +232,7 @@ test(
       'server/storage/sqlite-migrations.js',
       'server/storage/sqlite-read-worker.js',
       'scripts/replay-events.mjs',
+      'scripts/resolve-legacy-retained-dependencies.mjs',
       'scripts/create-test-copy.mjs',
     ]) {
       assert.equal(before[retired], undefined, retired);

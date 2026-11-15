@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, constants } from 'node:fs';
+import {
+  createReadStream,
+  constants,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  existsSync,
+  type BigIntStats,
+} from 'node:fs';
 import {
   copyFile,
   lstat,
@@ -10,10 +18,17 @@ import {
   rename,
   unlink,
   readlink,
+  readdir,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { hostname } from 'node:os';
+import { R2Storage } from './r2-storage.ts';
+import Database from 'better-sqlite3';
+import {
+  openRelationalSnapshot,
+  readRelationalRecoveryState,
+} from './relational-private-restore.ts';
 type State = 'preparing' | 'retained' | 'retiring' | 'retired';
 export interface RetainedObject {
   namespace: string;
@@ -44,6 +59,7 @@ export interface RetainedBinding {
   dependencies: 'known' | 'unknown';
   historyId: string | null;
   finalCommitSeq: string | null;
+  resolvedDependenciesSha256?: string;
 }
 interface Source {
   id: string;
@@ -56,9 +72,71 @@ interface Registry {
   format: 'novelai-retained-sources-v1';
   registryId: string;
   revision: number;
-  coverage: 'unknown';
+  coverage: 'unknown' | InventoryCoverage;
   sources: Source[];
 }
+export interface RetainedInventorySelection {
+  checkpoint: string;
+  checkpointSha256: string;
+  scope: string;
+  scopeSha256: string;
+}
+interface InventoryCoverage {
+  selection: RetainedInventorySelection;
+  qualification: { file: string; sha256: string };
+}
+interface SourceQualification {
+  sourceId: string;
+  holdId: string;
+  file: string;
+  sourceSha256: string;
+  dev: string;
+  ino: string;
+  size: string;
+  mtimeNs: string;
+  ctimeNs: string;
+}
+interface InventoryQualification {
+  format: 'novelai-retained-qualification-v1';
+  registryId: string;
+  root: { path: string; dev: string; ino: string };
+  selectionSha256: string;
+  sources: SourceQualification[];
+}
+export interface RetainedArtifactReleaseClaim {
+  artifactId: string;
+  sha256: string;
+  byteLength: number;
+  source: {
+    kind: 'local' | 'r2';
+    namespace: string;
+    objectKey: string;
+    encoding: 'identity';
+    dataDir?: string;
+  };
+  destination: {
+    kind: 'r2' | 'pikpak';
+    namespace: string;
+    objectKey: string;
+    encoding: 'identity' | 'br';
+  };
+}
+declare const retainedPermitBrand: unique symbol;
+export interface RetainedArtifactReleasePermit {
+  readonly [retainedPermitBrand]: true;
+}
+interface LeaseGuard {
+  assertCurrent(): void;
+  active: boolean;
+}
+const releasePermits = new WeakMap<
+  RetainedArtifactReleasePermit,
+  {
+    guard: LeaseGuard;
+    claim: RetainedArtifactReleaseClaim;
+    evidence: { registryId: string; revision: number; proofSha256: string };
+  }
+>();
 interface OwnerDomain {
   platform: 'linux';
   host: string;
@@ -128,7 +206,13 @@ function validate(value: Registry): Registry {
     !idPattern.test(value.registryId) ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
-    value.coverage !== 'unknown' ||
+    (value.coverage !== 'unknown' &&
+      (!exactFields(value.coverage, ['selection', 'qualification']) ||
+        !validInventorySelection(value.coverage.selection) ||
+        !exactFields(value.coverage.qualification, ['file', 'sha256']) ||
+        typeof value.coverage.qualification.file !== 'string' ||
+        !path.isAbsolute(value.coverage.qualification.file) ||
+        !hashPattern.test(value.coverage.qualification.sha256))) ||
     !Array.isArray(value.sources)
   ) {
     fail();
@@ -152,11 +236,15 @@ function validate(value: Registry): Registry {
       if (
         !['relational', 'opaque', 'legacy-export'].includes(b.format) ||
         !['known', 'unknown'].includes(b.dependencies) ||
-        [b.sourceSha256, b.manifestSha256, b.dependenciesSha256].some(
-          (h) => h !== null && !hashPattern.test(h),
-        ) ||
+        [
+          b.sourceSha256,
+          b.manifestSha256,
+          b.dependenciesSha256,
+          b.resolvedDependenciesSha256 ?? null,
+        ].some((h) => h !== null && !hashPattern.test(h)) ||
         (b.dependencies === 'known' &&
-          (b.format !== 'relational' ||
+          ((b.format !== 'relational' &&
+            !(b.format === 'legacy-export' && b.resolvedDependenciesSha256)) ||
             !b.sourceSha256 ||
             !b.manifestSha256 ||
             !b.dependenciesSha256)) ||
@@ -205,15 +293,28 @@ function validate(value: Registry): Registry {
   }
   return value;
 }
+function validInventorySelection(value: RetainedInventorySelection) {
+  return (
+    value &&
+    Object.keys(value).length === 4 &&
+    typeof value.checkpoint === 'string' &&
+    path.isAbsolute(value.checkpoint) &&
+    typeof value.scope === 'string' &&
+    path.isAbsolute(value.scope) &&
+    hashPattern.test(value.checkpointSha256) &&
+    hashPattern.test(value.scopeSha256)
+  );
+}
+function comparablePath(p: string) {
+  return process.platform === 'win32' ? path.toNamespacedPath(p).toLowerCase() : p;
+}
 async function directory(root: string) {
   const selected = path.resolve(root);
   const stat = await lstat(selected);
-  const comparable = (p: string) =>
-    process.platform === 'win32' ? path.toNamespacedPath(p).toLowerCase() : p;
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
-    comparable(await realpath(selected)) !== comparable(selected)
+    comparablePath(await realpath(selected)) !== comparablePath(selected)
   ) {
     fail();
   }
@@ -248,6 +349,16 @@ async function regular(filename: string) {
     fail();
   }
   return stat;
+}
+function sameFileIdentity(a: BigIntStats, b: BigIntStats) {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs &&
+    a.nlink === b.nlink
+  );
 }
 async function bytes(filename: string) {
   const before = await regular(filename),
@@ -454,6 +565,7 @@ export async function readRetainedArchiveBinding(
   manifestFile: string,
   dependenciesFile?: string,
   expectedAuditSha256?: string,
+  resolved?: { file: string; sha256: string },
 ): Promise<RetainedBinding> {
   if (
     expectedAuditSha256 !== undefined &&
@@ -485,7 +597,7 @@ export async function readRetainedArchiveBinding(
     await legacyArtifactFile(dependenciesFile, audit.exports.artifacts);
     dependenciesSha256 = audit.exports.artifacts.sha256;
   }
-  return {
+  const binding: RetainedBinding = {
     format: identity.format === 'legacy-archive-audit-v1' ? 'legacy-export' : 'opaque',
     sourceSha256,
     manifestSha256: manifest.sha256,
@@ -494,6 +606,221 @@ export async function readRetainedArchiveBinding(
     historyId: null,
     finalCommitSeq: identity.lastCommitSeq ?? null,
   };
+  if (resolved) {
+    if (
+      !expectedAuditSha256 ||
+      !dependenciesFile ||
+      !exactFields(resolved, ['file', 'sha256']) ||
+      !hashPattern.test(resolved.sha256)
+    ) {
+      fail();
+    }
+    await resolvedLegacyDependencies(
+      resolved.file,
+      resolved.sha256,
+      manifest.value,
+      dependenciesFile,
+      manifest.sha256,
+    );
+    binding.resolvedDependenciesSha256 = resolved.sha256;
+    binding.dependencies = 'known';
+  }
+  return binding;
+}
+async function resolvedLegacyDependencies(
+  filename: string,
+  sha256: string,
+  value: LegacyExportAudit,
+  artifactsFile: string,
+  auditSha256: string,
+) {
+  const audit = legacyExportAudit(value),
+    raw = await bytes(filename);
+  if (
+    createHash('sha256').update(raw).digest('hex') !== sha256 ||
+    !raw.length ||
+    raw[raw.length - 1] !== 10
+  ) {
+    fail();
+  }
+  const lines = new TextDecoder('utf-8', { fatal: true }).decode(raw).split('\n');
+  lines.pop();
+  const header = JSON.parse(lines.shift()!);
+  if (
+    !exactFields(header, [
+      'kind',
+      'format',
+      'sourceSha256',
+      'sourceCommit',
+      'cut',
+      'auditSha256',
+      'artifacts',
+      'namespaceAuthoritySha256',
+      'sourceCaptureSha256',
+      'namespaceReceiptSha256',
+      'producerSha256',
+      'artifactRows',
+      'inventorySha256',
+      'preparedResults',
+    ]) ||
+    header.kind !== 'legacy-physical-dependencies' ||
+    header.format !== 'novelai-legacy-retained-dependencies-v1' ||
+    header.sourceSha256 !== audit.sourceSha256 ||
+    header.sourceCommit !== audit.sourceCommit ||
+    header.cut !== audit.lastCommitSeq ||
+    header.auditSha256 !== auditSha256 ||
+    !same(header.artifacts, audit.exports.artifacts) ||
+    header.artifactRows !== audit.artifacts ||
+    !Number.isSafeInteger(header.preparedResults) ||
+    header.preparedResults < 0 ||
+    [
+      'namespaceAuthoritySha256',
+      'sourceCaptureSha256',
+      'namespaceReceiptSha256',
+      'producerSha256',
+      'inventorySha256',
+    ].some((key) => !hashPattern.test(header[key]))
+  ) {
+    fail();
+  }
+  const originalBytes = await bytes(artifactsFile),
+    originals: Buffer[] = [];
+  let start = 0,
+    end;
+  while ((end = originalBytes.indexOf(10, start)) >= 0) {
+    originals.push(originalBytes.subarray(start, end + 1));
+    start = end + 1;
+  }
+  if (
+    lines.length !== originals.length + (header.preparedResults > 0 ? 1 : 0) ||
+    originals.length !== audit.artifacts
+  ) {
+    fail();
+  }
+  const ids = new Set<string>();
+  for (let index = 0; index < originals.length; index++) {
+    const row = JSON.parse(lines[index]),
+      original = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(originals[index]));
+    if (
+      typeof original.id !== 'string' ||
+      !original.id ||
+      (original.file !== null &&
+        (typeof original.file !== 'string' ||
+          !original.file.startsWith('images/') ||
+          !original.file.slice(7))) ||
+      [original.r2, original.pikpak].some(
+        (item) => item != null && (typeof item !== 'object' || Array.isArray(item)),
+      ) ||
+      (original.sha256 != null &&
+        original.r2?.sha256 != null &&
+        original.sha256 !== original.r2.sha256) ||
+      (original.byteLength != null &&
+        original.r2?.byteLength != null &&
+        original.byteLength !== original.r2.byteLength)
+    ) {
+      fail();
+    }
+    if (
+      !exactFields(row, ['kind', 'id', 'dataDir', 'descriptor', 'replicas', 'originalRow']) ||
+      row.kind !== 'artifact' ||
+      typeof row.id !== 'string' ||
+      !row.id ||
+      row.id !== original.id ||
+      ids.has(row.id) ||
+      !exactFields(row.originalRow, ['line', 'sha256']) ||
+      row.originalRow.line !== index + 1 ||
+      row.originalRow.sha256 !== createHash('sha256').update(originals[index]).digest('hex') ||
+      !exactFields(row.descriptor, ['imageId', 'file', 'sha256', 'byteLength']) ||
+      row.descriptor.imageId !== row.id ||
+      !(row.descriptor.file === null || typeof row.descriptor.file === 'string') ||
+      !(
+        row.descriptor.sha256 === null ||
+        (typeof row.descriptor.sha256 === 'string' && hashPattern.test(row.descriptor.sha256))
+      ) ||
+      !(
+        row.descriptor.byteLength === null ||
+        (Number.isSafeInteger(row.descriptor.byteLength) && row.descriptor.byteLength > 0)
+      ) ||
+      !(
+        row.dataDir === null ||
+        (typeof row.dataDir === 'string' &&
+          (path.posix.isAbsolute(row.dataDir) || path.win32.isAbsolute(row.dataDir)))
+      ) ||
+      !Array.isArray(row.replicas)
+    ) {
+      fail();
+    }
+    const kinds = new Set<string>();
+    for (const entry of row.replicas) {
+      if (
+        !exactFields(entry, ['target', 'replica']) ||
+        !exactFields(entry.target, ['kind', 'namespace']) ||
+        !exactFields(entry.replica, [
+          'objectKey',
+          'encoding',
+          'uploadedAt',
+          'verifiedAt',
+          'deletedAt',
+        ]) ||
+        kinds.has(entry.target.kind) ||
+        typeof entry.target.namespace !== 'string' ||
+        !entry.target.namespace ||
+        typeof entry.replica.objectKey !== 'string' ||
+        !entry.replica.objectKey ||
+        [entry.replica.uploadedAt, entry.replica.verifiedAt, entry.replica.deletedAt].some(
+          (at) => at !== null && (!Number.isSafeInteger(at) || at < 0),
+        )
+      ) {
+        fail();
+      }
+      if (entry.target.kind === 'local') {
+        if (
+          entry.target.namespace !== 'images' ||
+          !row.dataDir ||
+          row.descriptor.file !== 'images/' + entry.replica.objectKey ||
+          entry.replica.encoding !== 'identity'
+        ) {
+          fail();
+        }
+      } else if (entry.target.kind === 'r2') {
+        if (
+          !/^r2:\/\/[a-f0-9]{32}\/[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(entry.target.namespace) ||
+          entry.replica.encoding !== 'identity'
+        ) {
+          fail();
+        }
+      } else if (entry.target.kind === 'pikpak') {
+        const location = new URL(entry.target.namespace);
+        if (
+          location.protocol !== 'https:' ||
+          location.username ||
+          location.password ||
+          location.search ||
+          location.hash ||
+          entry.replica.encoding !== 'br'
+        ) {
+          fail();
+        }
+      } else {
+        fail();
+      }
+      kinds.add(entry.target.kind);
+    }
+    ids.add(row.id);
+  }
+  if (header.preparedResults > 0) {
+    const domain = JSON.parse(lines[lines.length - 1]);
+    if (
+      !exactFields(domain, ['kind', 'dataDir', 'count']) ||
+      domain.kind !== 'prepared-domain' ||
+      domain.count !== header.preparedResults ||
+      typeof domain.dataDir !== 'string' ||
+      !(path.posix.isAbsolute(domain.dataDir) || path.win32.isAbsolute(domain.dataDir))
+    ) {
+      fail();
+    }
+  }
+  return { header, rows: lines.map((line) => JSON.parse(line) as RetainedDependency) };
 }
 async function boundLegacyExport(root: string, binding: RetainedBinding) {
   if (binding.format !== 'legacy-export') {
@@ -517,6 +844,15 @@ async function boundLegacyExport(root: string, binding: RetainedBinding) {
     fail();
   }
   await legacyArtifactFile(path.join(root, 'dependencies.jsonl'), audit.exports.artifacts);
+  if (binding.resolvedDependenciesSha256) {
+    await resolvedLegacyDependencies(
+      path.join(root, 'resolved-dependencies.jsonl'),
+      binding.resolvedDependenciesSha256,
+      audit,
+      path.join(root, 'dependencies.jsonl'),
+      binding.manifestSha256!,
+    );
+  }
 }
 async function immutableFile(filename: string, value: string | Buffer) {
   const handle = await open(filename, 'wx', 0o600);
@@ -571,7 +907,10 @@ export async function initializeRetainedSources(root: string) {
   await syncDirectory(root);
   return { registryId: registry.registryId, releaseAllowed: false };
 }
-async function mutate<T>(root: string, change: (registry: Registry, root: string) => Promise<T>) {
+async function mutate<T>(
+  root: string,
+  change: (registry: Registry, root: string, guard: LeaseGuard) => Promise<T>,
+) {
   root = await directory(root);
   const rootIdentity = await lstat(root, { bigint: true });
   if (!(await absent(path.join(root, 'recovery.lock')))) {
@@ -579,6 +918,7 @@ async function mutate<T>(root: string, change: (registry: Registry, root: string
   }
   const initial = await readRegistry(root),
     filename = path.join(root, 'lease.json');
+  const registryIdentity = await regular(path.join(root, 'registry.json'));
   const lease = await open(filename, 'wx', 0o600);
   const leaseIdentity = await lease.stat({ bigint: true });
   const token = {
@@ -587,6 +927,36 @@ async function mutate<T>(root: string, change: (registry: Registry, root: string
     registryId: initial.registryId,
     revision: initial.revision,
     domain: await currentOwnerDomain(),
+  };
+  const guard: LeaseGuard = {
+    active: true,
+    assertCurrent() {
+      if (!guard.active || comparablePath(realpathSync(root)) !== comparablePath(root)) {
+        fail();
+      }
+      const actualRoot = lstatSync(root, { bigint: true }),
+        actualLease = lstatSync(filename, { bigint: true }),
+        actualRegistry = lstatSync(path.join(root, 'registry.json'), { bigint: true });
+      if (
+        !actualRoot.isDirectory() ||
+        actualRoot.isSymbolicLink() ||
+        actualRoot.dev !== rootIdentity.dev ||
+        actualRoot.ino !== rootIdentity.ino ||
+        !actualLease.isFile() ||
+        actualLease.isSymbolicLink() ||
+        actualLease.nlink !== 1n ||
+        actualLease.dev !== leaseIdentity.dev ||
+        actualLease.ino !== leaseIdentity.ino ||
+        !same(JSON.parse(readFileSync(filename, 'utf8')), token) ||
+        !actualRegistry.isFile() ||
+        actualRegistry.isSymbolicLink() ||
+        actualRegistry.nlink !== 1n ||
+        !sameFileIdentity(actualRegistry, registryIdentity) ||
+        !same(JSON.parse(readFileSync(path.join(root, 'registry.json'), 'utf8')), initial)
+      ) {
+        fail();
+      }
+    },
   };
   let owned = false;
   try {
@@ -601,7 +971,8 @@ async function mutate<T>(root: string, change: (registry: Registry, root: string
     if (!same(current, initial)) {
       fail();
     }
-    const result = await change(current, root);
+    const result = await change(current, root, guard);
+    guard.assertCurrent();
     if (same(current, initial)) {
       return result;
     }
@@ -624,6 +995,7 @@ async function mutate<T>(root: string, change: (registry: Registry, root: string
     await syncDirectory(root);
     return result;
   } finally {
+    guard.active = false;
     await lease.close();
     const currentLease = owned ? await regular(filename) : null;
     if (
@@ -693,6 +1065,713 @@ export async function readRetainedSourceProtection(root: string, checkpointSha25
   const registry = await readProtectedRetainedRegistry(root, checkpointSha256);
   return { ...registry, releaseAllowed: false as const };
 }
+interface InventoryScope {
+  format: 'novelai-retained-inventory-scope-v1';
+  registryId: string;
+  localRoots: string[];
+  archiveRoots: string[];
+  r2Namespaces: string[];
+}
+interface InventoryConfiguration {
+  r2?: R2Storage | null;
+}
+interface ArtifactDependency {
+  kind: 'artifact';
+  id: string;
+  dataDir: string | null;
+  descriptor: {
+    imageId: string;
+    file: string | null;
+    sha256: string | null;
+    byteLength: number | null;
+  };
+  replicas: {
+    target: { kind: string; namespace: string };
+    replica: {
+      objectKey: string;
+      encoding: string;
+      deletedAt: number | null;
+      uploadedAt: number | null;
+      verifiedAt: number | null;
+    };
+  }[];
+}
+type RetainedDependency =
+  | ArtifactDependency
+  | {
+      kind: 'prepared-result';
+      dataDir: string | null;
+      descriptor: ArtifactDependency['descriptor'];
+    }
+  | { kind: 'prepared-domain'; dataDir: string; count: number };
+const scopeEntry = 'config/retained-inventory-scope.json';
+function digest(value: unknown) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+function sourceRootNamespace(value: string) {
+  const windows =
+    /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('\\\\') || value.startsWith('//');
+  if (!windows && !path.posix.isAbsolute(value)) {
+    fail();
+  }
+  const normalize = (root: string) =>
+    windows
+      ? 'win32:' + path.win32.normalize(root).toLowerCase()
+      : 'posix:' + path.posix.normalize(root);
+  if (windows === (process.platform === 'win32')) {
+    try {
+      return normalize(realpathSync(value));
+    } catch {
+      /* A known original namespace may not be mounted on this recovery host. */
+    }
+  }
+  return normalize(value);
+}
+
+// Scope defines a domain, never its members. Its bytes must already be protected by an
+// independently pinned Source; membership comes only from actual directory/provider enumeration.
+async function verifiedInventory(
+  root: string,
+  registry: Registry,
+  selected: RetainedInventorySelection,
+  configuration: InventoryConfiguration,
+  qualification: InventoryQualification | null = null,
+) {
+  if (
+    !validInventorySelection(selected) ||
+    comparablePath(selected.checkpoint) === comparablePath(root)
+  ) {
+    fail();
+  }
+  const anchor = await readProtectedRetainedRegistry(
+    selected.checkpoint,
+    selected.checkpointSha256,
+  );
+  if (
+    anchor.registryId !== registry.registryId ||
+    !anchor.sources.length ||
+    anchor.revision > registry.revision ||
+    anchor.sources.length !== registry.sources.length
+  ) {
+    return null;
+  }
+  const scopeBytes = await bytes(selected.scope);
+  if (createHash('sha256').update(scopeBytes).digest('hex') !== selected.scopeSha256) {
+    fail();
+  }
+  const scope = JSON.parse(scopeBytes.toString('utf8')) as InventoryScope;
+  if (
+    !exactFields(scope, ['format', 'registryId', 'localRoots', 'archiveRoots', 'r2Namespaces']) ||
+    scope.format !== 'novelai-retained-inventory-scope-v1' ||
+    scope.registryId !== registry.registryId ||
+    ![scope.localRoots, scope.archiveRoots, scope.r2Namespaces].every(
+      (rows) =>
+        Array.isArray(rows) &&
+        rows.every((value) => typeof value === 'string') &&
+        new Set(rows).size === rows.length,
+    )
+  ) {
+    fail();
+  }
+  const dependencies: RetainedDependency[] = [],
+    qualifiedSources: SourceQualification[] = [],
+    expectedLocal = new Set<string>(),
+    expectedArchive = new Set<string>(),
+    expectedRemote = new Map<string, RetainedObject>();
+  const evidenceFiles = new Map<string, Awaited<ReturnType<typeof regular>>>();
+  const bindEvidence = async (filename: string) => {
+    evidenceFiles.set(filename, await regular(filename));
+  };
+  await bindEvidence(selected.scope);
+  await bindEvidence(path.join(selected.checkpoint, 'registry.json'));
+  let protectedScope = false;
+  for (const row of registry.sources) {
+    const original = anchor.sources.find((value) => value.id === row.id);
+    if (
+      !original ||
+      row.category !== original.category ||
+      row.origin !== original.origin ||
+      !same(row.binding, original.binding) ||
+      row.holds.length !== original.holds.length
+    ) {
+      return null;
+    }
+    for (const hold of row.holds) {
+      const old = original.holds.find((value) => value.id === hold.id);
+      if (
+        !old ||
+        old.kind !== hold.kind ||
+        !same(old.location, hold.location) ||
+        (old.state === 'retired' && hold.state !== 'retired')
+      ) {
+        return null;
+      }
+    }
+    const active = row.holds.filter((hold) => hold.state !== 'retired');
+    if (!active.length) {
+      continue;
+    }
+    const legacy =
+      row.binding?.format === 'legacy-export' && !!row.binding.resolvedDependenciesSha256;
+    if (
+      active.some((hold) => hold.state !== 'retained') ||
+      !row.binding ||
+      row.binding.dependencies !== 'known' ||
+      (!legacy && (row.binding.format !== 'relational' || !row.binding.historyId)) ||
+      !/^[1-9][0-9]*$/.test(row.binding.finalCommitSeq ?? '')
+    ) {
+      return null;
+    }
+    const stored = path.join(root, 'sources', row.id),
+      anchored = path.join(selected.checkpoint, 'sources', row.id),
+      manifestBytes = await bytes(path.join(stored, 'manifest.json')),
+      originalDependencyBytes = await bytes(path.join(stored, 'dependencies.jsonl'));
+    await bindEvidence(path.join(stored, 'manifest.json'));
+    await bindEvidence(path.join(stored, 'dependencies.jsonl'));
+    await bindEvidence(path.join(anchored, 'manifest.json'));
+    await bindEvidence(path.join(anchored, 'dependencies.jsonl'));
+    if (
+      createHash('sha256').update(manifestBytes).digest('hex') !== row.binding.manifestSha256 ||
+      createHash('sha256').update(originalDependencyBytes).digest('hex') !==
+        row.binding.dependenciesSha256
+    ) {
+      fail();
+    }
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    let dependencyBytes = originalDependencyBytes;
+    if (legacy) {
+      await boundLegacyExport(stored, row.binding);
+      dependencyBytes = await bytes(path.join(stored, 'resolved-dependencies.jsonl'));
+      await bindEvidence(path.join(stored, 'resolved-dependencies.jsonl'));
+      await bindEvidence(path.join(anchored, 'resolved-dependencies.jsonl'));
+    } else if (
+      manifest.files?.['data/library.sqlite'] !== row.binding.sourceSha256 ||
+      manifest.files?.['retained-dependencies.jsonl'] !== row.binding.dependenciesSha256 ||
+      manifest.retainedSource?.sourceId !== row.id ||
+      manifest.retainedSource?.registryId !== registry.registryId
+    ) {
+      fail();
+    }
+    const anchorManifest = JSON.parse(
+      (await bytes(path.join(anchored, 'manifest.json'))).toString('utf8'),
+    );
+    if (!legacy && anchorManifest.files?.[scopeEntry] === selected.scopeSha256) {
+      protectedScope = true;
+    }
+    if (dependencyBytes.length && dependencyBytes[dependencyBytes.length - 1] !== 10) {
+      fail();
+    }
+    const dependencyLines = dependencyBytes.toString('utf8').split('\n').filter(Boolean);
+    if (legacy) {
+      dependencyLines.shift();
+    }
+    for (const line of dependencyLines) {
+      const dependency = JSON.parse(line) as RetainedDependency;
+      if (dependency.kind === 'prepared-domain') {
+        if (
+          typeof dependency.dataDir !== 'string' ||
+          !(
+            path.posix.isAbsolute(dependency.dataDir) || path.win32.isAbsolute(dependency.dataDir)
+          ) ||
+          !Number.isSafeInteger(dependency.count) ||
+          dependency.count < 1
+        ) {
+          fail();
+        }
+        dependencies.push(dependency);
+        continue;
+      }
+      dependency.dataDir ??= null;
+      if (
+        !['artifact', 'prepared-result'].includes(dependency.kind) ||
+        !dependency.descriptor ||
+        !(
+          dependency.descriptor.sha256 === null ||
+          (typeof dependency.descriptor.sha256 === 'string' &&
+            hashPattern.test(dependency.descriptor.sha256))
+        ) ||
+        !(
+          dependency.descriptor.byteLength === null ||
+          (typeof dependency.descriptor.byteLength === 'number' &&
+            Number.isSafeInteger(dependency.descriptor.byteLength) &&
+            dependency.descriptor.byteLength > 0)
+        ) ||
+        !(dependency.descriptor.file === null || typeof dependency.descriptor.file === 'string') ||
+        !(
+          dependency.dataDir === null ||
+          (typeof dependency.dataDir === 'string' &&
+            (path.posix.isAbsolute(dependency.dataDir) ||
+              path.win32.isAbsolute(dependency.dataDir)))
+        ) ||
+        (dependency.kind === 'prepared-result' &&
+          (dependency.descriptor.sha256 === null ||
+            dependency.descriptor.byteLength === null ||
+            dependency.descriptor.file === null))
+      ) {
+        return null;
+      }
+      if (
+        dependency.kind === 'artifact' &&
+        (dependency.id !== dependency.descriptor.imageId || !Array.isArray(dependency.replicas))
+      ) {
+        fail();
+      }
+      if (
+        dependency.kind === 'artifact' &&
+        dependency.replicas.some(
+          (entry) =>
+            !entry ||
+            !entry.target ||
+            !entry.replica ||
+            !['local', 'r2', 'pikpak'].includes(entry.target.kind) ||
+            typeof entry.target.namespace !== 'string' ||
+            typeof entry.replica.objectKey !== 'string' ||
+            !['identity', 'br', 'gzip'].includes(entry.replica.encoding) ||
+            [entry.replica.deletedAt, entry.replica.uploadedAt, entry.replica.verifiedAt].some(
+              (at) => at !== null && (!Number.isSafeInteger(at) || at! < 0),
+            ),
+        )
+      ) {
+        fail();
+      }
+      dependencies.push(dependency);
+    }
+    for (const hold of active) {
+      if (hold.kind === 'remote') {
+        const object = hold.location as RetainedObject;
+        if (!scope.r2Namespaces.includes(object.namespace)) {
+          return null;
+        }
+        const key = object.namespace + '\n' + object.key;
+        if (expectedRemote.has(key) && !same(expectedRemote.get(key), object)) {
+          fail();
+        }
+        expectedRemote.set(key, object);
+      } else {
+        const location = path.resolve(hold.location as string),
+          roots = hold.kind === 'local' ? scope.localRoots : scope.archiveRoots;
+        if (
+          !roots.some(
+            (base) => comparablePath(path.resolve(base)) === comparablePath(path.dirname(location)),
+          )
+        ) {
+          return null;
+        }
+        if (hold.kind === 'local') {
+          await directory(location);
+          if (
+            (await retainedFileSha256(path.join(location, 'manifest.json'))) !==
+            row.binding.manifestSha256
+          ) {
+            fail();
+          }
+          await bindEvidence(path.join(location, 'manifest.json'));
+          const filename = path.join(location, 'data/library.sqlite'),
+            before = await regular(filename),
+            witness: SourceQualification = {
+              sourceId: row.id,
+              holdId: hold.id,
+              file: filename,
+              sourceSha256: row.binding.sourceSha256!,
+              dev: String(before.dev),
+              ino: String(before.ino),
+              size: String(before.size),
+              mtimeNs: String(before.mtimeNs),
+              ctimeNs: String(before.ctimeNs),
+            };
+          if (qualification) {
+            const selectedWitness = qualification.sources.find(
+              (value) => value.sourceId === row.id && value.holdId === hold.id,
+            );
+            if (
+              !same(witness, selectedWitness) ||
+              ['-wal', '-shm', '-journal'].some((suffix) => existsSync(filename + suffix))
+            ) {
+              fail();
+            }
+          } else {
+            const target = new Database(':memory:');
+            let snapshot: Database.Database | undefined;
+            try {
+              snapshot = openRelationalSnapshot(target, filename, row.binding.sourceSha256!);
+              const state = readRelationalRecoveryState(snapshot);
+              if (
+                state.history_id !== row.binding.historyId ||
+                state.last_commit_seq !== row.binding.finalCommitSeq
+              ) {
+                fail();
+              }
+            } finally {
+              snapshot?.close();
+              target.close();
+            }
+          }
+          const after = await regular(filename);
+          if (!sameFileIdentity(before, after)) {
+            fail();
+          }
+          qualifiedSources.push(witness);
+          await bindEvidence(filename);
+          expectedLocal.add(comparablePath(location));
+        } else {
+          const before = await regular(location),
+            witness: SourceQualification = {
+              sourceId: row.id,
+              holdId: hold.id,
+              file: location,
+              sourceSha256: row.binding.sourceSha256!,
+              dev: String(before.dev),
+              ino: String(before.ino),
+              size: String(before.size),
+              mtimeNs: String(before.mtimeNs),
+              ctimeNs: String(before.ctimeNs),
+            };
+          if (qualification) {
+            if (
+              !same(
+                witness,
+                qualification.sources.find(
+                  (value) => value.sourceId === row.id && value.holdId === hold.id,
+                ),
+              )
+            ) {
+              fail();
+            }
+          } else if ((await retainedFileSha256(location)) !== row.binding.sourceSha256) {
+            fail();
+          }
+          if (!sameFileIdentity(before, await regular(location))) {
+            fail();
+          }
+          qualifiedSources.push(witness);
+          await bindEvidence(location);
+          expectedArchive.add(comparablePath(location));
+        }
+      }
+    }
+  }
+  if (!protectedScope) {
+    return null;
+  }
+  const observed: unknown[] = [];
+  for (const [roots, expected] of [
+    [scope.localRoots, expectedLocal],
+    [scope.archiveRoots, expectedArchive],
+  ] as const) {
+    const actual = new Set<string>();
+    for (const base of roots) {
+      if (!path.isAbsolute(base)) {
+        fail();
+      }
+      await directory(base);
+      for (const entry of await readdir(base)) {
+        const location = path.join(base, entry),
+          stat = await lstat(location);
+        if (stat.isSymbolicLink()) {
+          return null;
+        }
+        actual.add(comparablePath(location));
+      }
+    }
+    if (actual.size !== expected.size || [...actual].some((location) => !expected.has(location))) {
+      return null;
+    }
+    observed.push([...actual].sort());
+  }
+  const remote = new Map<string, RetainedObject>();
+  for (const namespace of scope.r2Namespaces) {
+    const client = configuration.r2;
+    if (
+      !(client instanceof R2Storage) ||
+      namespace !== `r2://${client.config.accountId}/${client.config.bucket}`
+    ) {
+      return null;
+    }
+    for (const row of await client.listBackups()) {
+      const match = /^backups\/(?:daily|cutover)-[0-9TZ.]+\/([a-f0-9]{64})$/.exec(row.key);
+      if (!match) {
+        return null;
+      }
+      const object = {
+        namespace,
+        bucket: client.config.bucket,
+        key: row.key,
+        byteLength: row.bytes,
+        sha256: match[1],
+      };
+      if (!validObject(object)) {
+        fail();
+      }
+      const key = namespace + '\n' + row.key;
+      if (remote.has(key)) {
+        fail();
+      }
+      remote.set(key, object);
+    }
+  }
+  if (
+    remote.size !== expectedRemote.size ||
+    [...remote].some(([key, object]) => !same(expectedRemote.get(key), object))
+  ) {
+    return null;
+  }
+  observed.push([...remote].sort(([a], [b]) => a.localeCompare(b)));
+  const assertEvidence = () => {
+    for (const [filename, identity] of evidenceFiles) {
+      const current = lstatSync(filename, { bigint: true });
+      if (
+        !current.isFile() ||
+        current.isSymbolicLink() ||
+        current.nlink !== 1n ||
+        current.dev !== identity.dev ||
+        current.ino !== identity.ino ||
+        current.size !== identity.size ||
+        current.mtimeNs !== identity.mtimeNs ||
+        current.ctimeNs !== identity.ctimeNs
+      ) {
+        fail();
+      }
+    }
+  };
+  return {
+    dependencies,
+    qualifiedSources,
+    assertEvidence,
+    r2Namespaces: scope.r2Namespaces,
+    proofSha256: digest({
+      registryId: registry.registryId,
+      revision: registry.revision,
+      selected,
+      observed,
+      qualifiedSources,
+    }),
+  };
+}
+export async function adoptRetainedInventory(
+  root: string,
+  selected: RetainedInventorySelection,
+  configuration: InventoryConfiguration = {},
+) {
+  return mutate(root, async (registry, actualRoot) => {
+    const proof = await verifiedInventory(actualRoot, registry, selected, configuration);
+    if (!proof) {
+      fail();
+    }
+    proof.assertEvidence();
+    const rootIdentity = await lstat(actualRoot, { bigint: true }),
+      qualification: InventoryQualification = {
+        format: 'novelai-retained-qualification-v1',
+        registryId: registry.registryId,
+        root: { path: actualRoot, dev: String(rootIdentity.dev), ino: String(rootIdentity.ino) },
+        selectionSha256: digest(selected),
+        sources: proof.qualifiedSources,
+      },
+      filename = path.join(actualRoot, 'qualification-' + randomUUID() + '.json'),
+      text = JSON.stringify(qualification) + '\n';
+    await immutableFile(filename, text);
+    registry.coverage = {
+      selection: structuredClone(selected),
+      qualification: { file: filename, sha256: createHash('sha256').update(text).digest('hex') },
+    };
+    return { registryId: registry.registryId, adopted: true };
+  });
+}
+function validReleaseClaim(claim: RetainedArtifactReleaseClaim) {
+  if (
+    !claim ||
+    typeof claim.artifactId !== 'string' ||
+    !claim.artifactId ||
+    !hashPattern.test(claim.sha256) ||
+    !Number.isSafeInteger(claim.byteLength) ||
+    claim.byteLength < 1 ||
+    !claim.source ||
+    !claim.destination ||
+    !['local', 'r2'].includes(claim.source.kind) ||
+    claim.source.encoding !== 'identity' ||
+    !['r2', 'pikpak'].includes(claim.destination.kind) ||
+    claim.destination.encoding !== (claim.destination.kind === 'r2' ? 'identity' : 'br') ||
+    [claim.source, claim.destination].some(
+      (value) =>
+        typeof value.namespace !== 'string' ||
+        !value.namespace ||
+        typeof value.objectKey !== 'string' ||
+        !value.objectKey,
+    ) ||
+    (claim.source.kind === 'local' &&
+      (typeof claim.source.dataDir !== 'string' || !path.isAbsolute(claim.source.dataDir)))
+  ) {
+    fail();
+  }
+}
+function dependenciesProtect(
+  dependencies: RetainedDependency[],
+  claim: RetainedArtifactReleaseClaim,
+) {
+  const claimRoot =
+    claim.source.kind === 'local' ? sourceRootNamespace(claim.source.dataDir!) : null;
+  for (const row of dependencies) {
+    if (row.kind === 'prepared-domain') {
+      if (claim.source.kind === 'local' && sourceRootNamespace(row.dataDir) === claimRoot) {
+        return true;
+      }
+      continue;
+    }
+    if (
+      claim.source.kind === 'local' &&
+      row.kind === 'artifact' &&
+      !row.replicas.some(
+        (entry) => entry.target.kind === 'local' && entry.replica.deletedAt === null,
+      )
+    ) {
+      continue;
+    }
+    if (claim.source.kind === 'local' && !row.dataDir) {
+      return true;
+    }
+    const sourceRoot = claim.source.kind === 'local' ? sourceRootNamespace(row.dataDir!) : null;
+    if (row.kind === 'prepared-result') {
+      if (
+        claim.source.kind === 'local' &&
+        sourceRoot === claimRoot &&
+        row.descriptor.file === 'images/' + claim.source.objectKey
+      ) {
+        return true;
+      }
+      continue;
+    }
+    const key = (value: string) => (sourceRoot?.startsWith('win32:') ? value.toLowerCase() : value);
+    const sources = row.replicas.filter(
+      (entry) =>
+        entry.replica.deletedAt === null &&
+        entry.target.kind === claim.source.kind &&
+        key(entry.replica.objectKey) === key(claim.source.objectKey) &&
+        (claim.source.kind === 'local'
+          ? sourceRoot === claimRoot
+          : entry.target.namespace === claim.source.namespace),
+    );
+    if (!sources.length) {
+      continue;
+    }
+    if (
+      sources.some(
+        (entry) =>
+          entry.target.namespace !== claim.source.namespace ||
+          entry.replica.encoding !== claim.source.encoding,
+      ) ||
+      row.descriptor.sha256 !== claim.sha256 ||
+      row.descriptor.byteLength !== claim.byteLength ||
+      !row.replicas.some(
+        (entry) =>
+          entry.target.kind === claim.destination.kind &&
+          entry.target.namespace === claim.destination.namespace &&
+          entry.replica.objectKey === claim.destination.objectKey &&
+          entry.replica.encoding === claim.destination.encoding &&
+          entry.replica.deletedAt === null &&
+          (entry.target.kind === 'pikpak'
+            ? entry.replica.uploadedAt !== null
+            : entry.replica.verifiedAt !== null),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+export async function withRetainedArtifactRelease<T>(
+  root: string,
+  claim: RetainedArtifactReleaseClaim,
+  run: (permit: RetainedArtifactReleasePermit) => Promise<T>,
+  configuration: InventoryConfiguration = {},
+): Promise<T | null> {
+  validReleaseClaim(claim);
+  return mutate(root, async (registry, actualRoot, guard) => {
+    if (registry.coverage === 'unknown') {
+      return null;
+    }
+    const qualificationBytes = await bytes(registry.coverage.qualification.file);
+    if (
+      createHash('sha256').update(qualificationBytes).digest('hex') !==
+      registry.coverage.qualification.sha256
+    ) {
+      fail();
+    }
+    const qualification = JSON.parse(qualificationBytes.toString('utf8')) as InventoryQualification,
+      actualIdentity = await lstat(actualRoot, { bigint: true });
+    if (
+      qualification.format !== 'novelai-retained-qualification-v1' ||
+      qualification.registryId !== registry.registryId ||
+      !same(qualification.root, {
+        path: actualRoot,
+        dev: String(actualIdentity.dev),
+        ino: String(actualIdentity.ino),
+      }) ||
+      qualification.selectionSha256 !== digest(registry.coverage.selection) ||
+      !Array.isArray(qualification.sources)
+    ) {
+      fail();
+    }
+    const proof = await verifiedInventory(
+      actualRoot,
+      registry,
+      registry.coverage.selection,
+      configuration,
+      qualification,
+    );
+    if (!proof || dependenciesProtect(proof.dependencies, claim)) {
+      return null;
+    }
+    guard.assertCurrent();
+    const permit = Object.freeze({}) as RetainedArtifactReleasePermit;
+    const qualificationIdentity = await regular(registry.coverage.qualification.file);
+    const assertEvidence = () => {
+      proof.assertEvidence();
+      const actual = lstatSync(
+        registry.coverage === 'unknown' ? '' : registry.coverage.qualification.file,
+        { bigint: true },
+      );
+      if (
+        !actual.isFile() ||
+        actual.isSymbolicLink() ||
+        !sameFileIdentity(actual, qualificationIdentity)
+      ) {
+        fail();
+      }
+    };
+    releasePermits.set(permit, {
+      guard: {
+        active: true,
+        assertCurrent() {
+          guard.assertCurrent();
+          assertEvidence();
+        },
+      },
+      claim: structuredClone(claim),
+      evidence: {
+        registryId: registry.registryId,
+        revision: registry.revision,
+        proofSha256: proof.proofSha256,
+      },
+    });
+    try {
+      const result = await run(permit);
+      assertEvidence();
+      return result;
+    } finally {
+      releasePermits.delete(permit);
+    }
+  });
+}
+export function assertRetainedArtifactReleasePermit(
+  permit: RetainedArtifactReleasePermit,
+  claim: RetainedArtifactReleaseClaim,
+) {
+  const proof = releasePermits.get(permit);
+  if (!proof || !proof.guard.active || !same(proof.claim, claim)) {
+    fail();
+  }
+  proof.guard.assertCurrent();
+  return { ...proof.evidence };
+}
 function source(registry: Registry, id: string) {
   const row = registry.sources.find((s) => s.id === id);
   if (!row) {
@@ -735,12 +1814,23 @@ export async function bindRetainedCapture(
   binding: RetainedBinding,
   dependenciesFile?: string,
   finalLocation?: string,
+  resolvedFile?: string,
 ) {
   return mutate(root, async (registry, selected) => {
     const row = source(registry, id);
     if (row.binding) {
+      const original = row.binding,
+        base = { ...binding, dependencies: 'unknown' as const };
+      delete base.resolvedDependenciesSha256;
+      const refinement =
+        original.format === 'legacy-export' &&
+        original.dependencies === 'unknown' &&
+        !original.resolvedDependenciesSha256 &&
+        binding.dependencies === 'known' &&
+        !!binding.resolvedDependenciesSha256 &&
+        same(original, base);
       if (
-        !same(row.binding, binding) ||
+        (!same(original, binding) && !refinement) ||
         (finalLocation && row.holds[0].location !== finalLocation)
       ) {
         fail();
@@ -755,7 +1845,23 @@ export async function bindRetainedCapture(
       ) {
         fail();
       }
+      if (refinement) {
+        if (
+          !resolvedFile ||
+          (await retainedFileSha256(resolvedFile)) !== binding.resolvedDependenciesSha256
+        ) {
+          fail();
+        }
+        await immutableCopy(
+          resolvedFile,
+          path.join(stored, 'resolved-dependencies.jsonl'),
+          binding.resolvedDependenciesSha256!,
+        );
+      }
       await boundLegacyExport(stored, binding);
+      if (refinement) {
+        row.binding = binding;
+      }
       return { sourceId: id };
     }
     if (row.holds.some((h) => h.state !== 'preparing')) {
@@ -771,6 +1877,13 @@ export async function bindRetainedCapture(
     ) {
       fail();
     }
+    if (
+      binding.resolvedDependenciesSha256 &&
+      (!resolvedFile ||
+        (await retainedFileSha256(resolvedFile)) !== binding.resolvedDependenciesSha256)
+    ) {
+      fail();
+    }
     const target = path.join(selected, 'sources', id);
     await directory(path.join(selected, 'sources'));
     await mkdir(target, { mode: 0o700, recursive: true });
@@ -781,6 +1894,13 @@ export async function bindRetainedCapture(
         dependenciesFile,
         path.join(target, 'dependencies.jsonl'),
         binding.dependenciesSha256,
+      );
+    }
+    if (resolvedFile && binding.resolvedDependenciesSha256) {
+      await immutableCopy(
+        resolvedFile,
+        path.join(target, 'resolved-dependencies.jsonl'),
+        binding.resolvedDependenciesSha256,
       );
     }
     await boundLegacyExport(target, binding);
@@ -1128,10 +2248,17 @@ export async function checkpointRetainedSources(root: string, filename: string) 
           row.binding.dependenciesSha256,
         );
       }
+      if (row.binding.resolvedDependenciesSha256) {
+        await immutableCopy(
+          path.join(from, 'resolved-dependencies.jsonl'),
+          path.join(to, 'resolved-dependencies.jsonl'),
+          row.binding.resolvedDependenciesSha256,
+        );
+      }
     }
     await immutableFile(
       path.join(filename, 'registry.json'),
-      JSON.stringify(registry, null, 2) + '\n',
+      JSON.stringify({ ...registry, coverage: 'unknown' }, null, 2) + '\n',
     );
     const sha256 = await retainedFileSha256(path.join(filename, 'registry.json'));
     await immutableFile(
@@ -1155,6 +2282,8 @@ export async function restoreRetainedSources(
     fail();
   }
   const restored = await readProtectedRetainedRegistry(filename, expectedSha256);
+  // 部署资格含原live root/文件身份，不能随备份复制到另一个lease域继续授权。
+  restored.coverage = 'unknown';
   // checkpoint 的外部 SHA 来自已验证包；恢复保留责任，不把目录缺失解释成空保护域。
   await directory(path.dirname(path.resolve(root)));
   await mkdir(path.resolve(root), { mode: 0o700 });
@@ -1178,6 +2307,13 @@ export async function restoreRetainedSources(
         path.join(from, 'dependencies.jsonl'),
         path.join(to, 'dependencies.jsonl'),
         row.binding.dependenciesSha256,
+      );
+    }
+    if (row.binding.resolvedDependenciesSha256) {
+      await immutableCopy(
+        path.join(from, 'resolved-dependencies.jsonl'),
+        path.join(to, 'resolved-dependencies.jsonl'),
+        row.binding.resolvedDependenciesSha256,
       );
     }
   }

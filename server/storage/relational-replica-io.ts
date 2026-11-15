@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import { lstat, open, unlink } from 'node:fs/promises';
+import path from 'node:path';
 import { domainDigest } from '../events/domain-events.ts';
 import {
   publishStoredResult,
@@ -12,6 +14,11 @@ import {
   type RelationalReplicaConfiguration,
   type RelationalReplicaReadConfiguration,
 } from './relational-replica-store.ts';
+import {
+  withRetainedArtifactRelease,
+  assertRetainedArtifactReleasePermit,
+  type RetainedArtifactReleasePermit,
+} from './retained-sources.ts';
 
 export async function relationalArtifactReferenceAvailable(
   sqlite: Database.Database,
@@ -169,16 +176,17 @@ function failed(
   store: RelationalReplicaStore,
   ticket: Ticket,
   now: () => number,
+  errorCode = 'REPLICA_IO_FAILED',
 ) {
   // 旧配置/并发提交使票据失效时，不用旧 IO 结果覆盖新状态；外部副本留给后续核对。
   try {
-    record(sqlite, store, ticket, 'failed', now, 'REPLICA_IO_FAILED');
+    record(sqlite, store, ticket, 'failed', now, errorCode);
   } catch {
     // 保留原异常，失败状态也必须通过同一票据及保存点守卫。
   }
 }
 
-// 当前只复制和确认，保留所有源副本；归档引用闭包完成前没有删除入口。
+// 本命令只复制和确认；源释放由下方持保留源 lease 的独立命令完成。
 export async function copyRelationalArtifactReplica(
   sqlite: Database.Database,
   artifactId: string,
@@ -338,4 +346,157 @@ export async function verifyRelationalArtifactReplica(
     failed(sqlite, store, ticket, now);
     throw error;
   }
+}
+
+type Release = ReturnType<RelationalReplicaStore['beginArtifactRelease']>;
+async function localRelease(
+  sqlite: Database.Database,
+  store: RelationalReplicaStore,
+  release: Release,
+  permit: RetainedArtifactReleasePermit,
+  now: () => number,
+) {
+  const source = release.claim.source;
+  if (source.kind !== 'local' || !source.dataDir || source.namespace !== 'images') {
+    throw new Error('Local source release requires its original physical root.');
+  }
+  const directory = path.resolve(source.dataDir, source.namespace),
+    filename = path.resolve(directory, source.objectKey),
+    originalDirectory = await lstat(directory, { bigint: true });
+  if (
+    path.dirname(filename) !== directory ||
+    !originalDirectory.isDirectory() ||
+    originalDirectory.isSymbolicLink()
+  ) {
+    throw new Error('Local source release requires a regular original image directory.');
+  }
+  const stat = () =>
+    lstat(filename, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') {
+        return null;
+      }
+      throw error;
+    });
+  const original = await stat();
+  if (original) {
+    if (!original.isFile() || original.isSymbolicLink()) {
+      throw new Error('Local source release requires a regular original file.');
+    }
+    // A retry may observe absence after DELETE/unlink succeeded but its SQL acknowledgement failed.
+    // Existing bytes still have to match the original descriptor before they can be removed.
+    if (!(await readStoredResultContent(source.dataDir, release.artifact.descriptor))) {
+      throw new Error('Local source changed before release.');
+    }
+  }
+  const current = await stat(),
+    currentDirectory = await lstat(directory, { bigint: true });
+  if (
+    originalDirectory.dev !== currentDirectory.dev ||
+    originalDirectory.ino !== currentDirectory.ino ||
+    currentDirectory.isSymbolicLink() ||
+    (original === null
+      ? current !== null
+      : !current ||
+        current.dev !== original.dev ||
+        current.ino !== original.ino ||
+        current.size !== original.size ||
+        current.mtimeNs !== original.mtimeNs ||
+        current.ctimeNs !== original.ctimeNs)
+  ) {
+    throw new Error('Local source identity changed before release.');
+  }
+  store.assertArtifactReleaseTicket(release.ticket, now());
+  assertRetainedArtifactReleasePermit(permit, release.claim);
+  if (current) {
+    try {
+      await unlink(filename);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        failed(sqlite, store, release.source.ticket, now, 'REPLICA_RELEASE_FAILED');
+        throw error;
+      }
+    }
+  }
+  if (process.platform !== 'win32') {
+    const handle = await open(directory, 'r');
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+}
+
+// The registry lease spans the physical operation and its acknowledgement. No SQL transaction spans
+// IO. A failed acknowledgement cannot roll back external deletion; retry confirms absence instead.
+export async function releaseRelationalArtifactReplica(
+  sqlite: Database.Database,
+  artifactId: string,
+  kind: 'local' | 'r2',
+  configuration: RelationalReplicaConfiguration,
+  now = Date.now,
+) {
+  if (sqlite.inTransaction) {
+    throw new Error('Replica release IO cannot hold a SQL transaction.');
+  }
+  if (!configuration.retainedSources) {
+    return null;
+  }
+  if (!configuration.idle()) {
+    throw new Error('Replica release requires the current idle background.');
+  }
+  const store = new RelationalReplicaStore(sqlite, configuration),
+    source = store.readConfiguredStorageTarget(kind),
+    current = store.readArtifactReplica(artifactId, source.storageTargetId);
+  if (current?.deletedAt != null) {
+    return current;
+  }
+  const release = store.beginArtifactRelease(artifactId, kind, now());
+  return withRetainedArtifactRelease(
+    configuration.retainedSources,
+    release.claim,
+    async (permit) => {
+      store.assertArtifactReleaseTicket(release.ticket, now());
+      assertRetainedArtifactReleasePermit(permit, release.claim);
+      if (kind === 'local') {
+        await localRelease(sqlite, store, release, permit, now);
+      } else {
+        try {
+          await configuration.r2!.removeImage({
+            bucket: configuration.r2!.config.bucket,
+            key: release.source.replica.objectKey,
+            sha256: release.artifact.sha256,
+            byteLength: release.artifact.byteLength,
+            verifiedAt: new Date(release.source.replica.verifiedAt!).toISOString(),
+            pikpak: {
+              url: release.destination.target.namespace,
+              uploadedAt: new Date(release.destination.replica.uploadedAt!).toISOString(),
+            },
+          });
+        } catch (error) {
+          // The remote may have deleted the object before its reply was lost. Preserve that unknown
+          // attempt and retry DELETE after the original delay; do not PUT or re-verify it as a new copy.
+          failed(sqlite, store, release.source.ticket, now, 'REPLICA_RELEASE_FAILED');
+          throw error;
+        }
+      }
+      sqlite
+        .transaction(() =>
+          store.recordArtifactRelease(
+            metadata(
+              store,
+              artifactId,
+              `release:${release.source.target.storageTargetId}:${release.destination.target.storageTargetId}`,
+              `${release.source.replica.sourceEventId}:${release.destination.replica.sourceEventId}`,
+              now,
+            ),
+            release.ticket,
+            permit,
+          ),
+        )
+        .immediate();
+      return store.readArtifactReplica(artifactId, source.storageTargetId)!;
+    },
+    { r2: configuration.r2 ?? undefined },
+  );
 }

@@ -153,6 +153,7 @@ try {
     'database-model-inventory.mjs',
     'restore-relational.mjs',
     'retained-sources.mjs',
+    'resolve-legacy-retained-dependencies.mjs',
     'verify-migration-package.mjs',
   ]) {
     await copyFile(path.join(compiled, 'scripts', name), path.join(bundle, 'scripts', name));
