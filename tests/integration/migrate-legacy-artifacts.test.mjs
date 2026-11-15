@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import path from 'node:path';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { mapLegacyArtifacts } from '../../scripts/migrate-legacy-artifacts.mjs';
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
@@ -8,7 +12,10 @@ import { readRelationalCommit } from '../../server/events/relational-event-store
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import { databaseState } from '../helpers/relational-generation.mjs';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { readRelationalArtifactContent } from '../../server/storage/relational-replica-io.ts';
+import { readStoredResultContent } from '../../server/storage/result-files.ts';
+import { databaseState, image } from '../helpers/relational-generation.mjs';
 
 const NOW = 1800000000000,
   EPOCH = '1970-01-01T00:00:00.000Z',
@@ -113,7 +120,7 @@ function database(t) {
   t.after(() => db.close());
   return db;
 }
-function fixture(t) {
+function fixture(t, { manifestSha256 = 'b'.repeat(64) } = {}) {
   const db = database(t),
     r = refs(),
     inputs = new RelationalInputStore(db);
@@ -126,7 +133,7 @@ function fixture(t) {
         sourceCommit: '3caba3d',
         cutoffSeq: '1',
         cutoffAt: NOW,
-        manifestSha256: 'b'.repeat(64),
+        manifestSha256,
         route: 'B',
       },
       memberId: null,
@@ -458,4 +465,227 @@ test('artifact mapper retains original noncanonical locator and tombstone zero w
     () => mapLegacyArtifacts(null, f.refs, metadata([row])),
     /proven source relationships/,
   );
+});
+
+function materialization(row, verifiedAt = NOW + 200) {
+  return {
+    artifactId: row.id,
+    memberId: 'm1',
+    inputId: 'input-a',
+    sha256: row.sha256,
+    byteLength: row.byteLength,
+    file: `images/${row.id}.webp`,
+    verifiedAt,
+    proofRef: `copy-read:${row.id}`,
+  };
+}
+function materializedMetadata(row, proof) {
+  return metadata([row], { localMaterializationsByArtifact: new Map([[row.id, proof]]) });
+}
+function bindMaterializations(r, manifest) {
+  r.boundLocalMaterializationProofs = new Map(
+    manifest.localMaterializations.map((proof) => [proof.proofRef, domainDigest(proof)]),
+  );
+}
+
+test('one bound current Local copy becomes a new baseline; source tombstone and publication stay original and common reader rechecks real bytes', async (t) => {
+  const noNetwork = t.mock.method(globalThis, 'fetch', () =>
+    assert.fail('Local/replay must not fetch'),
+  );
+  const row = descriptor(),
+    sha256 = createHash('sha256').update(image).digest('hex'),
+    root = path.resolve(tmpdir()),
+    directory = await mkdtemp(path.join(root, 'migrate-artifact-'));
+  t.after(async () => {
+    assert.equal(path.dirname(directory), root);
+    assert.ok(path.basename(directory).startsWith('migrate-artifact-'));
+    await rm(directory, { recursive: true, force: true });
+  });
+  row.file = 'images/original-a.webp';
+  row.sha256 = sha256;
+  row.byteLength = image.length;
+  row.r2 = {
+    ...row.r2,
+    key: `images/${row.id}/${sha256}`,
+    sha256,
+    byteLength: image.length,
+    localRemovedAt: EPOCH,
+    removedAt: EPOCH,
+  };
+  row.pikpak = null;
+  const original = structuredClone(row);
+  await mkdir(path.join(directory, 'images'));
+  await writeFile(path.join(directory, row.file), image, { flag: 'wx', mode: 0o600 });
+  const checked = await readStoredResultContent(directory, {
+    imageId: row.id,
+    operation: null,
+    mimeType: row.mimeType,
+    sha256,
+    byteLength: image.length,
+    file: row.file,
+  });
+  assert.deepEqual(checked.buffer, image);
+  const proof = materialization(row, Date.now()),
+    manifest = { sourceSha256, localMaterializations: [proof] },
+    f = fixture(t, { manifestSha256: domainDigest(manifest) });
+  bindMaterializations(f.refs, manifest);
+  const mapped = mapLegacyArtifacts(null, f.refs, materializedMetadata(row, proof));
+  assert.deepEqual(row, original);
+  assert.equal(row.r2.localRemovedAt, EPOCH);
+  assert.equal(
+    mapped.findings.some((e) => e.code === 'LOCAL_BYTES_NOT_VERIFIED'),
+    false,
+  );
+  append(f.db, 'materialized-current-baseline', mapped.facts);
+  const local = f.db
+    .prepare(
+      "SELECT r.* FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='local'",
+    )
+    .get();
+  assert.equal(local.uploaded_at, null);
+  assert.equal(local.verified_at, proof.verifiedAt);
+  assert.equal(local.deleted_at, null);
+  const stored = f.db
+    .prepare('SELECT payload FROM domain_events WHERE event_id=?')
+    .get(local.source_event_id);
+  assert.equal(JSON.parse(stored.payload).origin.originalId, proof.proofRef);
+  assert.equal(f.db.prepare('SELECT published_at FROM artifacts').get().published_at, null);
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT json_extract(payload,'$.manifestSha256') AS hash FROM domain_events WHERE event_type='ImportSourceRegistered'",
+      )
+      .get().hash,
+    domainDigest(manifest),
+  );
+  const before = databaseState(f.db),
+    bytes = await readRelationalArtifactContent(f.db, row.id, { dataDir: directory });
+  assert.deepEqual(bytes.buffer, image);
+  const target = database(t);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() =>
+      new RelationalCommitReplayer(target).replayCommit(readRelationalCommit(f.db, seq), f.inputs),
+    )();
+  }
+  assert.equal(databaseState(target), before);
+  for (const table of ['api_keys', 'member_sessions', 'upstream_credentials']) {
+    assert.equal(target.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+  }
+  await writeFile(path.join(directory, row.file), Buffer.from('damaged new target'));
+  await assert.rejects(
+    readRelationalArtifactContent(f.db, row.id, { dataDir: directory }),
+    (error) => error.statusCode === 503,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(noNetwork.mock.callCount(), 0);
+});
+
+test('materialization proof must be the manifest-bound exact source tuple, canonical target and real integer time; no verified flag', (t) => {
+  const row = descriptor(),
+    proof = materialization(row),
+    manifest = { sourceSha256, localMaterializations: [proof] },
+    f = fixture(t, { manifestSha256: domainDigest(manifest) }),
+    before = databaseState(f.db);
+  for (const patch of [
+    { artifactId: 'original-b' },
+    { memberId: 'm2' },
+    { inputId: 'input-b' },
+    { sha256: 'f'.repeat(64) },
+    { byteLength: row.byteLength + 1 },
+    { file: 'images/../outside.webp' },
+    { file: 'images/not-the-artifact.webp' },
+    { verifiedAt: null },
+    { verifiedAt: '0' },
+    { verifiedAt: -1 },
+    { verified: true },
+  ]) {
+    const changed = { ...proof, ...patch };
+    bindMaterializations(f.refs, { localMaterializations: [changed] });
+    assert.throws(
+      () => mapLegacyArtifacts(null, f.refs, materializedMetadata(row, changed)),
+      /proven source relationships/,
+    );
+  }
+  f.refs.boundLocalMaterializationProofs = new Map();
+  assert.throws(
+    () => mapLegacyArtifacts(null, f.refs, materializedMetadata(row, proof)),
+    /proven source relationships/,
+  );
+  f.refs.boundLocalMaterializationProofs.set(proof.proofRef, 'a'.repeat(64));
+  assert.throws(
+    () => mapLegacyArtifacts(null, f.refs, materializedMetadata(row, proof)),
+    /proven source relationships/,
+  );
+  bindMaterializations(f.refs, manifest);
+  const unknown = metadata([row], {
+    localMaterializationsByArtifact: new Map([['not-a-source-artifact', proof]]),
+  });
+  assert.throws(() => mapLegacyArtifacts(null, f.refs, unknown), /proven source relationships/);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('a copied retired artifact remains retired; existing Local tombstone cannot be cleared and SQL tail still rolls back the current baseline', (t) => {
+  const row = descriptor(),
+    proof = materialization(row),
+    manifest = { sourceSha256, localMaterializations: [proof] },
+    f = fixture(t, { manifestSha256: domainDigest(manifest) });
+  row.file = proof.file;
+  row.r2.localRemovedAt = EPOCH;
+  row.pikpak = null;
+  bindMaterializations(f.refs, manifest);
+  f.refs.artifactHistoryById = new Map([
+    [
+      row.id,
+      {
+        memberId: 'm1',
+        inputId: 'input-a',
+        sha256: row.sha256,
+        byteLength: row.byteLength,
+        publishedAt: null,
+        retiredAt: 0,
+      },
+    ],
+  ]);
+  const mapped = mapLegacyArtifacts(null, f.refs, materializedMetadata(row, proof)),
+    before = databaseState(f.db);
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_materialization BEFORE INSERT ON main.artifact_replicas BEGIN SELECT RAISE(ABORT,'materialization SQL tail'); END",
+  );
+  f.db.transaction(() => {
+    assert.throws(
+      () =>
+        new RelationalCommitReplayer(f.db).appendCommit(
+          command(f.db, 'failed-materialization', mapped.facts),
+        ),
+      /materialization SQL tail/,
+    );
+    assert.equal(databaseState(f.db), before);
+  })();
+  f.db.exec('DROP TRIGGER temp.fail_materialization');
+  append(f.db, 'materialized-retired', mapped.facts);
+  assert.equal(f.db.prepare('SELECT retired_at FROM artifacts').get().retired_at, 0);
+  assert.throws(() => new RelationalReplicaStore(f.db).readArtifactCacheReference(row.id), /退休/);
+  const other = fixture(t),
+    old = mapLegacyArtifacts(null, other.refs, metadata([row]));
+  append(other.db, 'old-local-tombstone', old.facts);
+  bindMaterializations(other.refs, manifest);
+  const replacement = mapLegacyArtifacts(
+    null,
+    other.refs,
+    materializedMetadata(row, proof),
+  ).facts.find(
+    (e) => e.eventType === 'OpeningReplicaRecorded' && e.payload.verifiedAt === proof.verifiedAt,
+  );
+  replacement.eventId = other.refs.eventId(
+    'OpeningReplicaRecorded',
+    'second-opening-is-not-a-clear',
+  );
+  const stable = databaseState(other.db);
+  assert.throws(
+    () => append(other.db, 'must-not-clear-tombstone', [replacement]),
+    /副本来源、编码或状态迁移不一致/,
+  );
+  assert.equal(databaseState(other.db), stable);
 });
