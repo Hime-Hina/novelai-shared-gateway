@@ -294,7 +294,12 @@ test('旧owner ack/config变化不能留旧owner或新owner Cookie；无原versi
     };
   });
   const summary = f.db.transaction(() => migrateLegacyPrivate(f.db, f.normalized, f.refs))();
-  assert.equal(summary.unavailablePasswords, 1);
+  assert.equal(summary.unavailablePasswords, 2); // no original epoch and explicitly disabled
+  for (const id of ['api-only', 'disabled'])
+    assert.deepEqual(
+      f.db.prepare('SELECT salt,password_hash FROM password_credentials WHERE member_id=?').get(id),
+      { salt: null, password_hash: null },
+    );
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, 0);
   const members = new RelationalMemberStore(f.db);
   assert.equal((await authenticateMemberApiKey(members, 'STA1N-current-api-only')).id, 'api-only');
@@ -388,6 +393,53 @@ test('原Discord关闭时忽略旧false缓存保当前Key和原Cookie；启用�
       /Selected legacy private/,
     );
     assert.equal(databaseState(invalid.db), before);
+  }
+});
+
+test('原enabled未知仅保合法Raw Key，不借新active投影激活password或Cookie；原true正常材料仍可认证', async (t) => {
+  for (const enabled of [undefined, null, false, true]) {
+    const token = 's'.repeat(43);
+    const f = fixture(t, (value) => {
+      value.discordLoginEnabled = false;
+      value.configuredOwner.guildId = '';
+      value.sessionOwner.guildId = '';
+      const source = value.users.find((row) => row.id === 'ordinary').data;
+      if (enabled === undefined) delete source.enabled;
+      else source.enabled = enabled;
+      source.memberAuth = {
+        username: 'old-discord-username',
+        salt,
+        hash: passwordHash,
+        version: epoch,
+      };
+      value.sessions.find((row) => row.user_id === 'ordinary').token_hash = digest(token);
+    });
+    f.db.transaction(() => migrateLegacyPrivate(f.db, f.normalized, f.refs))();
+    const members = new RelationalMemberStore(f.db);
+    assert.equal(
+      (await authenticateMemberApiKey(members, 'STA1N-current-ordinary'))?.id ?? null,
+      enabled === false ? null : 'ordinary',
+    );
+    if (enabled === true)
+      assert.equal(
+        (await members.loginMemberPassword('old-discord-username', password)).id,
+        'ordinary',
+      );
+    else
+      await assert.rejects(
+        members.loginMemberPassword('old-discord-username', password),
+        (error) => error.statusCode === 401,
+      );
+    if (enabled !== true)
+      assert.deepEqual(
+        f.db
+          .prepare("SELECT salt,password_hash FROM password_credentials WHERE member_id='ordinary'")
+          .get(),
+        { salt: null, password_hash: null },
+      );
+    const restored = await authenticateMemberSession(members, token, {}, 1000);
+    assert.equal(restored?.user.id ?? null, enabled === true ? 'ordinary' : null);
+    if (restored) assert.equal(restored.expiresAt, 5000);
   }
 });
 
