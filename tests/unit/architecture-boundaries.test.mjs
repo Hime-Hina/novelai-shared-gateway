@@ -17,6 +17,7 @@ test('online runtime rejects offline migration imports and re-exports', () => {
       ['migrate-legacy-artifacts', 'mapLegacyArtifacts'],
       ['reconcile-legacy-database', 'assertLegacyDatabaseProjection'],
       ['materialize-legacy-originals', 'materializeLegacyOriginals'],
+      ['resolve-legacy-retained-dependencies', 'resolveLegacyRetainedDependencies'],
     ]) {
       for (const suffix of ['', '?version=1', '#module']) {
         const specifier = `${prefix}${module}.mjs${suffix}`;
@@ -45,6 +46,20 @@ test('online runtime rejects offline migration imports and re-exports', () => {
     checkSource(
       'scripts/migrate-legacy-database.mjs',
       "import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    checkSource(
+      'scripts/resolve-legacy-retained-dependencies.mjs',
+      "import { JsonStore } from '../server/storage/sqlite-store.ts';",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    checkSource(
+      'scripts/offline-import.mjs',
+      "import { resolveLegacyRetainedDependencies } from './resolve-legacy-retained-dependencies.mjs';",
     ),
     [],
   );
@@ -127,6 +142,8 @@ const mixedWriterSources = [
   ['appendDomainCommit', '../events/event-store.ts'],
   ['beginDomainCommand', '../events/domain-events.ts'],
   ['JsonStore', '../storage/sqlite-store.ts'],
+  ['adoptRetainedInventory', '../storage/retained-sources.ts'],
+  ['withRetainedArtifactRelease', '../storage/retained-sources.ts'],
 ];
 
 for (const filename of [
@@ -549,11 +566,28 @@ for (const filename of [
       'registerStorageTarget',
       'beginArtifactReplica',
       'recordArtifactReplica',
+      'beginArtifactRelease',
+      'recordArtifactRelease',
       'applyReplicaEvents',
       'replayReplicaCommit',
       'copyRelationalArtifactReplica',
       'verifyRelationalArtifactReplica',
+      'releaseRelationalArtifactReplica',
+      'adoptRetainedInventory',
+      'withRetainedArtifactRelease',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
+    ...['beginArtifactRelease', 'recordArtifactRelease'].map((name) => [
+      `type-only replica release ${name}`,
+      `import type { RelationalReplicaStore } from '../storage/relational-replica-store.ts'; type Writer = Pick<RelationalReplicaStore, '${name}'>; function run(store: Writer) { store['${name}'](command,input); }`,
+    ]),
+    ...[
+      ['releaseRelationalArtifactReplica', '../storage/relational-replica-io.ts'],
+      ['adoptRetainedInventory', '../storage/retained-sources.ts'],
+      ['withRetainedArtifactRelease', '../storage/retained-sources.ts'],
+    ].map(([name, modulePath]) => [
+      `type-only release capability ${name}`,
+      `import type * as IO from '${modulePath}'; type Writer = Pick<typeof IO, '${name}'>; function run(io: Writer) { io.${name}(command,input); }`,
+    ]),
     ...[
       'acceptGeneration',
       'reuseGeneration',
@@ -683,6 +717,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
       "import type { RelationalQuotaStore } from '../storage/relational-quota-store.ts'; type Reader = Pick<RelationalQuotaStore, 'readAccountQuota'>; function read(store: Reader) { return store.readAccountQuota('account'); }",
     ],
     [
+      'server/generation/request-queries.ts',
+      "import type { RelationalReplicaStore } from '../storage/relational-replica-store.ts'; type Reader = Pick<RelationalReplicaStore, 'assertArtifactReleaseTicket'>; function read(store: Reader) { return store.assertArtifactReleaseTicket(ticket); }",
+    ],
+    [
       'server/generation/execution.ts',
       "import { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; store.dispatchGeneration(command,input,controls);",
     ],
@@ -749,6 +787,7 @@ test('mixed writer modules retain pure named readers and type-only capability de
     ['canonicalJson', '../events/domain-events.ts'],
     ['readCommandReceipt', '../events/event-store.ts'],
     ['createId', '../storage/sqlite-store.ts'],
+    ['readRetainedSourceProtection', '../storage/retained-sources.ts'],
   ]) {
     assert.deepEqual(
       checkSource(

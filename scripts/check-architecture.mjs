@@ -99,10 +99,15 @@ const mutations = new Set([
   'registerStorageTarget',
   'beginArtifactReplica',
   'recordArtifactReplica',
+  'beginArtifactRelease',
+  'recordArtifactRelease',
   'applyReplicaEvents',
   'replayReplicaCommit',
   'copyRelationalArtifactReplica',
   'verifyRelationalArtifactReplica',
+  'releaseRelationalArtifactReplica',
+  'adoptRetainedInventory',
+  'withRetainedArtifactRelease',
   'planLocalArtifactPublication',
   'retireJobHistory',
   'retireArtifactHistory',
@@ -187,7 +192,7 @@ export function checkSource(filename, text) {
       : modulePath;
     if (
       /^(?:server|web|executor)\//.test(filename) &&
-      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals)\.mjs$/.test(
+      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals|resolve-legacy-retained-dependencies)\.mjs$/.test(
         target,
       )
     ) {
@@ -226,7 +231,7 @@ export function checkSource(filename, text) {
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
           // 混合 owner 的整模块含已登记写命令；明确的纯 named reader 继续允许。
-          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events|state-notifications)|storage\/sqlite-store)\.(?:ts|js)$/.test(
+          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events|state-notifications)|storage\/(?:sqlite-store|retained-sources))\.(?:ts|js)$/.test(
             target,
           ) &&
             names.includes('*')) ||
