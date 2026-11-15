@@ -408,6 +408,7 @@ test('heatmap按真实child/Opening原0和NULL、取消及退休分类，不借�
               eventType: 'OpeningJobRecorded',
               streamId: 'request:heatmap-history',
               payload: {
+                diagnosticId: null,
                 sourceOrder: null,
                 displayCost: null,
                 jobId: 'heatmap-history-' + sampleIndex,

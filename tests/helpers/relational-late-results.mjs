@@ -254,6 +254,7 @@ export async function lateResultsHttpFixture(t, png) {
         event(
           'OpeningJobRecorded',
           {
+            diagnosticId: null,
             sourceOrder: null,
             displayCost: null,
             jobId: row.id,

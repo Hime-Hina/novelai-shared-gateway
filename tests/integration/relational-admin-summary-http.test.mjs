@@ -303,6 +303,7 @@ function openingUnknownFailure(f) {
           eventType: 'OpeningJobRecorded',
           streamId: 'request:' + id,
           payload: {
+            diagnosticId: null,
             sourceOrder: null,
             displayCost: null,
             jobId: id + '-0',

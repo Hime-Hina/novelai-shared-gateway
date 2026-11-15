@@ -42,6 +42,7 @@ const mutations = new Set([
   'stageGenerationDiagnostic',
   'stageOpeningInput',
   'stageOpeningContext',
+  'stageOpeningDiagnostic',
   'initializeGatewayConfiguration',
   'stageNormalizationDefaultsProfile',
   'createNormalizationDefaultsProjector',

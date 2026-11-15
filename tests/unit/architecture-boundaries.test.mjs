@@ -454,6 +454,7 @@ for (const filename of [
     ['protected defaults stage', 'stageNormalizationDefaultsProfile(values);'],
     ['opening input stage', 'stageOpeningInput(input);'],
     ['opening context stage', 'stageOpeningContext(id,context);'],
+    ['opening diagnostic stage', 'stageOpeningDiagnostic(input);'],
     ['protected defaults projection', 'createNormalizationDefaultsProjector(source,commit,false);'],
     ['configuration projection', 'createConfigurationProjector(commit,source,false);'],
     [

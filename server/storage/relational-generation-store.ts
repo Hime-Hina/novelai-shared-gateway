@@ -146,6 +146,7 @@ export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'JobCompleted',
   'JobFailed',
   'DiagnosticRecorded',
+  'OpeningDiagnosticRecorded',
   'WaitingJobsCancelled',
   'JobQueued',
   'FreeImageSucceeded',
@@ -2780,6 +2781,35 @@ export class RelationalGenerationStore {
         fail('失败事实缺少同笔原诊断');
       }
     }
+    const openingJobs = events.filter((e) => e.eventType === 'OpeningJobRecorded'),
+      openingDiagnostics = events.filter((e) => e.eventType === 'OpeningDiagnosticRecorded');
+    for (const diagnostic of openingDiagnostics) {
+      const matched = openingJobs.filter(
+          (e) => e.payload.diagnosticId === diagnostic.payload.diagnosticId,
+        ),
+        job = matched[0];
+      if (
+        matched.length !== 1 ||
+        job.payload.jobId !== diagnostic.payload.jobId ||
+        job.memberId !== diagnostic.memberId ||
+        job.streamId !== diagnostic.streamId ||
+        job.accountId !== null ||
+        diagnostic.accountId !== null ||
+        job.payload.origin.sourceId !== diagnostic.payload.origin.sourceId ||
+        job.eventIndex >= diagnostic.eventIndex
+      ) {
+        fail('开账诊断必须属于同笔同来源的唯一原任务');
+      }
+    }
+    for (const job of openingJobs) {
+      if (
+        job.payload.diagnosticId !== null &&
+        openingDiagnostics.filter((e) => e.payload.diagnosticId === job.payload.diagnosticId)
+          .length !== 1
+      ) {
+        fail('开账任务缺少同笔唯一原诊断');
+      }
+    }
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Generation projection requires the owning transaction.');
@@ -3639,6 +3669,11 @@ export class RelationalGenerationStore {
               .run(p.artifactId, e.occurredAt, e.eventId, job.id);
           }
           this.writeResponse(e, a.id, p.response);
+          break;
+        }
+        case 'OpeningDiagnosticRecorded': {
+          const job = this.eventJob(e, e.payload.jobId);
+          this.inputs.readGenerationDiagnostic(e.payload.diagnosticId, job.id);
           break;
         }
         case 'DiagnosticRecorded': {

@@ -821,6 +821,7 @@ test(
               'OpeningJobRecorded',
               `request:${requestId}`,
               {
+                diagnosticId: null,
                 sourceOrder: null,
                 displayCost: null,
                 jobId: job.id,

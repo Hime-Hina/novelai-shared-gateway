@@ -268,6 +268,14 @@ export const relationalPayloadParsers = {
     byteLength: positive,
     createdAt: integer,
   }),
+  OpeningDiagnosticRecorded: fields({
+    diagnosticId: id,
+    jobId: id,
+    sha256: hash,
+    byteLength: integer,
+    createdAt: nullable(integer),
+    origin,
+  }),
   RequestAccepted: fields({
     requestId: id,
     memberId: id,
@@ -693,6 +701,7 @@ export const relationalPayloadParsers = {
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
+    diagnosticId: nullable(id),
     // 原来源的排序/显示值，不是 queueSeq 或收费资源金额。
     sourceOrder: nullable(number),
     displayCost: nullable(number),
@@ -865,6 +874,7 @@ export const relationalFactStreams = {
     'JobHistoryRetired',
     'RequestAliasRegistered',
     'DiagnosticRecorded',
+    'OpeningDiagnosticRecorded',
     'OpeningRequestRecorded',
     'OpeningJobRecorded',
     'OpeningAttemptRecorded',
