@@ -2532,6 +2532,8 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 固定70b首个精准组实际 **2/4、零跳过，2.133秒**：未知归档声明/registry 与原known Opening ready/recovery控制通过；矩阵 credential_epoch 和普通控制 operation=NULL 被正确的 SQL immutable trigger 拦截，使原先要求先改投影再到 getter 的两项夹具断言失败。它们不是新产品红，原log/源保持；70f之前只静态发现不可写 view，未运行。后继仅把测试角色对齐上述四个真实 getter 反例与六个 SQL identity 门禁，不DROP/添加trigger或增加prepare/get模拟层；这仍是两个top-level用例，不加算成十个测试。修后两项源码验证另授槽，已通过两项不重复。
 
+test/docs 后继 `8d415108` 在原网络入口前 deny guard 下只复验首轮失败两项，实际 **2/2、零跳过，1.450秒**：上述四个可变字段与六个immutable门禁、原正常准备结果/退休产物依赖全到场，所有表和原源字节保持。主进程及两个worker均正常退出，guard denied0。两产品从70f至8d逐字不变；首轮已过的未知归档/known Opening两个test body亦逐字未改，它们不重跑、不与第二批伪称一次4/4。当前四个不同用例的证据分两批保存，原两项夹具红保留。类型/架构/可信13723ac迁移检查及变更格式/语法/diff通过，固定Git/raw、17相连authority和原严格方法体绑定见 `H:/TEMP/novelai-prepared-retained-read-20261115/`；未执行mutant/full/build/发布物/native安装/实云或生产，非作者独审待同固定后继进行。
+
 registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现总门禁，并非本片实现了逐物理 key pin、完整来源域证明或 DELETE。独立旧 archive 的 source 与导出 JSONL 共同摘要缺口仍由原 CLI owner 单独处理。本片没有新事实、DDL、domain 完成/删除合法迁移、外部删除、守卫或 CI 变化，生产释放未获授权。
 
 ## 10. 事实依据与修订
