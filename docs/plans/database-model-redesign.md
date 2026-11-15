@@ -2492,7 +2492,9 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 联合技术点 `190ee618` 的 Core 与读组定向由 Core 作者实际运行 **11/11、零跳过，2.226 秒**；其中读组三项与随后 whole 范围重叠，不累加为独立审查。读组随后同源串行运行三个完整文件：member-history **8/8**、reports **18/19**、member-read 实际 localhost HTTP **21/21**，共 **47/48、零跳过**。唯一失败是旧 reports 断言把历史终态 updatedAt 的 NULL 期待为空串；首日志保留，后继 `a7ce00c` 仅对齐该断言并补同源 completedAt 已知 0/未知 NULL 两对照，产品逐字未改。原精确失败 case 随后实际 **1/1、零跳过，TAP 1.128 秒**，case 本体 0.301 秒；不把它称为后继全 48 项重跑。命令、源/15 个权威文件 Git/raw 前后绑定、首日志与后继控制在 `H:/TEMP/novelai-opening-reads-998-20261115/whole-three-{argv,result}.json`、`whole-*.log` 和 `terminal-focused-{argv,result}.json`。
 
-同后继 backend 类型、architecture 和默认 migration 检查通过；未跑全后端、Nuxt mount、Web 类型、编译发布物、Node24、真实云或生产，不将此前 source 部分通过称为整体验收或非作者 PASS。Modern Web Guidance 已按批准范围读取和检索，原代理失败后的离线检索无适用 guide，未改代理或套用无关规则；一处条件文本尚待最终同候选 UI 矩阵。类似新历史展示继续在原 Request/Report/formatter owner 与上述唯一 origin 能力维护，不新增影子状态或格式兼容分支。
+同后继 backend 类型、architecture 和默认 migration 检查通过。随后普通合入共同 `dc32028`，读组和 Web 八个相关文件的 Git blob 与固定 `5e6d810` 相同；现有 Node22/pnpm 的 `pnpm --dir web run typecheck` 实际通过，仅生成本树 ignored Nuxt 类型，未安装依赖或改配置。既有 Nuxt/happy-dom harness 的 MemberBatch describe 过滤首轮 **6 项通过、6 项同文件非匹配过滤、零失败，Vitest 8.57 秒**：新 NULL/0 展示和原三个直接用例，另有原循环生成的折叠/卸载两用例。准备阶段的四项预估漏计该循环，保留原准备记录并在结果报告更正，不将过滤数称为原条件 skip 或整文件通过。实际 wrapper 断言确认 NULL 显示“原位置未知”且不显示“第 1 张”，已知 0 显示“第 1 张”；八个源/配置文件 Git/raw 前后相同，源树保持干净。
+
+上述 Web 命令、实际 worker 继承的低层 loopback guard、Git/raw 和结果绑定见同目录 `web-type-source-dc32028.json`、`web-mount-{argv,result}-dc32028.json` 及 `web-mount-dc32028-first.log`。未跑全 Web、全后端、Nuxt 生产 build、编译发布物、Node24、真实浏览器、真实云或生产，不将局部通过称为整体验收或非作者 PASS。Modern Web Guidance 已按批准范围读取和检索，原代理失败后的离线检索无适用 guide，未改代理或套用无关规则。类似新历史展示继续在原 Request/Report/formatter owner 与上述唯一 origin 能力维护，不新增影子状态或格式兼容分支。
 
 ## 10. 事实依据与修订
 
