@@ -104,6 +104,8 @@ async function history(
           event.occurredAt = headerAt;
           event.eventType = 'OpeningJobRecorded';
           Object.assign(event.payload, {
+            sourceOrder: null,
+            displayCost: null,
             createdAt,
             artifactId: null,
             completedAt: null,
@@ -573,7 +575,15 @@ test('关系查询使用原创建时间局部索引；重开后结果相同、�
 function openingJob(
   f,
   id,
-  { createdAt = NOW, completedAt = NOW, errorCode = 'historical_failure', status = 'failed' } = {},
+  {
+    createdAt = NOW,
+    completedAt = NOW,
+    errorCode = 'historical_failure',
+    status = 'failed',
+    sourceOrder = null,
+    displayCost = null,
+    queueSeq = null,
+  } = {},
 ) {
   return f.db.transaction(() => {
     const inputs = new RelationalInputStore(f.db),
@@ -632,13 +642,15 @@ function openingJob(
           eventType: 'OpeningJobRecorded',
           streamId: 'request:' + id,
           payload: {
+            sourceOrder,
+            displayCost,
             jobId: id + '-0',
             requestId: id,
             createdAt,
             sampleIndex: 0,
             actualSeed: null,
             status,
-            queueSeq: null,
+            queueSeq,
             queueExpiresAt: null,
             deadlineAt: null,
             admissionEpoch: 0,
@@ -688,6 +700,140 @@ function openingJob(
     );
   })();
 }
+
+function replayOpeningDisplay(t, f) {
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replayer = new RelationalCommitReplayer(target),
+    source = new RelationalInputStore(f.db);
+  t.mock.method(globalThis, 'fetch', () => assert.fail('Opening display replay must not fetch'));
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), source))();
+  }
+  for (const [table] of relationalPrivateTables) {
+    assert.equal(target.prepare('SELECT COUNT(*) n FROM ' + table).get().n, 0, table);
+  }
+  return target;
+}
+
+test('OpeningJob原始顺序先于ID/失败时间/queueSeq且limit先于第51个保护输入', async (t) => {
+  const f = await fixture(t),
+    requests = new RelationalRequestStore(f.db),
+    known = [];
+  for (let index = 0; index < 51; index++) {
+    const id = 'opening-order-' + String(50 - index).padStart(2, '0'),
+      sourceOrder = index === 50 ? Number.MAX_VALUE : index - 25 + (index === 30 ? 0.5 : 0);
+    known.push({ id: id + '-0', sourceOrder });
+    openingJob(f, id, {
+      sourceOrder,
+      queueSeq: String(200 - index),
+      completedAt: NOW + 1000 - index,
+    });
+  }
+  openingJob(f, 'zzz-opening-order-unknown');
+  await f.accept('accepted-after-cut');
+  f.fail('accepted-after-cut-0', { aborted: true }, NOW + 2000);
+  known.sort((a, b) => b.sourceOrder - a.sourceOrder);
+  const expectedIds = ['accepted-after-cut-0', ...known.slice(0, 49).map(({ id }) => id)],
+    excluded = new Set(['zzz-opening-order-unknown-0', ...known.slice(49).map(({ id }) => id)]),
+    originalRead = RelationalInputStore.prototype.readErrorLogRequest;
+  t.mock.method(RelationalInputStore.prototype, 'readErrorLogRequest', function (id) {
+    assert.equal(excluded.has(id), false, '第51个保护输入必须在原序LIMIT后保持未读');
+    return originalRead.call(this, id);
+  });
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  f.db.pragma('query_only=ON');
+  let expected;
+  try {
+    expected = requests.readManagementFailedJobs();
+    assert.deepEqual(
+      expected.map(({ id }) => id),
+      expectedIds,
+    );
+    assert.ok(expected.every((row) => row.originalOrderKnown));
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  const target = replayOpeningDisplay(t, f);
+  assert.deepEqual(new RelationalRequestStore(target).readManagementFailedJobs(), expected);
+  const reopened = new Database(path.join(f.dir, 'library.sqlite'));
+  try {
+    assert.deepEqual(new RelationalRequestStore(reopened).readManagementFailedJobs(), expected);
+  } finally {
+    reopened.close();
+  }
+});
+
+test('OpeningJob原始displayCost保留0和正数且不借收费，未知仍NULL并经公共回放保留', async (t) => {
+  const f = await fixture(t, { v5: '0' }),
+    reports = new RelationalReportStore(f.db),
+    requests = new RelationalRequestStore(f.db),
+    inputs = new RelationalInputStore(f.db);
+  await f.accept('display-current');
+  f.dispatch('display-current-0');
+  await f.publish('display-current-0');
+  assert.equal(f.generations.readCharge('display-current-0').anlasFixed, '2');
+  openingJob(f, 'display-zero', { status: 'done', displayCost: 0, completedAt: NOW + 1 });
+  openingJob(f, 'display-positive', { status: 'done', displayCost: 3.5, completedAt: NOW + 2 });
+  const dto = (reader, source, id) =>
+    publicRelationalJob(reader.readApiJob(id), source.readErrorLogRequest(id), {
+      imageUrl: (id) => id,
+      errorMessage: (message) => message,
+      now: NOW + 60000,
+    });
+  assert.equal(dto(requests, inputs, 'display-current-0').cost, 0);
+  assert.equal(dto(requests, inputs, 'display-zero-0').cost, 0);
+  assert.equal(dto(requests, inputs, 'display-positive-0').cost, 3.5);
+  const originalPrepare = f.db.prepare.bind(f.db);
+  t.mock.method(f.db, 'prepare', (sql) => {
+    assert.doesNotMatch(
+      sql,
+      /\bFROM\s+(?:generation_inputs|input_assets)\b/i,
+      '薄统计不能读取正文或BLOB',
+    );
+    return originalPrepare(sql);
+  });
+  const known = reports.readAdminSummaryStats(NOW + 60000),
+    date = iso(NOW + 8 * 3600000).slice(0, 10),
+    bucket = known.usageHourlyDays.find((row) => row.date === date);
+  assert.equal(known.generationStats1m.total, 1);
+  assert.equal(bucket.done, 1);
+  assert.equal(bucket.credits, 3.5);
+  f.db.prepare = originalPrepare;
+  openingJob(f, 'display-unknown', { status: 'done', completedAt: NOW + 3 });
+  assert.equal(dto(requests, inputs, 'display-unknown-0').cost, null);
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  f.db.pragma('query_only=ON');
+  let expected;
+  try {
+    expected = reports.readAdminSummaryStats(NOW + 60000);
+    assert.equal(expected.generationStats1m.total, null);
+    assert.equal(expected.usageHourlyDays.find((row) => row.date === date).credits, null);
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  const target = replayOpeningDisplay(t, f),
+    reader = new RelationalRequestStore(target),
+    source = new RelationalInputStore(target);
+  assert.deepEqual(new RelationalReportStore(target).readAdminSummaryStats(NOW + 60000), expected);
+  for (const [id, cost] of [
+    ['display-current-0', 0],
+    ['display-zero-0', 0],
+    ['display-positive-0', 3.5],
+    ['display-unknown-0', null],
+  ]) {
+    assert.equal(dto(reader, source, id).cost, cost);
+  }
+});
 
 test('admin窄统计沿原生产worker口径：真实paid但display0，diagnostic排除与小时桶各自保留原规则', async (t) => {
   const f = await fixture(t),

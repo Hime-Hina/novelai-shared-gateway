@@ -1017,6 +1017,8 @@ test('最近30条只用原Job时间，未知与真实0不借父受理时间，�
               eventType: 'OpeningJobRecorded',
               streamId: 'request:management-history',
               payload: {
+                sourceOrder: null,
+                displayCost: null,
                 jobId: 'historical-' + id,
                 requestId: 'management-history',
                 createdAt: index === 0 ? 0 : null,
