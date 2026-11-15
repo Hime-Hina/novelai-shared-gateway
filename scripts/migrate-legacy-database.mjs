@@ -1015,10 +1015,12 @@ function appendLegacyArtifactInputs(target, references, at, artifacts) {
 }
 
 function appendLegacyKeys(source, target, references, at, findings) {
-  const registration = source.prepare(`SELECT e.event_id,e.actor_id,e.actor_kind,e.payload,
+  const decisions = [];
+  const registration =
+    source.prepare(`SELECT e.event_id,e.event_type,e.actor_id,e.actor_kind,e.payload,
       c.command_id,c.receipt FROM domain_events e JOIN event_commits c USING(commit_seq)
     WHERE e.event_type IN ('RequestAccepted','RequestAliasRegistered')
-      AND json_extract(e.payload,'$.idempotency.memberId')=?
+      AND e.actor_kind='member' AND e.actor_id=?
       AND json_extract(e.payload,'$.idempotency.operation')=?
       AND json_extract(e.payload,'$.idempotency.keyHash')=? ORDER BY e.commit_seq,e.event_index LIMIT 2`);
   for (const row of source
@@ -1027,23 +1029,57 @@ function appendLegacyKeys(source, target, references, at, findings) {
     const originalId = canonicalJson([row.member_id, row.operation, row.key_hash]),
       registered = registration.all(row.member_id, row.operation, row.key_hash),
       record = registered.length === 1 ? registered[0] : null,
-      saved = record ? JSON.parse(record.payload).idempotency : null,
+      recorded = record ? JSON.parse(record.payload) : null,
+      saved =
+        record?.event_type === 'RequestAliasRegistered'
+          ? {
+              ...recorded.idempotency,
+              memberId: recorded.memberId,
+              jobId: recorded.jobId,
+              requestId: recorded.requestId,
+            }
+          : recorded?.idempotency,
       actual =
         record &&
         record.actor_kind === 'member' &&
         record.actor_id === row.member_id &&
+        saved.memberId === row.member_id &&
         saved.fingerprint === row.fingerprint &&
         saved.jobId === row.job_id &&
         (saved.requestId ?? null) === row.request_id
           ? record
           : null,
       group = row.request_id === null ? null : references.requestProofs.get(row.request_id),
-      entry = group?.proofs.find(
-        ({ mapping }) =>
-          mapping.member_id === row.member_id &&
-          mapping.operation === row.operation &&
-          mapping.key_hash === row.key_hash,
-      ),
+      state = readStreamProjection(
+        source,
+        `request:${row.request_id || `legacy-${row.job_id}`}`,
+      )?.projection,
+      retired = Boolean(state?.retiredJobs?.[row.job_id]),
+      originalInputRef = row.request_id || state?.request?.inputRef,
+      originalInput = originalInputRef
+        ? source
+            .prepare('SELECT member_id,payload FROM generation_requests WHERE id=?')
+            .get(originalInputRef)
+        : null,
+      savedInput = originalInput ? JSON.parse(originalInput.payload) : null,
+      original = savedInput?.legacyInline === true ? savedInput.request : savedInput,
+      entry =
+        group?.proofs.find(
+          ({ mapping }) =>
+            mapping.member_id === row.member_id &&
+            mapping.operation === row.operation &&
+            mapping.key_hash === row.key_hash,
+        ) ??
+        (originalInput?.member_id === row.member_id
+          ? {
+              mapping: row,
+              proof: proveLegacyGenerationIntent(
+                original,
+                JSON.parse(row.normalization_context),
+                row,
+              ),
+            }
+          : null),
       receipt = actual ? JSON.parse(actual.receipt) : null,
       createdAt = time(row.created_at);
     if (
@@ -1082,8 +1118,8 @@ function appendLegacyKeys(source, target, references, at, findings) {
       seedMode: entry?.proof.prepared ? entry.proof.seedMode : null,
       requestId: group ? row.request_id : null,
       commitSeq: null,
-      contextId: live ? group.contextId : null,
-      resolution: live ? 'live' : actual ? 'archived' : 'unavailable',
+      contextId: entry?.proof.prepared?.contextId ?? null,
+      resolution: live ? 'live' : retired ? 'unavailable' : actual ? 'archived' : 'unavailable',
       originRef: actual?.event_id ?? originalId,
       archivedReceipt: live
         ? {
@@ -1095,24 +1131,46 @@ function appendLegacyKeys(source, target, references, at, findings) {
       createdAt,
       origin: references.origin(originalId),
     };
-    if (entry?.proof.prepared && !live) {
+    decisions.push({
+      originalId,
+      firstDefinitionProved: Boolean(entry?.proof.prepared),
+      originalCommandProved: Boolean(actual),
+      sourceRetired: retired,
+      resolution: payload.resolution,
+    });
+    if (entry?.proof.prepared && !live && !retired) {
       findings.push({ code: 'COMPLETE_KEY_TARGET_CLOSURE_UNPROVEN', originalId });
     }
     if (entry?.proof.reason && JSON.parse(row.normalization_context).native) {
       findings.push({ code: entry.proof.reason, originalId });
     }
-    target.transaction(() =>
-      append(target, references, at, `key:${originalId}`, [
-        {
-          eventId: references.eventId('OpeningIdempotencyRecorded', originalId),
-          eventType: 'OpeningIdempotencyRecorded',
-          streamId: `idempotency:${row.member_id}:${row.operation}:${row.key_hash}`,
-          memberId: row.member_id,
-          payload,
-        },
-      ]),
-    )();
+    target.transaction(() => {
+      const events = [];
+      if (
+        payload.contextId !== null &&
+        !target.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(payload.contextId)
+      ) {
+        const context = new RelationalInputStore(target).stageOpeningContext(
+          payload.contextId,
+          entry.proof.context,
+        );
+        events.push({
+          eventId: references.eventId('ContextRegistered', payload.contextId),
+          eventType: 'ContextRegistered',
+          payload: context,
+        });
+      }
+      events.push({
+        eventId: references.eventId('OpeningIdempotencyRecorded', originalId),
+        eventType: 'OpeningIdempotencyRecorded',
+        streamId: `idempotency:${row.member_id}:${row.operation}:${row.key_hash}`,
+        memberId: row.member_id,
+        payload,
+      });
+      append(target, references, at, `key:${originalId}`, events);
+    })();
   }
+  return decisions;
 }
 
 export async function materializeSelectedLocalOriginal(
@@ -1360,7 +1418,8 @@ export async function migrateLegacyDatabase(options) {
     findings = [];
   let target,
     financial,
-    privateResult = null;
+    privateResult = null,
+    keyDecisions = [];
   try {
     source.pragma('query_only=ON');
     const prepared = source.transaction(() => {
@@ -1473,7 +1532,7 @@ export async function migrateLegacyDatabase(options) {
           append(target, references, at, 'replicas', replicas);
         }
         assertLegacyFinanceProjection(target, financial.expected);
-        appendLegacyKeys(source, target, references, at, findings);
+        keyDecisions = appendLegacyKeys(source, target, references, at, findings);
         if (cutConfiguration) {
           privateResult = migrateLegacyPrivate(
             target,
@@ -1498,6 +1557,7 @@ export async function migrateLegacyDatabase(options) {
       readyInstalled: false,
       financial: financial.expected,
       private: privateResult,
+      keyDecisions,
       effectiveAt: at,
       cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
       inputManifestSha256: manifestSha256,

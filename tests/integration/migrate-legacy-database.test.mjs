@@ -119,16 +119,34 @@ async function fixture(t, status = 'failed', parent = null, artifact = null, mem
       identity: { token: 'STA1N-synthetic-current-key' },
       request: null,
       source: 'novelai-native',
-      batch: true,
-      noCache: true,
+      batch: !parent.alias,
+      noCache: !parent.alias,
       admissionVersion: 0,
       intent: generationIntent('synthetic-original-key', () => parent.request, {
         operation: 'generate',
         randomSeed: false,
-        noCache: true,
+        noCache: !parent.alias,
         context: () => parent.context ?? { native: parent.native },
       }),
     });
+    if (parent.alias) {
+      const alias = await admit({
+        identity: { token: 'STA1N-synthetic-current-key' },
+        request: null,
+        source: 'novelai-native',
+        batch: false,
+        noCache: false,
+        admissionVersion: 0,
+        intent: generationIntent('synthetic-alias-key', () => parent.request, {
+          operation: 'generate',
+          randomSeed: false,
+          noCache: false,
+          context: () => ({ native: parent.aliasNative ?? parent.native }),
+        }),
+      });
+      assert.equal(alias.requestId, originalReceipt.requestId);
+      assert.deepEqual(alias.jobIds, originalReceipt.jobIds);
+    }
     if (parent.running) {
       const reservation = await reserveQueuedGeneration(store, originalReceipt.jobIds[0], {
         now: () => acceptedAt + 1,
@@ -142,6 +160,16 @@ async function fixture(t, status = 'failed', parent = null, artifact = null, mem
         now: () => acceptedAt + 1,
       });
     }
+  }
+  if (parent?.retired) {
+    assert.deepEqual(
+      await store.retireJobHistory(
+        originalReceipt.jobIds,
+        'synthetic-original-retired',
+        acceptedAt + 2,
+      ),
+      originalReceipt.jobIds,
+    );
   }
   if (!parent?.running) {
     await store.enableEventAuthority();
@@ -893,4 +921,119 @@ test('旧enabled缺失Raw-only成员沿原Key资格开账，不借公共active�
     target.close();
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('真实退休的完整旧键保原410不可领取，逐键仍证明其完整定义且不复活原child进历史', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'original retired',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 1024, height: 1024, steps: 23, seed: 17, n_samples: 2 },
+      },
+      native,
+    ),
+    f = await fixture(t, 'failed', { request, native, retired: true }),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    assert.equal(target.prepare('SELECT count(*) AS n FROM generation_jobs').get().n, 0);
+    const key = new RelationalInputStore(target).readOpeningGenerationIdempotency(
+      'member',
+      'generate',
+      generationIdempotencyKeyHash('synthetic-original-key'),
+    );
+    assert.equal(key.mapping.resolution, 'unavailable');
+    assert.equal(key.event.payload.originalRequestId, f.originalReceipt.requestId);
+    assert.equal(key.event.payload.originalJobId, f.originalReceipt.jobIds[0]);
+    assert.equal(key.mapping.requestId, null);
+    assert.equal(result.keyDecisions.length, 1);
+    assert.equal(result.keyDecisions[0].firstDefinitionProved, true);
+    assert.equal(result.keyDecisions[0].originalCommandProved, true);
+    assert.equal(result.keyDecisions[0].sourceRetired, true);
+    assert.equal(
+      result.findings.filter((row) => row.code === 'COMPLETE_KEY_TARGET_CLOSURE_UNPROVEN').length,
+      0,
+    );
+    assert.equal(relationalPrivateStateEmpty(target), true);
+  } finally {
+    target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('真实active alias按其原外层身份/独立首次context导入，不借后来的定义补原parent', async (t) => {
+  for (const originalKnown of [true, false]) {
+    const native = nativeNormalizationContext(),
+      aliasNative = structuredClone(native);
+    aliasNative.defaults.scale = 9;
+    const request = parseNativeImageRequest(
+        {
+          input: 'active alias source',
+          model: 'nai-diffusion-4-5-full',
+          parameters: { width: 1024, height: 1024, steps: 23, scale: 6, seed: 43, n_samples: 1 },
+        },
+        native,
+      ),
+      f = await fixture(t, 'failed', {
+        request,
+        native,
+        alias: true,
+        aliasNative,
+        context: originalKnown ? { native } : {},
+      }),
+      result = await migrateLegacyDatabase(f.options),
+      target = new Database(path.join(f.options.output, 'library.sqlite'));
+    try {
+      const owner = new RelationalInputStore(target),
+        alias = owner.readOpeningGenerationIdempotency(
+          'member',
+          'generate',
+          generationIdempotencyKeyHash('synthetic-alias-key'),
+        ),
+        first = owner.readOpeningGenerationIdempotency(
+          'member',
+          'generate',
+          generationIdempotencyKeyHash('synthetic-original-key'),
+        ),
+        context = JSON.parse(
+          target
+            .prepare('SELECT body FROM normalization_contexts WHERE id=?')
+            .get(alias.mapping.contextId).body,
+        ),
+        parent = target.prepare('SELECT context_id FROM generation_requests').get();
+      assert.equal(alias.event.payload.originalRequestId, f.originalReceipt.requestId);
+      assert.equal(alias.event.payload.originalJobId, f.originalReceipt.jobIds[0]);
+      assert.equal(typeof alias.event.payload.originalCommandId, 'string');
+      assert.equal(context.native.defaults.scale, 9);
+      assert.equal(result.keyDecisions.filter((row) => row.originalCommandProved).length, 2);
+      assert.equal(target.prepare('SELECT count(*) AS n FROM generation_jobs').get().n, 1);
+      if (originalKnown) {
+        assert.equal(alias.mapping.resolution, 'live');
+        assert.equal(first.mapping.resolution, 'live');
+        assert.notEqual(alias.mapping.contextId, parent.context_id);
+        assert.equal(
+          result.findings.filter((row) => row.code === 'COMPLETE_KEY_TARGET_CLOSURE_UNPROVEN')
+            .length,
+          0,
+        );
+      } else {
+        assert.equal(alias.mapping.resolution, 'archived');
+        assert.equal(first.mapping.resolution, 'archived');
+        assert.equal(parent.context_id, null);
+        assert.equal(
+          target.prepare('SELECT completeness FROM generation_inputs').get().completeness,
+          'partial',
+        );
+        assert.equal(
+          result.findings.filter((row) => row.code === 'COMPLETE_KEY_TARGET_CLOSURE_UNPROVEN')
+            .length,
+          1,
+        );
+      }
+    } finally {
+      target.close();
+    }
+    assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+  }
 });
