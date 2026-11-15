@@ -27,9 +27,10 @@ test('independent migration package excludes ignored private sources and runs co
   });
   await writeFile(canary, 'export const privateCanary = true;\n', { flag: 'wx' });
   canaryCreated = true;
-  const run = (args, cwd = root) =>
+  const run = (args, cwd = root, env = process.env) =>
     spawnSync(process.execPath, args, {
       cwd,
+      env,
       encoding: 'utf8',
       windowsHide: true,
       timeout: 120000,
@@ -84,5 +85,14 @@ await assert.rejects(migrateLegacyDatabase({}), /selected unchanged offline sour
     bundle,
   );
   assert.equal(loaded.status, 0, loaded.stderr);
+  const converted = run(
+    ['--test', path.join(root, 'tests/integration/migrate-legacy-database.test.mjs')],
+    root,
+    {
+      ...process.env,
+      MIGRATE_LEGACY_TEST_ENTRY: path.join(bundle, 'scripts/migrate-legacy-database.mjs'),
+    },
+  );
+  assert.equal(converted.status, 0, converted.stderr + converted.stdout);
   assert.equal(await readFile(canary, 'utf8'), 'export const privateCanary = true;\n');
 });
