@@ -2528,7 +2528,9 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 严格 getter 保持 completion → 原来源 → 严格 descriptor/attempt 比较 → 执行输入的次序。两口共用原唯一准备事实及完整 commit 读取；Opening 继续核原 source 登记、request/member/account/attempt 角色，并复用 Input 现只读 request、保护摘要和 seed 核验，已知信息不能降 NULL 绕过。普通 ArtifactPrepared 仍调用严格 getter，normal prepare、publisher、complete、结果恢复及 ready 不放宽。未知操作仅通过原 readable descriptor 校验，原 file/MIME/hash/len 与投影必须逐字段一致。
 
-聚焦检查覆盖未知归档非空 JSONL、实际 registry 不可变依赖副本、原 descriptor.file 与固定 `.part` 定位；原三口 410、publisher/正常 prepare 严格拒绝和源表/文件/认证不变继续保留。错 descriptor、request/input、seed/成员及原尝试来源投影应由 Gen/Input 共同 owner 拒绝；原普通 prepared 控制仍零写读取。源码尚待单独授权验证，实际结果和固定 SHA 交接后补记，不以测试编写宣称已通过。
+聚焦检查覆盖未知归档非空 JSONL、实际 registry 不可变依赖副本、原 descriptor.file 与固定 `.part` 定位；原三口 410、publisher/正常 prepare 严格拒绝和源表/文件/认证不变继续保留。四个可写 prepared file/MIME/hash/len 字段各真实 changes=1 后由 Gen getter 精确拒绝并回滚；六个不可变 request/input/seed/成员/尝试身份和 source/op 字段应由原 SQL identity 拒绝，再核 getter 与全表不变，不能把 SQL 先拒冒充 changed projection 已到 getter。普通 ArtifactPrepared 控制核两口读取相同、零写，并核 operation=NULL 被原 SQL identity 拒绝后仍返回原严格结果。
+
+固定70b首个精准组实际 **2/4、零跳过，2.133秒**：未知归档声明/registry 与原known Opening ready/recovery控制通过；矩阵 credential_epoch 和普通控制 operation=NULL 被正确的 SQL immutable trigger 拦截，使原先要求先改投影再到 getter 的两项夹具断言失败。它们不是新产品红，原log/源保持；70f之前只静态发现不可写 view，未运行。后继仅把测试角色对齐上述四个真实 getter 反例与六个 SQL identity 门禁，不DROP/添加trigger或增加prepare/get模拟层；这仍是两个top-level用例，不加算成十个测试。修后两项源码验证另授槽，已通过两项不重复。
 
 registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现总门禁，并非本片实现了逐物理 key pin、完整来源域证明或 DELETE。独立旧 archive 的 source 与导出 JSONL 共同摘要缺口仍由原 CLI owner 单独处理。本片没有新事实、DDL、domain 完成/删除合法迁移、外部删除、守卫或 CI 变化，生产释放未获授权。
 

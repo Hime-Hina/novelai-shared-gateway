@@ -740,7 +740,7 @@ test('archived prepared NULL parent/operation/input stays in building and replay
   assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file + '.part')), image);
 });
 
-test('prepared dependency rejects changed descriptor, request/input and original attempt projections', async (t) => {
+test('prepared dependency rejects writable descriptors and preserves SQL identity guards', async (t) => {
   const f = await source(t),
     result = open(f, {
       prepared: true,
@@ -759,9 +759,7 @@ test('prepared dependency rejects changed descriptor, request/input and original
     });
   const before = databaseState(f.db),
     expected = f.generations.readGenerationResultDependency(result.jobId);
-  const descriptorMismatch = /准备结果与原事实不一致/,
-    openingRoleMismatch = /开账尝试来源与原任务\/成员\/账户角色不符/,
-    inputUnavailable = (error) => error.statusCode === 410 && error.code === 'input_unavailable';
+  const descriptorMismatch = /准备结果与原事实不一致/;
   const mutations = [
     [
       "UPDATE generation_attempts SET prepared_file='images/another.webp' WHERE id=?",
@@ -783,32 +781,6 @@ test('prepared dependency rejects changed descriptor, request/input and original
       [result.attemptId],
       descriptorMismatch,
     ],
-    [
-      'UPDATE generation_attempts SET credential_epoch=0 WHERE id=?',
-      [result.attemptId],
-      openingRoleMismatch,
-    ],
-    [
-      "UPDATE generation_requests SET operation='generate' WHERE id='old-request'",
-      [],
-      inputUnavailable,
-    ],
-    [
-      "UPDATE generation_requests SET input_id=(SELECT input_id FROM generation_requests WHERE id='definition') WHERE id='old-request'",
-      [],
-      inputUnavailable,
-    ],
-    [
-      "UPDATE generation_requests SET member_id='m2' WHERE id='old-request'",
-      [],
-      openingRoleMismatch,
-    ],
-    ["UPDATE generation_jobs SET sample_index=0 WHERE id='old-job'", [], inputUnavailable],
-    [
-      "UPDATE generation_requests SET source='novelai-native' WHERE id='old-request'",
-      [],
-      inputUnavailable,
-    ],
   ];
   for (const [sql, params, rejection] of mutations) {
     const rollback = Error('rollback intentional corrupt projection');
@@ -824,6 +796,44 @@ test('prepared dependency rejects changed descriptor, request/input and original
         })(),
       (error) => error === rollback,
     );
+    assert.equal(databaseState(f.db), before);
+    assert.deepEqual(f.generations.readGenerationResultDependency(result.jobId), expected);
+  }
+  // 身份在原 SQL 层不可变；这些拒绝不冒充 changed projection 已到 getter。
+  const identities = [
+    [
+      'UPDATE generation_attempts SET credential_epoch=0 WHERE id=?',
+      [result.attemptId],
+      /immutable generation_attempts identity/,
+    ],
+    [
+      "UPDATE generation_requests SET operation='generate' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_requests SET input_id=(SELECT input_id FROM generation_requests WHERE id='definition') WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_requests SET member_id='m2' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_jobs SET sample_index=0 WHERE id='old-job'",
+      [],
+      /immutable generation_jobs identity/,
+    ],
+    [
+      "UPDATE generation_requests SET source='novelai-native' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+  ];
+  for (const [sql, params, rejection] of identities) {
+    assert.throws(() => f.db.prepare(sql).run(...params), rejection);
     assert.equal(databaseState(f.db), before);
     assert.deepEqual(f.generations.readGenerationResultDependency(result.jobId), expected);
   }
