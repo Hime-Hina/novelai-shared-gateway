@@ -2708,6 +2708,36 @@ R2 固定 `e5498e0d` 普通同步原 `184c41b` 到 7063 产品，原七行、五
 
 本轮原 503 条冷历史用例在原 60 秒期限内实际通过，54.9141193 秒；保留 b9 超时和私有 solo 记录，不能凭一轮或两个同步读取优化宣称性能问题普遍消失。617 份源码、Node/native/pnpm/批准 preloads 前后相同，初始 pnpm 的实际 16 个环境变量名与显式环境块相等。398 个 OS Node 身份均有退出证据，13 个线程随已退出 owner 关闭，主编排单列真实父句柄；两个 PID 已被其它应用复用，未终止这些应用。完整源码的原阶段、资格及封存证据见[完整运行记录](../history/database-model-full-source-20261115.md)，不代表实际 JS 包、Node24、Docker、实云、迁移或切换已验收。
 
+### 9.111 保留源消费外部选定的共同导出证明
+
+既有 `archive` CLI 现在可从独立 operand 接收预选 audit SHA，stdin 仍是原 source/manifest/dependencies 三路径。规则归原 `retained-sources.ts`：先留 durable preparing，核 audit 原字节、完整源 SHA、原工具/cut/安全计数及两个固定导出元组，再实读 artifacts 的 UTF-8、长度、行数、摘要；inputs 只保共同 audit 元组，不冒称重新读取其内容。复用原不可变副本、短 lease、bind/publish、checkpoint/restore，不加认证布尔、另一份 pin、对象 catalog 或引用计数。调用者必须从外部可信行动取得期望摘要，报告自报 tool SHA 或自己重算的摘要不认证执行；无 pin 的旧报告仍保持 unknown。操作与信任边界见[原运维契约](../operations/production-release.md#旧归档的选定导出证明)。
+
+初片 `142c541` 的非作者反例先经真实 owner 健康登记，保持源、audit pin 和元组不变，只将 saved dependencies SHA 置 NULL 并移走清单；live read、checkpoint 和 restore 都错误接受，实际在目标断言失败。后继 `eea3dc8` 只修原共享校验：声明 exports 就必须提供清单，保存的 SHA 无条件等于 audit 元组且实文件通过验证；旧无 exports 的未知分支不变。原同字节反例后继 1/1、零 skip，0.2588684 秒，读取/检查点拒绝后阻止恢复；另外作者新例直接改坏 checkpoint 并重绑其 marker 后验证 read/restore，不借旧 hash 早拒。
+
+固定 `eea3dc8` 原 retained 整文件实际 15 top/9 child，共 24/24、零 skip，2.0771222 秒，kernel/controller 均 0；原六项 SQL/lease/恢复、实际 copy 后尾错及重试、原 pin 下自洽空改写和真实空清单均到场。原 SIGKILL lease 和预期拒绝 CLI 的 exit 1 分角色核对，全部十个已识别身份关闭；五组记录 IO 计数为零，源码/Node/native/工具前后一致。首次 launcher 在启动 Node 前因同一文件 TEMP/Temp 自路径表示不等拒绝，按 canonical 路径修复后新现场实际执行；原 Source0 记录不改。初片 16 项局部结果及其记录器/ACL资格也保留，不与本轮相加。非作者技术复审通过，Root 五路径并集中的本片四文件逐字等 `eea3dc8`。
+
+证据：`H:/TEMP/novelai-retained-sources-whole-eea3-20261115/v2/WHOLE-RESULT.md`（SHA `4456b381…23c6a2`）、非作者 `H:/TEMP/novelai-retained-archive-pin-independent-eea3-20261115/INDEPENDENT-REVIEW.md`（SHA `486fea9c…660721`）。本片尚未用新 CLI 登记真实 47ea 源；9.109 的真实导出行动仍是下一步外部选择依据。coverage/dependencies 保持 unknown、releaseAllowed=false、源 DELETE 为零；共同证明完整不等于原物理 namespace、对象字节或保留源集合完整，不能据此释放来源。
+
+### 9.112 晚领取用例先建立真实 done
+
+9.110 的失败发生在首次新生成，不能把测试名里的 done 当成已经成立的前置。固定 009 的只读阶段观察在原 queued+done 整个 parent 一次 3/3、零 skip，14.2405455 秒：done 同 PID 从 waiter 注册到 notify 入口 97.6245 ms，距原 100 ms deadline 的 marker 约 2.832 ms；原超时 SVG 与 queued 的真实 `x-timeout=1` 字节相同。日志本身有开销，原 full 没响应头，仍不推断原并发失败的唯一原因，也不称性能修复。
+
+最小 test-only `b1dad60` 在 done 分支先持住实际生成，核原 100 ms 领取超时和仍在途，再在 finally 释放。用第一次响应的原 `X-Nai-Request-Id` 找唯一 child，等待同一 parent/job 的成功 done 与 artifact，再以原完整 key 领取作为 original。原 17 条图片/关闭/晚领取/零写/重启断言、queued 分支及全部期限保留，另核同 request ID、完整数据库零写和 generation 仍为 1；无固定 sleep、假终态或产品 timeout 变化。
+
+固定正控原完整 parent 实际 3/3、零 skip，14.174523 秒，kernel 0。独立隔离的旧 846 done-only 负控持住原首次生成，在真实 HTTP 200/x-timeout=1/SVG887 后准确命中原 WebP34 比较失败，1.944518 秒；两个失败节点包含父汇总，queued 明确未运行，不写成原整个 parent 反例。全部原源码/native/控制前后一致；负控清理 SIGKILL 没有 JS self-exit，保留真实 parent signal/OS 退出证据；正控 Python 数字 PID 未先采的资格单列。非作者静态核原文本/断言/期限和最终 46 个证据文件后技术通过，未新增运行计数。关键前置与断言增量继续列入维护者复核，不等于 GitHub approve。
+
+证据：`H:/TEMP/novelai-sole-done-source-plan-b1dad60-20261115/RESULT.md`（SHA `2f3bab3f…8fe954`）、非作者 `H:/TEMP/novelai-sole-done-fixture-independent-b1-20261115/INDEPENDENT-REVIEW.md`（SHA `ce214ed3…6441b0`）。Root 整合的测试文件逐字等 `b1dad60`；下一轮完整并发仍须按新候选实测，不从旧 full 扣减失败。
+
+### 9.113 固定 009 的实际 JS 后端包与 Node22/24
+
+固定 0094243 实际执行原 tsc/packageBackend 六根闭包，得到 115 个产品文件；两 runtime 的 package/runtime 四份产品子集逐字相同，runtime 各另七个测试/helper/fixture，不加旧 migrations、旧 owner 或 owned TS。禁 strip-types 和实际拒 TS loader 在真实 worker/server 到场；依赖使用既有 ABI127 b936 与隔离 ABI137 C045，未安装或重建共享 native。两个 native probe 实际版本/ABI、预选物理叶与 SHA、SQLite 3.53.1/integrity 均通过。
+
+Node22 与 Node24 各自实际 25/25、零 fail/skip：normal-package 原 whole 六节点，以及 sole 六、reader 八、replica 四、review 一，共十九个所选 owner 节点。它们是相同 25 个场景的两 runtime，不是 50 个不同场景；所选 pattern 排除的用例不算通过。normal-package 的真实 bootstrap、HTTP/重启、完整公回放/所选私有/唯一 ready 及失败拒绝断言到场；额外 retained 无参数 CLI 只核合流 generic 文案和预期 exit 1，不单独声称 stdout 为空。全部记录进程关闭，617 源及产品/native/工具前后相同。
+
+记录器原首错单独保留：路径重绑 no-op 曾把四条 build 记录追加到旧 Native 日志，完整新增尾另封并按原 SHA 恢复 4090 B 前缀，旧 18 控制回原值，不声称恢复未知 mtime；后继目录直接来自自身模块 URL。Node24 的合法逐包 junction 不以容器目录包含关系判错，caller 采用已选物理 owner/精确 native 叶；旧白名单遗漏 runtime 自加 `NODE_TEST_WORKER_ID` 的拒绝发生在测试正文之前，确认所选运行时内建源码后只准该精确字段，新现场续跑六个未执行 body，不重跑 Node22/probe/build。各原件及范围均在 `H:/TEMP/novelai-compiled-normal-0094243-20261115/VALIDATION-FINAL.md`（SHA `2c9bf295…10f29b`）封存。
+
+以上只属于固定 009 的实际后端包与所选业务路径，不覆盖后续 147 的新 retained 产品字节、Nitro 壳、三包/Docker、真实外部存储或切换。Root 新并集 `147aabd` 另通过 architecture、明确 `--base 88d2c26` 的 migration、backend typecheck 和五条改动路径格式检查；其原完整测试与同候选三包/实际产物验收继续单独推进，不用本片旧绿替代。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
