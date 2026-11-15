@@ -6,14 +6,22 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import {
-  migrateLegacyDatabase,
-  proveLegacyGenerationIntent,
-  readLegacyCutConfiguration,
-} from '../../scripts/migrate-legacy-database.mjs';
+import { pathToFileURL } from 'node:url';
+const entry = process.env.MIGRATE_LEGACY_TEST_ENTRY;
+if (entry && !path.isAbsolute(entry)) {
+  throw new Error('MIGRATE_LEGACY_TEST_ENTRY must name an absolute compiled file.');
+}
+const { migrateLegacyDatabase, proveLegacyGenerationIntent, readLegacyCutConfiguration } =
+  await import(
+    entry
+      ? pathToFileURL(entry).href
+      : new URL('../../scripts/migrate-legacy-database.mjs', import.meta.url).href
+  );
+
 import {
   nativeNormalizationContext,
   parseNativeImageRequest,
+  parseNativeAuxiliaryRequest,
 } from '../../server/protocols/native-image.ts';
 import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
@@ -26,6 +34,7 @@ import { createGenerationPayloadBudget } from '../../server/generation/payload-b
 import {
   cancelGenerationRequestCommand,
   reserveQueuedGeneration,
+  completeGenerationCommand,
 } from '../../server/generation/execution.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
@@ -80,7 +89,8 @@ async function fixture(
       },
     ],
   });
-  let originalReceipt = null;
+  let originalReceipt = null,
+    completedImage = null;
   const acceptedAt = Date.UTC(2026, 10, 1);
   if (parent) {
     const seed = structuredClone(store.db);
@@ -111,7 +121,7 @@ async function fixture(
     );
     syncFairQuota(seed, acceptedAt);
     await store.write(seed);
-    if (parent.running) {
+    if (parent.running || parent.completed) {
       await store.enableEventAuthority();
     }
     const admit = createGenerationAdmission({
@@ -131,7 +141,7 @@ async function fixture(
       noCache: !parent.alias,
       admissionVersion: 0,
       intent: generationIntent('synthetic-original-key', () => parent.request, {
-        operation: 'generate',
+        operation: parent.request.operation ?? 'generate',
         randomSeed: false,
         noCache: !parent.alias,
         context: () => parent.context ?? { native: parent.native },
@@ -155,7 +165,7 @@ async function fixture(
       assert.equal(alias.requestId, originalReceipt.requestId);
       assert.deepEqual(alias.jobIds, originalReceipt.jobIds);
     }
-    if (parent.running) {
+    if (parent.running || parent.completed) {
       const reservation = await reserveQueuedGeneration(store, originalReceipt.jobIds[0], {
         now: () => acceptedAt + 1,
         env: {},
@@ -163,6 +173,29 @@ async function fixture(
         physicalAccountLoad: () => 0,
       });
       assert.equal(reservation.job?.status, 'running');
+      if (parent.completed) {
+        await mkdir(path.join(store.dataDir, 'images'));
+        reservation.upstreamTiming = {
+          upstreamStartedAt: new Date(acceptedAt + 1).toISOString(),
+          upstreamCompletedAt: new Date(acceptedAt + 2).toISOString(),
+          upstreamHttpStatus: 200,
+        };
+        completedImage = await completeGenerationCommand(
+          {
+            store,
+            dataDir: store.dataDir,
+            now: () => acceptedAt + 3,
+            createId: () => 'modern-published',
+          },
+          reservation,
+          parent.request,
+          {
+            buffer: await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+            mimeType: 'image/webp',
+          },
+          { jobId: originalReceipt.jobIds[0] },
+        );
+      }
     } else {
       await cancelGenerationRequestCommand(store, originalReceipt.requestId, 'member', {
         now: () => acceptedAt + 1,
@@ -179,7 +212,7 @@ async function fixture(
       originalReceipt.jobIds,
     );
   }
-  if (!parent?.running) {
+  if (!parent?.running && !parent?.completed) {
     await store.enableEventAuthority();
   }
   const source = path.join(directory, 'source.sqlite'),
@@ -310,6 +343,8 @@ async function fixture(
     directory,
     sourceBytes,
     originalReceipt,
+    completedImage,
+    originalDataDir: store.dataDir,
     acceptedAt,
     captureStartedAt,
     options: {
@@ -1111,6 +1146,107 @@ test('原Opening诊断按真实pointer/原UTF8/hash/createdAt0冷读与完整提
   } finally {
     target.close();
     rebuilt.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('原辅助DTO seed0不是actualSeed，generate原实际seed0仍保留', async (t) => {
+  const native = nativeNormalizationContext(),
+    image = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
+  for (const request of [
+    parseNativeImageRequest(
+      {
+        input: 'real seed zero',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 1024, height: 1024, steps: 23, seed: 0, n_samples: 1 },
+      },
+      native,
+    ),
+    parseNativeAuxiliaryRequest(
+      { model: native.vibeModels[0], image: image.toString('base64') },
+      'encode-vibe',
+      native,
+    ),
+  ]) {
+    assert.equal(request.seed, 0);
+    const f = await fixture(t, 'failed', { request, native }),
+      result = await migrateLegacyDatabase(f.options),
+      target = new Database(path.join(f.options.output, 'library.sqlite'));
+    try {
+      const job = target.prepare('SELECT actual_seed FROM generation_jobs').get(),
+        parent = target.prepare('SELECT operation,seed_mode FROM generation_requests').get();
+      assert.equal(job.actual_seed, (request.operation ?? 'generate') === 'generate' ? 0 : null);
+      assert.equal(
+        parent.seed_mode,
+        (request.operation ?? 'generate') === 'generate' ? 'fixed' : 'not_applicable',
+      );
+      assert.equal(result.keyDecisions[0].firstDefinitionProved, true);
+      assert.equal(request.seed, 0);
+    } finally {
+      target.close();
+    }
+    assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+  }
+});
+
+test('现代原ArtifactPublished拥有creator/input，storage流没有member也须保同源Local完整接缝', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'modern publication',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 1024, height: 1024, steps: 23, seed: 7, n_samples: 1 },
+      },
+      native,
+    ),
+    f = await fixture(t, 'failed', { request, native, completed: true }),
+    original = await readFile(path.join(f.originalDataDir, f.completedImage.file)),
+    rowBytes = await readFile(f.options.artifacts),
+    rows = rowBytes.toString('utf8').split('\n'),
+    index = rows.findIndex((line) => line && JSON.parse(line).id === f.completedImage.id),
+    localOriginal = {
+      file: path.join(f.originalDataDir, f.completedImage.file),
+      byteLength: original.length,
+      sha256: hash(original),
+      sourceArtifactRowPointer: {
+        file: f.options.artifacts,
+        fileSha256: hash(rowBytes),
+        line: index + 1,
+        lineSha256: hash(rows[index] + '\n'),
+      },
+    },
+    { file, bytes } = await selectedCutConfiguration(f, localOriginal),
+    result = await migrateLegacyDatabase({
+      ...f.options,
+      cutConfig: file,
+      cutConfigSha256: hash(bytes),
+    }),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    const artifact = target.prepare('SELECT * FROM artifacts').get(),
+      attempt = target.prepare('SELECT * FROM generation_attempts').get(),
+      parent = target.prepare('SELECT * FROM generation_requests').get();
+    assert.equal(artifact.id, f.completedImage.id);
+    assert.equal(artifact.member_id, 'member');
+    assert.equal(artifact.input_id, parent.input_id);
+    assert.equal(artifact.original_attempt_id, attempt.id);
+    assert.equal(artifact.published_at, f.acceptedAt + 3);
+    assert.equal(
+      target.prepare('SELECT artifact_id FROM generation_jobs').get().artifact_id,
+      artifact.id,
+    );
+    assert.equal(target.prepare('SELECT count(*) AS n FROM input_assets').get().n, 0);
+    assert.equal(
+      result.findings.some((row) => row.code === 'ARTIFACT_INPUT_OWNER_UNPROVEN'),
+      false,
+    );
+    assert.equal(
+      typeof target.prepare('SELECT verified_at FROM artifact_replicas').get().verified_at,
+      'number',
+    );
+    assert.deepEqual(await readFile(path.join(f.options.output, f.completedImage.file)), original);
+  } finally {
+    target.close();
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });

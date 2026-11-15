@@ -843,6 +843,10 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
           : group.originalRequestId
             ? null
             : original?.seed;
+      let actualSeed = typeof seed === 'number' ? seed : null;
+      if (operation !== null && operation !== 'generate') {
+        actualSeed = null;
+      }
       events.push({
         eventId: references.eventId('OpeningJobRecorded', row.id),
         eventType: 'OpeningJobRecorded',
@@ -858,7 +862,7 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
               : null,
           sampleIndex:
             Number.isSafeInteger(job.sampleIndex) && job.sampleIndex >= 0 ? job.sampleIndex : null,
-          actualSeed: typeof seed === 'number' ? seed : null,
+          actualSeed,
           status: job.status,
           queueSeq:
             Number.isSafeInteger(job.queueSeq) && job.queueSeq > 0 ? String(job.queueSeq) : null,
@@ -981,31 +985,33 @@ function planLegacyArtifacts(
     });
   }
   for (const descriptor of descriptors) {
-    const original = readStreamProjection(source, `artifact:${descriptor.id}`)?.projection;
+    const original = readStreamProjection(source, `artifact:${descriptor.id}`)?.projection,
+      savedPublication = publications.get(descriptor.id),
+      publication = savedPublication?.value ?? null,
+      memberId = publication ? publication.memberId : original?.memberId;
+    // publication 拥有 creator/input，后续 artifact stream 只拥有 storage/retirement。
+    // 不能要求仅有 storage 事件的流再保存一份 member，也不能借当前 Key 补原身份。
     if (
-      !original ||
-      original.id !== descriptor.id ||
-      !references.memberIds.has(original.memberId)
+      (original && original.id !== descriptor.id) ||
+      (publication &&
+        (typeof memberId !== 'string' ||
+          !memberId ||
+          (original?.memberId != null && original.memberId !== memberId) ||
+          publication.artifact.sha256 !== descriptor.sha256 ||
+          publication.artifact.byteLength !== descriptor.byteLength))
     ) {
-      continue;
-    }
-    if (descriptor.memberId !== null && descriptor.memberId !== original.memberId) {
       reject();
     }
-    const savedPublication = publications.get(descriptor.id),
-      publication = savedPublication?.value ?? null;
-    if (
-      publication &&
-      (publication.memberId !== original.memberId ||
-        publication.artifact.sha256 !== descriptor.sha256 ||
-        publication.artifact.byteLength !== descriptor.byteLength)
-    ) {
+    if (!references.memberIds.has(memberId)) {
+      continue;
+    }
+    if (descriptor.memberId !== null && descriptor.memberId !== memberId) {
       reject();
     }
     let input = null;
     if (
       publication &&
-      publication.memberId === original.memberId &&
+      publication.memberId === memberId &&
       publication.artifact.sha256 === descriptor.sha256 &&
       publication.artifact.byteLength === descriptor.byteLength
     ) {
@@ -1033,13 +1039,13 @@ function planLegacyArtifacts(
           sha256: descriptor.sha256,
           byteLength: descriptor.byteLength,
           publishedAt: time(savedPublication.occurred_at),
-          retiredAt: time(original.retired?.at),
+          retiredAt: time(original?.retired?.at),
         });
       }
     }
     if (!input) {
-      const saved = original.artifactInputRef
-          ? readArtifactInput(source, original.artifactInputRef, original.artifactInputSha256)
+      const saved = original?.artifactInputRef
+          ? readArtifactInput(source, original?.artifactInputRef, original.artifactInputSha256)
           : null,
         request = {};
       // base64 在 artifact_inputs 是原结果，不能成为上游 image 附件或新输入字节。
@@ -1052,7 +1058,7 @@ function planLegacyArtifacts(
         request.operation = descriptor.operation;
       }
       const inputId = `legacy-artifact-input:${descriptor.id}`;
-      input = { inputId, memberId: original.memberId, operation: descriptor.operation };
+      input = { inputId, memberId, operation: descriptor.operation };
       inputs.push({ ...input, content: openingInput(request, null), originalId: descriptor.id });
     }
     if (!references.artifactHistoryById.has(descriptor.id)) {
@@ -1062,7 +1068,7 @@ function planLegacyArtifacts(
         sha256: descriptor.sha256,
         byteLength: descriptor.byteLength,
         publishedAt: null,
-        retiredAt: time(original.retired?.at),
+        retiredAt: time(original?.retired?.at),
       });
     }
     references.inputsByArtifact.set(descriptor.id, input);
