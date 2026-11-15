@@ -57,3 +57,28 @@
 | `evidence-manifest.json` | `c3b101792b6b1d04305337ec6b6a7d385b3af85e04c305dd0d425e683ef61cdc` |
 
 静态准备的 before JSON 在正式 launch 按 runner 重写时仅发生 LF→CRLF 序列化变化，规范化后相同；实际运行 before/after 字节完全相同，原静态版本及 `metadata-serialization.json` 单列。以上只证明当前完整源码的实际失败范围、来源和退出，不替代发布物、迁移、实外端容量或生产切换。
+
+## 后继 0094243 的第三次完整运行
+
+固定 `00942434283ee18f2faf1e457d01d6f60e2050bb` 在另一真实 Git 隔离树运行原完整命令，仍为 44 unit、126 integration、并发 4 和原期限/断言/平台条件。一次 exit 1，TAP **346.717144 秒**、Popen 347.469 秒：**2,899 节点为 2,888 pass、6 fail、零 cancelled、5 原 skip**。2,079 个顶层中四个 `not ok`，另两个子级失败已计入六 fail；父汇总不另作业务根因。
+
+| 实际入口 | 本轮失败阶段 |
+| --- | --- |
+| `failure-accounting` 原部分收费历史 | child 在启动等待时退出 1，尚未到领取及账务 oracle；原缺账户/时间/父关系等来源不能凭当前默认补齐 |
+| `native-http` 原 Local 缺图子例 | 原期望 500，实际 503；该子例后面的安全正文断言未到；另含一个父汇总失败 |
+| `r2-history-http` | 末尾原期望 500，实际 503；前面的字节/ACL、坏来源、正文、停止及公共回放断言已到 |
+| `relational-sole-runtime` 的 `done` 子例 | 首次基线领取在原 `:1103` 比较失败：实际 887 B XML/SVG 超时提示，预期 34 B WebP；另含一个父汇总失败 |
+
+sole 原 `DIRECT_GENERATE_TIMEOUT_MS=100` 未改。该次失败尚未进入 `:1106` arm-IO、`:1113` shutdown 或 `:1131` latewire 比较，因此没有观察到这些后继路径失败；原 TAP 只给出了响应字节和 stack，没有首次响应 header 或更深阶段取证。不能把提示内容直接推成关停重领缺陷、修改图片期望或延长期限来消红。Native/R2 状态码仍按[迁移决策材料](database-model-migration-decision.md)等待维护者选择，当前完整运行保持 NOTPASS。
+
+原 503 条冷历史本轮实际通过，**54.9141193 秒**，仍在原 60 秒限制内；此前 b9 的取消和私有阶段观察记录保留。这一轮并发、夹具和产品并集均不同，不将通过单独归因于两个同步读取优化，也不宣称并发性能问题已普遍消失。
+
+617 份实际 tracked 文件的 Git/blob/raw、Node/native/pnpm/批准 preload 和 runner 前后相同，初始 pnpm Node 的 16 个实际环境变量名与 Python 显式传入块相等。本轮 before-source 静态与实际运行原字节完全相同，没有 b9 的 metadata 换行差别。411 个入口记录对应 398 个 OS Node 身份和 13 个线程；340 个 self-exit 加 58 个实际父句柄退出覆盖这些 OS 身份，线程随已退出 owner 关闭。主 coordinator 仍单列真实父句柄/OS 退出证据，不冒 self-prelude；两个复用为 svchost/Firefox 的 PID 没有被终止。所有已记录原测试和子进程均关闭后释放运行槽，没有自动重跑。
+
+本轮证据独立封存于 `H:/TEMP/novelai-root-full-integrated-0094243-20261115/`。本记录只覆盖固定源码的完整原测试，不代替实际 emitted JS 包、Node24、三包/Nuxt、Docker、真实对象端点、迁移、同规模恢复或切换。
+
+| 文件 | SHA256 |
+| --- | --- |
+| `REPORT.md` | `ec888e967807cdefe6602a15821208770753c87a5e6e5751ce9b70f8c4fcfafe` |
+| `FAILURES.md` | `b27f92032826125e74b25ffc4520b82dd393d9a9cff90140825d83762145cb35` |
+| `EVIDENCE-MANIFEST.json` | `fbfa1e11a404a9880849606db22cd2efe7e0fe5bc67f7d98a44dc90a15fd9ad7` |

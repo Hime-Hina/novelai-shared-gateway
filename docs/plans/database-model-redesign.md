@@ -2690,6 +2690,24 @@ R2 固定 `e5498e0d` 普通同步原 `184c41b` 到 7063 产品，原七行、五
 
 四个捕获路径角色、9412 个原 R2 bucket 声明、6766 个显式 Pik 来源与该切点前进程的启动配置相符；2646 条无 Pik 声明和 230 条无 R2 声明不增加新承诺。结合原模块仅启动装配的配置来源，可选定该 startup namespace 用于原 cut16509 的只读盘点。原捕获缺少同时刻 PID/images inode 的限制仍保留，这不证明任何对象存在、原图完整、当前候选制品或切换；原 collector 的外部认证标记不改，不写 ready/业务状态。首次 connector 引用取回 403/0B 及随后同制品 gh 取回成功的原件分别保留，完整私有值只留受保护记录。证据 `H:/TEMP/novelai-original-namespace-authority-20261115/namespace-release-binding-3c-v1/artifact-gh-api-transfer-v1/HANDOFF-VERIFIED.md`。
 
+### 9.109 真实旧源的已选 metadata 导出行动
+
+在原只读盘点之后，显式选定既有官方 `e04` 工具包、原 605,024,256 B/SHA `47ea07f4…f4821` 旧源和 cut `16509`，只执行一次原 `audit-legacy-archive --export`。输入不是本轮另造源或 9412 条局部 mapper：完整原源实际含 16,509 commits、77,865 events，本轮输出为 18,570 行输入 metadata（4,303,317 B/SHA `600de1e4…e6413`）和 9,642 行产物声明（7,597,646 B/SHA `b5d7b3e4…b3d09`）。原数据库及同目录另外三份文件的摘要与身份前后相同，零 sidecar；原图未读取，未注册 retained、迁移或安装 ready。
+
+选定行动的共同 audit 为 1,069 B/SHA `f16a8f4c…3c63d`，绑定原 source/cut、工具、opening 摘要及两个导出 tuple。`openingSha256` 是原 `app_meta.event_opening` 保存字符串的摘要，不是导出文件拼接摘要；metadata 不能重算 opening 或受保护正文。audit 与 stdout 的 JSON 相同，原字节分别为 1,069/907 B，不能冒称两个原文件逐字相等。已有只读主句柄在 TEMP 核对期间允许 `query_only=OFF`，不把它说成全程 query-only 或可写主源。
+
+非作者纯文件审查实际重新流读两份 JSONL，核严格 UTF-8/schema、长度、行数、摘要及身份唯一，并将全部 9,642 条的共有原字段与原描述符逐项比较；未补 230 条无 R2 或 9,412 条 R2 中 2,646 条无 Pik 的来源承诺。18,570 行不包含保护正文；原权益、未决责任、幂等和审计内容仍由封存完整旧源保留。此次 PASS 只认证外部预选并实际受控执行的这一行动 metadata，不认证任意自报工具 SHA 的报告；retained 消费者仍须独立取得所选行动锚，不能让同一 archive 输入自选认证依据。
+
+本轮耗时 24.968 秒，219 次采样的峰值 working set 为 336,789,504 B；采样阈值不是 OS 硬上限，也不是同规模恢复/容量性能验收。ACL 为 8,926 项原记录加 21 项补集的两次观测，不称一次原子全量扫描。所有已记录进程已退出，网络尝试为零；coverage 仍 unknown，release false、源 DELETE 为零。证据在私有 `database-model-selected-export-47ea-16509-20261115-e04-47ea-export1/ACTUAL-HANDOFF.md`（SHA `6e9273a0…61673`）及非作者 `H:/TEMP/novelai-original-namespace-authority-20261115/selected-export-independent-e04-v1/INDEPENDENT-REVIEW-FINAL.md`（SHA `3efc7539…12e7ba`）。本片没有选择 A/B 路线，旧源退休与生产切换仍受原门禁约束。
+
+### 9.110 固定 0094243 的第三轮完整后端
+
+固定 `00942434283ee18f2faf1e457d01d6f60e2050bb` 在独立 Git 工作树一次原 `pnpm test`，仍为 44 unit/126 integration、并发 4、原期限/断言/skip。实际 **2,899 节点为 2,888 pass、6 fail、零 cancelled、5 原 skip**，TAP 346.717144 秒、进程 347.469 秒，exit 1；2,079 个顶层中四个 not-ok，另两个子级已包含在六 fail 内。没有从 b9 的旧红扣减推结果，完整后端仍未通过。
+
+失败的实际阶段分别为原部分收费历史 child 启动退出、Native 原 Local 期望 500 而返回 503、R2 整例末尾相同状态差异，以及 sole-runtime 的 done 子例首次基线领取返回 887 B 超时提示 SVG 而原断言要求 34 B WebP。最后一项在原 `:1103` 比较失败，尚未进入后续 arm-IO、shutdown 或 latewire 检查；当前只有原 TAP 内容和 stack，不据此认定关停重领存在缺陷，也未提高原 100 ms 配置。Native 和 sole 的父汇总失败不是另外两项业务根因，500/503 决策仍待维护者选择。
+
+本轮原 503 条冷历史用例在原 60 秒期限内实际通过，54.9141193 秒；保留 b9 超时和私有 solo 记录，不能凭一轮或两个同步读取优化宣称性能问题普遍消失。617 份源码、Node/native/pnpm/批准 preloads 前后相同，初始 pnpm 的实际 16 个环境变量名与显式环境块相等。398 个 OS Node 身份均有退出证据，13 个线程随已退出 owner 关闭，主编排单列真实父句柄；两个 PID 已被其它应用复用，未终止这些应用。完整源码的原阶段、资格及封存证据见[完整运行记录](../history/database-model-full-source-20261115.md)，不代表实际 JS 包、Node24、Docker、实云、迁移或切换已验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
