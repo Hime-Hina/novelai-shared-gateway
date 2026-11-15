@@ -207,6 +207,7 @@ export class RelationalRequestStore {
         completedAt: iso(job.completedAt),
         error: job.errorCode,
         errorCode: job.errorCode,
+        cancelled: job.cancellationReason !== null,
         cancelledAt: job.cancellationReason ? iso(job.completedAt) : null,
         lateResultAvailable: job.lateResultAvailable === 1,
         imageId: job.imageId,
