@@ -2766,6 +2766,24 @@ Pik 实际到达 DNS/TCP/TLS，响应头、first byte 和 EOF 均未到，应用
 
 46 条小 metadata/code/Node/自身绑定前后相同，原进程和三条连接全部结束，未打开或重算 605 MB 源 DB/gzip、未执行 SQL/写入/删除。凭据仅在获准启动时核原封存摘要和 namespace，不冒称另做 post-hash。原始 selectors 和清单只留受保护目录，安全聚合证据 `H:/TEMP/novelai-external-inventory-next-20261115/runner-v3/ACTUAL-HANDOFF.md`（SHA `5ac540a2…d9d119`）、manifest `99c20bb7…43332c`。本片不证明 Pik 库存、全部 9,412 项内容、物理 wire、容量性能或同候选发布验收；源释放仍禁止。
 
+### 9.117 冷历史签名领取保留原归档并验证真实关系入口
+
+静态追踪 9.114 的启动红，确认原 HTTP 夹具仍把旧格式 SQLite 直接交给只接受新格式 ready 的运行时；原 stderr 已丢弃，旧启动退出的内层原因没有恢复。test-only `0c135511` 保留原旧 owner 的 3,100 条无图 done、迟到结果、跨归属/删除引用及原查询断言，另以完整声明的独立合成来源建立当前 HTTP 目标。该目标仍含 3,100 条成员 B 干扰历史、12 条成员 A 迟到结果和原 other/mismatch/deleted/hot 身份；仅显式已知的新源提供账户、配置、5+2 归档退款和时间，不从旧行或唯一 Opus 推断缺失事实。旧归档异常行并未被声称转换为合法在线关系。
+
+复用现 public replayer、成员凭据 owner、Opening/副本校验、私有恢复与唯一 installer。已知 B done 共用确属 B 的真实产物；跨成员产物先经真实 Opening append 拒绝，并比较全库回滚，随后仅保合法无结果 A job。15 份实际 PNG 描述符先读/hash/长度校验，归档退款前后全部 wallet/operating 行相等。原 14 处 HTTP 断言、20 秒总限额、10 秒启动限额保留；共享 launch helper 只增加默认仍为 15 秒的可选参数，以保本例原 10 秒，没有复制启动器或放宽 ready。
+
+首片 f3 的实际单例在凭据写入缺外层 SQL 事务时被 owner 正确拒绝，1.984 秒、零 server/HTTP，原红保留。唯一一行后继按已有调用方式包装该写入，KDF 仍在 SQL 外。固定 `0c135511a275b0645332eff79ae397033078bfda` 原 exact-title 一次实际 **1/1、零 skip**，用例 15.1127579 秒、TAP 15.9264202 秒。真实两次 login、两次 me、两次无 Cookie 签名 PNG 请求全部通过，随后真实停机和全公共表回放、零认证复活/零回放网络断言完成。两次图片 GET 指向同一原图，不冒作两个不同对象；未执行其它被 pattern 排除的测试。
+
+618 个原 Git/raw 文件、native/工具/控制前后相同，实际 worker 环境名核对通过，Python/kernel/worker/server 四身份均关闭。非作者消费两轮原始证据并核对具体反例：全局 LIMIT 后才筛成员会丢失 Alice 的 hot，跨归属或事务部分写入、归档退款副写均被现断言识别；复审未重复执行，也不冒称独立运行。证据 `H:/TEMP/novelai-target1-http-0c13551-run2-20261115/REPORT.md`（SHA `5cb33636…63b2db`）、非作者 `REVIEW-FINAL-0c135511.md`（SHA `c88a0d04…877539`）。Root 测试并集逐字等候选，通过 architecture、明确基线 `--base 88d2c26` 的 migration、backend typecheck 与五路径格式。原四轮完整结果不扣减推绿；最新并集完整源码/远端 CI 继续单列。
+
+### 9.118 实际 147 CLI 登记选定旧源并恢复保留证明
+
+9.111 的实际打包 CLI 现已消费 9.109 外部选定行动 `20261115-e04-47ea-export1` 的原 f16 audit pin，一次执行 init、archive、read、checkpoint、restore、read-restored，六命令均自然 exit 0，协调器 3.109 秒、整组 5.492 秒。restore 的期望 SHA 只来自本次可信 checkpoint 命令原 stdout，不从待恢复 marker 自选。源与 selected audit/artifacts 均保持原位；采用新私有 registry、checkpoint、restored-registry，不覆盖现有状态。
+
+原 owner 实际两次只读 FS 流各完整读取 605,024,256 B 并核 47ea 摘要，总 1,210,048,512 B；其余五命令源流零，没有 SQLite 连接。live/checkpoint/restored 三处独立 audit/artifacts 证明副本均保持原摘要、1,069 B audit 和 9,642 行/7,597,646 B artifacts，live 与 restored 的受保护读相等。inputs 仅随共同 audit 保留原元组，未重读其内容；复用已独立封存的原库实体，没有再复制数据库或原图。这里验证的是登记与证明检查点恢复，不能称数据库或图片恢复。
+
+六个 Node 实际入口的最小环境、禁 strip-types、入口前网络/native/TS 拒绝及原句柄退出均到场，denied 为零；所有九个相关进程身份关闭。源四文件 metadata/sidecar 和 127 pins 前后相同，只有原库两遍 owner hash 是本轮新的源摘要验证，另外三文件不冒称新 hash。私有 ACL 和原始 stdout/guard/wait 保留，最终 ACL 的枚举时点资格单列。证据 `H:/TEMP/novelai-selected-retained-147-20261115/action1/ACTUAL-HANDOFF.md`（SHA `855ae07f…847cbd`）、manifest `3483fb54…910f8`。coverage/dependencies 仍 unknown、releaseAllowed=false、hold retained、源 DELETE 零；未选择 A/B、namespace 或手装 ready，不因证明恢复成功允许来源释放。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
