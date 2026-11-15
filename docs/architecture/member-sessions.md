@@ -10,7 +10,7 @@ T3 新格式接入继续复用 `members/authentication.ts` 的规则。存储通
 Discord 的邀请、登录和刷新继续由 `members/discord-auth.ts` 决定，经 `discordAuthenticationTransaction()`
 保存私有绑定/授权与非秘密资格事实。网络验证在 SQL 事务外完成，受理事务按同一五分钟规则复核当前资格。
 本段不改变下面已发布接口的期限、Cookie、Discord 或撤销规则；逐阶段实现与验证见
-[数据库计划第 9.6 节](../plans/database-model-redesign.md#96-t3t4稳定身份私有凭据和会话事务)。
+[数据库计划第 9.6 节](../history/database-model-execution-records.md#96-t3t4稳定身份私有凭据和会话事务)。
 
 关系成员注册和状态命令接受当前已认证 owner 的稳定成员及认证版本，复用
 `assertCurrentOwnerCommand()`，在同一 Key/Cookie 事务内、原回执之前复核当前
@@ -19,7 +19,7 @@ owner 配置、启用状态及数据库中的认证版本；元数据不能自�
 owner 不得停用本人；本机 admin 和内部 system 的既有应急入口保留。停用的私有
 撤销与业务事实同笔提交，重新启用、重启及重领原回执均不恢复旧 Cookie 或旧认证版本。
 公共提交回放只恢复稳定身份与状态，不恢复私有凭据，也不重做在线授权或网络调用。
-这一存储接缝不表示管理 POST 已接入；范围和反例见数据库计划第 9.65 节。
+原接缝与反例见[历史 9.65](../history/database-model-execution-records.md#965-成员注册与状态命令的当前-owner-接缝)；实际管理字段按 [API 契约](../contracts/api-contract.md#门户与管理的迁移边界)。
 
 owner 连续 1 天未访问后过期，普通成员连续 7 天未访问后过期。有效会话的
 可见网页访问将截止时间重设为当前时间加各自期限，不在旧截止上累加天数。
