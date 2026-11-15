@@ -2343,6 +2343,18 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 根在 `a87f927` 的已审复制/停机及完整汇总上普通整合：运行时逐字等于根源加上述七行，会话文件逐字等于396，两个既有计划小节完整保留。真实角色变更、稳定 Cookie 和原 sole 鉴权/管理汇总交点 **3/3、零跳过，11.597 秒**，包含实际故障阶段/回滚而非只断言启动失败；八次实际 child 均在入口前显式加载 loopback socket/fetch guard。类型、architecture、默认及可信 main88 迁移、201 文件语法和变更格式通过；保留证明 `H:/TEMP/novelai-member-session-root-preservation.json`，日志 `H:/TEMP/novelai-member-session-root-*`。启动仅调用原认证 owner；后续相似会话规则仍在该 owner 维护。尚未执行最终同根 full/发行物、Node24、Linux SIGTERM、实云或生产迁移与切换。
 
+### 9.96 结果恢复 HTTP child 的关系夹具
+
+本片仅迁移 `tests/integration/result-recovery-http.test.mjs` 的来源、真实故障捕获和断言，复用未改的 `relational-child`、当前 bootstrap、唯一 ready installer、完整提交回放及 Input/Generation/Replica owner；不修改产品、schema、守卫、CI 或旧 SQL。固定基础为 `5e629689b0ed41c2df94b52db1dcb3646ffa7314`，不借用前批 Native 的 65 秒运行证明本片。
+
+保留六故障点、两次启动、原 PNG/256 字节 Vibe、Native 两张与 9.9 秒间隔断言、真实 POSIX SIGTERM/100ms 宽限及原平台 skip、503 份冷结果和第 501/502 张签名领取。test-only dataURL preload 捕获真实 `prepareGenerationResult` writer 和原描述；文件故障在 SQL 外，最终 SQL 故障在实际完整 COMMIT 后、safe 通知唤醒前同步暂停，再由父进程强杀。新格式对缺失/半写/损坏 prepared 已有明确保留责任、拒绝监听契约，区别于本文件此前旧 writer 的自动退款期望；没有 prepared 的中断仍沿原 owner。迟到 Vibe 必须由真实执行超时先退款、本地完整 part 后恢复，不直接调用 fail 或手改账务。原 503 夹具只有 parentless job/image 的创建时间、成员 Key、文件及 MIME，没有 parent 受理、operation、sampleIndex 或发布/完成时点。当前 Opening 的必填字段不能诚实表达全部缺失值；不得拿 createdAt、0 或导入时点补造。原程序已按固定 Git 字节封存，本用例在共同模型精度修正前明确失败、禁止旧 JsonStore 打开关系目标，不用 skip 或 503 次新受理消除此缺口。共同表示由 9.98 负责，本片不加局部兼容路径。
+
+本片仍为 WIP / NOT PASS。首命令把 Windows `--import` 写成路径而非 `file:///` URL，在模块加载前失败，0 实际用例、0 server child，保留 `short1.log`，不计产品反例。同一授权短组修正 argv 后，原源码 SHA256 `c7781a5c55af62fbb5d63db2094a889db3d8db3d30f6f644039bfa2946ed53ce` 的四个顶层用例 **2 通过、2 夹具断言失败、零 skip，10.054 秒**：file_sync/final_sql 各两次实际重开、原身份/预扣金额及公共回放通过；descriptor 和损坏 part 在实际文件故障后的首次恢复拒绝监听，但夹具误期待内部 Error 原文，运行时按原规则只公开 `GENERATION_RUNTIME_FAILED`。迟到 Vibe 的 true 分支尚未触达，不借该首轮证明 deadline 退款。十个实际 server child 均由独立 spawn preload 在入口前显式加载低层 loopback guard，逐 PID 已退出，源槽已释放；原日志、首源、argv 和 guard 记录保存在 `H:/TEMP/novelai-result-recovery-http-996-20261115/`。
+
+最小后继只改测试：同步转发原 `readGenerationResultPreparation` 的全部参数与返回值，仅记录实际 `storage/relational-result-recovery` 调用栈、原 descriptor/attempt/准备事件与提交以及 SQL 外 writer；与规范错误码、0 listen、全部公私表及缺失/半写/同长损坏字节不变一同断言，不用 schema/loader/ready 前拒绝冒充目标，也不修改产品脱敏。后继固定运行字节 SHA256 `f9ff357bbe6c80754dc00683386868253c122735c8fcad3ab506f784fea654f8` 经父单独授权，同一四项 pattern **4/4、零 skip，15.167 秒**，日志 `short2-marker.log`、`short2-marker-source.json` 与提取的实际 owner 栈/阶段 `short2-marker-phases.json`。descriptor/同长损坏 part 均实际两次进入恢复 owner 核原准备后拒绝监听，全部公私表及缺/坏字节不变；file_sync/final_sql 两次重启保原尝试、结果、资源金额与完整公共回放。Vibe true 分支本次首次实际执行：完整 256 字节已 fsync、本地文件 Promise 仍被测试 gate 持有时，由原 1000ms 控制 deadline 经实际 `expire/fail` 产生 `aborted=true` 失败与退款，强杀后两次恢复迟到原结果，保持 failed、原退款及同一 artifact，并签名领取 exact bytes；没有直接调用 fail。十五个实际 child 全在入口前加载 guard，OS 逐 PID 已退出，立即释放源槽。该四项运行不包含 half_write，不借该 pattern 声称半写通过。随后原 f9 字节先精确核验并封存，仅给 batch 原 `>=9900` 断言错误文案补入实际保存的上游完成、恢复提交、下一次开始与 gap 时点；阈值、业务、时钟、45 秒用例及 25 秒等待不变，当前源码 SHA256 `929992a93520c55917de30ed04485d137cd088e7fb00471f229443d10c9655f0`。父另授剩余三个原标题，真实 exec session `4056` 一次运行 **3/3、零 skip，18.180 秒**：half_write 两次真实 prepared 核对后拒绝监听、原半写字节与全公私表不变，rename 两次恢复同一结果/金额/完整公共回放；Native 两张恢复后连续自动派发、原 `next.upstream_started_at - recovered.completed_at >=9900`、两笔 settled、零退款及两张原字节签名领取均通过。实际数值仅在断言失败时输出，因此本次只证明原阈值通过，不编造精确 gap。八个 child 全部入口前显式 guard，OS 逐 PID 已退出，明确交还源槽。该组日志为 `remaining1.log`、绑定/阶段为 `remaining1-{source,phases}.json`，不把两个不同运行加算为一次整文件结果。
+
+当前四文件为明确 WIP 检查点，不供根直接合入意图失败的 503 分支。Windows dir_sync/SIGTERM 原 skip 保留，未宣称 POSIX 持久性；503 等共同表示修正，整文件仍 NOT PASS。当前没有独立审查或完整同候选发布物、Node24/Linux、实云、生产迁移与切换证明。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
