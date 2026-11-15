@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { R2Storage, r2Config } from '../server/storage/r2-storage.ts';
+import { PikPakStorage, pikpakConfig } from '../server/storage/pikpak-storage.ts';
 import {
   assertReadableStoredResultDescriptor,
   assertStoredResultContent,
@@ -46,19 +47,29 @@ export async function materializeLegacyOriginals(options) {
       selected,
       configuration,
     ),
-    directory = path.dirname(selection.filename),
-    config = selection.originals.some((row) => row.file === null) ? r2Config() : null;
+    directory = path.dirname(selection.filename);
   if (selection.originals.some((row) => row.file === null && row.r2 === null)) {
     reject();
   }
-  if (
-    selection.originals.some((row) => row.file === null) &&
-    (!config || selection.namespace !== `r2://${config.accountId}/${config.bucket}`)
-  ) {
-    reject();
+  let storage, readMethod;
+  if (selection.originals.some((row) => row.file === null)) {
+    if (selection.readableSource === 'pikpak') {
+      const config = pikpakConfig();
+      if (!config || selection.namespace !== config.url) {
+        reject();
+      }
+      storage = new PikPakStorage(config);
+      readMethod = 'PikPakStorage.get';
+    } else {
+      const config = r2Config();
+      if (!config || selection.namespace !== `r2://${config.accountId}/${config.bucket}`) {
+        reject();
+      }
+      storage = new R2Storage(config);
+      readMethod = 'R2Storage.getFile';
+    }
   }
-  const storage = config ? new R2Storage(config) : null,
-    output = path.resolve(options.output),
+  const output = path.resolve(options.output),
     completed = [],
     toolSha256 = hash(await readFile(new URL(import.meta.url)));
   await mkdir(output, { mode: 0o700 });
@@ -88,7 +99,12 @@ export async function materializeLegacyOriginals(options) {
         if (!row.r2 || !storage) {
           reject();
         }
-        await storage.getFile({ ...row.r2, byteLength: row.byteLength, sha256: row.sha256 }, file);
+        const image = { ...row.r2, byteLength: row.byteLength, sha256: row.sha256 };
+        if (selection.readableSource === 'pikpak') {
+          await writeNewMigrationFile(file, await storage.get(image));
+        } else {
+          await storage.getFile(image, file);
+        }
       }
       const info = await lstat(file);
       if (!info.isFile() || info.isSymbolicLink() || info.size !== row.byteLength) {
@@ -109,7 +125,7 @@ export async function materializeLegacyOriginals(options) {
           inputId: row.inputId,
           byteLength: row.byteLength,
           sha256: row.sha256,
-          method: row.file === null ? 'R2Storage.getFile' : 'selected-local-reuse',
+          method: row.file === null ? readMethod : 'selected-local-reuse',
           namespace: selection.namespace,
           r2: row.r2,
           file,
@@ -133,7 +149,8 @@ export async function materializeLegacyOriginals(options) {
   } catch (error) {
     failure = error;
   }
-  const { filename, selectedSha256, descriptorsByArtifact, ...manifest } = selection,
+  const { filename, selectedSha256, descriptorsByArtifact, readableSource, ...manifest } =
+      selection,
     manifestBytes = Buffer.from(
       JSON.stringify({
         ...manifest,

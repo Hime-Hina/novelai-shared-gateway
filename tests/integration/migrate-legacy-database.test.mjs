@@ -5,6 +5,8 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { Readable } from 'node:stream';
+import { brotliCompressSync } from 'node:zlib';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { pathToFileURL } from 'node:url';
@@ -1774,6 +1776,296 @@ test('selected R2 preparation reuses local sample, serially calls original getFi
     rescuedOriginalsSha256: hash(manifestBytes),
   });
   assert.equal(result.readyInstalled, false);
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('selected Pik preparation keeps namespace proof, original decoder, serial prefix and local zero-IO intake', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    ids = ['pik-local', 'pik-fresh', 'pik-failed', 'pik-unvisited'],
+    f = await fixture(
+      t,
+      'done',
+      null,
+      ids.map((id) => ({
+        id,
+        memberId: 'member',
+        token: 'STA1N-synthetic-current-key',
+        mimeType: 'image/webp',
+        byteLength: bytes.length,
+        sha256: hash(bytes),
+        file: `images/${id}.webp`,
+      })),
+    ),
+    selected = await rescuedSelection(f, ids, bytes),
+    address = 'https://selected.invalid/originals/',
+    { materializeLegacyOriginals } = await import(
+      entry
+        ? new URL('./materialize-legacy-originals.mjs', pathToFileURL(entry)).href
+        : new URL('../../scripts/materialize-legacy-originals.mjs', import.meta.url).href
+    ),
+    { PikPakStorage } = await import(
+      entry
+        ? new URL('../server/storage/pikpak-storage.js', pathToFileURL(entry)).href
+        : new URL('../../server/storage/pikpak-storage.ts', import.meta.url).href
+    ),
+    names = ['PIKPAK_WEBDAV_URL', 'PIKPAK_WEBDAV_USERNAME', 'PIKPAK_WEBDAV_PASSWORD'],
+    saved = Object.fromEntries(names.map((key) => [key, process.env[key]])),
+    original = PikPakStorage.prototype.get,
+    calls = [];
+  let badBytes = false;
+  selected.config.value.sourceNamespaces.pikpakUrl = address;
+  selected.value.namespace = address;
+  for (const row of selected.value.originals.slice(1)) {
+    row.file = null;
+  }
+  const saveSelection = async (output) => {
+    selected.config.bytes = Buffer.from(JSON.stringify(selected.config.value));
+    await writeFile(selected.config.file, selected.config.bytes);
+    selected.value.cutConfigurationSha256 = hash(selected.config.bytes);
+    const value = Buffer.from(JSON.stringify(selected.value));
+    await writeFile(selected.file, value);
+    return {
+      selection: selected.file,
+      selectionSha256: hash(value),
+      cutConfig: selected.config.file,
+      cutConfigSha256: hash(selected.config.bytes),
+      output: path.join(f.directory, output),
+    };
+  };
+  Object.assign(process.env, {
+    PIKPAK_WEBDAV_URL: address,
+    PIKPAK_WEBDAV_USERNAME: 'synthetic',
+    PIKPAK_WEBDAV_PASSWORD: 'synthetic',
+  });
+  t.after(() => {
+    PikPakStorage.prototype.get = original;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  PikPakStorage.prototype.get = async function (image) {
+    calls.push({ instance: this, image: structuredClone(image) });
+    assert.equal(this.config.url, address);
+    assert.equal(Object.hasOwn(image, 'pikpak'), false);
+    this.client.customRequest = async (filename, options) => {
+      assert.equal(filename, hash(bytes) + '.br');
+      assert.equal(options.method, 'GET');
+      assert.ok(options.signal instanceof AbortSignal);
+      if (calls.length === 2) {
+        throw new Error('synthetic first read failure');
+      }
+      return {
+        body: Readable.from([brotliCompressSync(badBytes ? Buffer.alloc(bytes.length) : bytes)]),
+      };
+    };
+    return original.call(this, image);
+  };
+  await t.test('wrong selected/current/unknown namespace rejects before IO', async () => {
+    for (const kind of ['selected', 'current', 'unknown']) {
+      if (kind === 'selected') {
+        selected.value.namespace = 'https://wrong.invalid/originals/';
+      }
+      if (kind === 'current') {
+        process.env.PIKPAK_WEBDAV_URL = 'https://wrong.invalid/originals/';
+      }
+      if (kind === 'unknown') {
+        selected.config.value.sourceNamespaces.pikpakUrl = null;
+      }
+      const options = await saveSelection('wrong-pik-' + kind);
+      await assert.rejects(materializeLegacyOriginals(options));
+      assert.equal(calls.length, 0);
+      await assert.rejects(readFile(path.join(options.output, 'rescued-originals.private.json')), {
+        code: 'ENOENT',
+      });
+      selected.value.namespace = address;
+      process.env.PIKPAK_WEBDAV_URL = address;
+      selected.config.value.sourceNamespaces.pikpakUrl = address;
+    }
+  });
+  await t.test(
+    'original Pik decoder rejects corrupt bytes without admitting the failed row',
+    async () => {
+      badBytes = true;
+      const options = await saveSelection('bad-pik-bytes');
+      await assert.rejects(
+        materializeLegacyOriginals(options),
+        (error) => error.materializationResult?.completed === 1,
+      );
+      assert.equal(calls.length, 1);
+      assert.deepEqual(
+        JSON.parse(
+          await readFile(path.join(options.output, 'rescued-originals.private.json')),
+        ).originals.map((row) => row.artifactId),
+        [ids[0]],
+      );
+      await assert.rejects(readFile(path.join(options.output, '2.bin')), { code: 'ENOENT' });
+      badBytes = false;
+      calls.length = 0;
+    },
+  );
+  let completed;
+  await t.test(
+    'serial first failure preserves only verified prefix with the closed output shape',
+    async () => {
+      const options = await saveSelection('prepared-pik');
+      await assert.rejects(
+        materializeLegacyOriginals(options),
+        (error) => error.materializationResult?.completed === 2,
+      );
+      assert.equal(calls.length, 2);
+      assert.equal(new Set(calls.map((row) => row.instance)).size, 1);
+      assert.deepEqual(
+        calls.map((row) => row.image.key),
+        ids.slice(1, 3).map((id) => `images/${id}/${hash(bytes)}`),
+      );
+      const file = path.join(options.output, 'rescued-originals.private.json'),
+        manifestBytes = await readFile(file),
+        manifest = JSON.parse(manifestBytes);
+      assert.deepEqual(Object.keys(manifest).sort(), Object.keys(selected.value).sort());
+      assert.equal(Object.hasOwn(manifest, 'readableSource'), false);
+      assert.deepEqual(
+        manifest.originals.map((row) => row.artifactId),
+        ids.slice(0, 2),
+      );
+      assert.deepEqual(await readFile(manifest.originals[1].file), bytes);
+      const receipt = JSON.parse(await readFile(manifest.originals[1].downloadReceipt.file));
+      assert.equal(receipt.method, 'PikPakStorage.get');
+      assert.equal(receipt.namespace, address);
+      assert.equal(receipt.isOriginalR2Promise, false);
+      await assert.rejects(materializeLegacyOriginals(options));
+      assert.equal(calls.length, 2);
+      completed = { file, manifestBytes, manifest };
+    },
+  );
+  await t.test(
+    'selected-local reuse needs no current credentials and performs zero IO',
+    async () => {
+      selected.value.originals = completed.manifest.originals;
+      for (const key of names) {
+        delete process.env[key];
+      }
+      const options = await saveSelection('local-pik-reuse'),
+        result = await materializeLegacyOriginals(options);
+      assert.equal(result.completed, 2);
+      assert.equal(calls.length, 2);
+      const manifest = JSON.parse(
+        await readFile(path.join(options.output, 'rescued-originals.private.json')),
+      );
+      for (const row of manifest.originals) {
+        assert.equal(
+          JSON.parse(await readFile(row.downloadReceipt.file)).method,
+          'selected-local-reuse',
+        );
+      }
+    },
+  );
+  await t.test(
+    'same source plan consumes new Local bytes without inventing a Pik replica',
+    async () => {
+      const result = await migrateLegacyDatabase({
+          ...f.options,
+          cutConfig: selected.config.file,
+          cutConfigSha256: hash(selected.config.bytes),
+          rescuedOriginals: completed.file,
+          rescuedOriginalsSha256: hash(completed.manifestBytes),
+        }),
+        db = new TargetDatabase(path.join(f.options.output, 'library.sqlite'));
+      try {
+        for (const id of ids.slice(0, 2)) {
+          const row = db
+            .prepare(
+              'SELECT r.verified_at,r.uploaded_at,t.kind FROM artifact_replicas r JOIN storage_targets t ON t.id=r.storage_target_id WHERE r.artifact_id=?',
+            )
+            .get(id);
+          assert.equal(row.kind, 'local');
+          assert.equal(row.uploaded_at, null);
+          assert.ok(row.verified_at >= result.effectiveAt);
+        }
+        assert.equal(result.readyInstalled, false);
+      } finally {
+        db.close();
+      }
+    },
+  );
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('selected Pik preparation keeps common MIME validation after the original SHA-valid decode', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    f = await fixture(t, 'done', null, {
+      id: 'pik-bad-mime',
+      memberId: 'member',
+      token: 'STA1N-synthetic-current-key',
+      mimeType: 'image/png',
+      byteLength: bytes.length,
+      sha256: hash(bytes),
+      file: 'images/pik-bad-mime.png',
+    }),
+    selected = await rescuedSelection(f, ['pik-bad-mime'], bytes),
+    address = 'https://selected.invalid/originals/',
+    { materializeLegacyOriginals } = await import(
+      entry
+        ? new URL('./materialize-legacy-originals.mjs', pathToFileURL(entry)).href
+        : new URL('../../scripts/materialize-legacy-originals.mjs', import.meta.url).href
+    ),
+    { PikPakStorage } = await import(
+      entry
+        ? new URL('../server/storage/pikpak-storage.js', pathToFileURL(entry)).href
+        : new URL('../../server/storage/pikpak-storage.ts', import.meta.url).href
+    ),
+    names = ['PIKPAK_WEBDAV_URL', 'PIKPAK_WEBDAV_USERNAME', 'PIKPAK_WEBDAV_PASSWORD'],
+    saved = Object.fromEntries(names.map((key) => [key, process.env[key]])),
+    original = PikPakStorage.prototype.get;
+  let calls = 0;
+  selected.config.value.sourceNamespaces.pikpakUrl = address;
+  selected.config.bytes = Buffer.from(JSON.stringify(selected.config.value));
+  await writeFile(selected.config.file, selected.config.bytes);
+  selected.value.cutConfigurationSha256 = hash(selected.config.bytes);
+  selected.value.namespace = address;
+  selected.value.originals[0].file = null;
+  const selectionBytes = Buffer.from(JSON.stringify(selected.value));
+  await writeFile(selected.file, selectionBytes);
+  Object.assign(process.env, {
+    PIKPAK_WEBDAV_URL: address,
+    PIKPAK_WEBDAV_USERNAME: 'synthetic',
+    PIKPAK_WEBDAV_PASSWORD: 'synthetic',
+  });
+  t.after(() => {
+    PikPakStorage.prototype.get = original;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+  PikPakStorage.prototype.get = async function (image) {
+    calls++;
+    this.client.customRequest = async () => ({ body: Readable.from([brotliCompressSync(bytes)]) });
+    return original.call(this, image);
+  };
+  const output = path.join(f.directory, 'bad-pik-mime');
+  await assert.rejects(
+    materializeLegacyOriginals({
+      selection: selected.file,
+      selectionSha256: hash(selectionBytes),
+      cutConfig: selected.config.file,
+      cutConfigSha256: hash(selected.config.bytes),
+      output,
+    }),
+    (error) => error.materializationResult?.completed === 0 && /MIME type/.test(error.message),
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(await readFile(path.join(output, '1.bin')), bytes);
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(output, 'rescued-originals.private.json'))).originals,
+    [],
+  );
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
 

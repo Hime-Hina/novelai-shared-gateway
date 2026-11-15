@@ -1270,7 +1270,7 @@ function appendLegacyKeys(source, target, references, inputs, appendOpening, fin
   return decisions;
 }
 
-// 新恢复输入只选择本次物化来源，不声称原 R2 promise。原 source/cut/audit/config/namespace
+// 新恢复输入只选择本次物化来源，不声称原远端 promise。原 source/cut/audit/config/namespace
 // 与逐实体 export pointer 必须闭合；member/input 最终仍由本次 source plan 复核，不能按 SHA 合并实体。
 export async function readRescuedOriginals(filename, expectedSha256, selected, configuration) {
   const exact = (value, keys) =>
@@ -1292,6 +1292,20 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
   }
   const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     directory = path.dirname(path.resolve(filename));
+  let readableSource;
+  if (
+    typeof configuration.sourceNamespaces.r2AccountId === 'string' &&
+    typeof configuration.sourceNamespaces.r2Bucket === 'string' &&
+    value?.namespace ===
+      `r2://${configuration.sourceNamespaces.r2AccountId}/${configuration.sourceNamespaces.r2Bucket}`
+  ) {
+    readableSource = 'r2';
+  } else if (
+    typeof configuration.sourceNamespaces.pikpakUrl === 'string' &&
+    value?.namespace === configuration.sourceNamespaces.pikpakUrl
+  ) {
+    readableSource = 'pikpak';
+  }
   if (
     !exact(value, [
       'format',
@@ -1309,10 +1323,7 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
       (key) => value[key] !== selected[key],
     ) ||
     value.cutConfigurationSha256 !== configuration.selectedSha256 ||
-    typeof configuration.sourceNamespaces.r2AccountId !== 'string' ||
-    typeof configuration.sourceNamespaces.r2Bucket !== 'string' ||
-    value.namespace !==
-      `r2://${configuration.sourceNamespaces.r2AccountId}/${configuration.sourceNamespaces.r2Bucket}` ||
+    !readableSource ||
     !exact(value.namespaceReceipt, ['file', 'sha256']) ||
     value.namespaceReceipt.sha256 !== configuration.namespaceReceipt.sha256 ||
     !Array.isArray(value.originals) ||
@@ -1425,6 +1436,7 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
     filename: path.resolve(filename),
     selectedSha256: expectedSha256,
     descriptorsByArtifact,
+    readableSource,
   };
 }
 
