@@ -78,7 +78,11 @@ import {
 import { relationalArtifactReferenceAvailable } from './relational-replica-io.ts';
 import type { RelationalReplicaReadConfiguration } from './relational-replica-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
+import {
+  assertStoredResultDescriptor,
+  assertReadableStoredResultDescriptor,
+  type describeStoredResult,
+} from './result-files.ts';
 import { errorDetailMessage } from '../http/public-errors.ts';
 import { readRelationalOpeningAttempt } from './relational-generation-sources.ts';
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
@@ -162,14 +166,15 @@ interface Job {
   requestId: string;
   memberId: string;
   inputId: string;
-  operation: Publication['operation'];
-  source: string;
+  operation: Publication['operation'] | null;
+  source: string | null;
+  acceptedAt: number | null;
   status: string;
-  sampleIndex: number;
+  sampleIndex: number | null;
   queueSeq: string | null;
   queueExpiresAt: number | null;
   deadlineAt: number | null;
-  admissionEpoch: number;
+  admissionEpoch: number | null;
   confirmation: string | null;
   memberStatus: string;
   authEpoch: string | null;
@@ -260,7 +265,7 @@ export class RelationalGenerationStore {
     const row = this.sqlite
       .prepare<[string], Job>(
         `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,
-      r.input_id AS inputId,r.operation,r.source,j.status,j.sample_index AS sampleIndex,CAST(j.queue_seq AS TEXT) AS queueSeq,
+      r.input_id AS inputId,r.operation,r.source,r.accepted_at AS acceptedAt,j.status,j.sample_index AS sampleIndex,CAST(j.queue_seq AS TEXT) AS queueSeq,
       j.queue_expires_at AS queueExpiresAt,j.deadline_at AS deadlineAt,j.admission_epoch AS admissionEpoch,r.confirmation,
       m.status AS memberStatus,m.auth_epoch AS authEpoch,m.accepting_jobs AS acceptingJobs,m.admission_epoch AS currentAdmissionEpoch,
       j.artifact_id AS artifactId,j.free_succeeded_at AS freeSucceededAt,j.retired_at AS retiredAt
@@ -608,7 +613,7 @@ export class RelationalGenerationStore {
         {
           memberId: string;
           contextId: string | null;
-          sampleCount: number;
+          sampleCount: number | null;
           retiredAt: number | null;
         }
       >(
@@ -834,9 +839,13 @@ export class RelationalGenerationStore {
       return this.commit(metadata, events, staged.receipt);
     });
   }
-  private assertReuseReadiness(job: Job, at: number, expectedAdmissionEpoch?: number) {
+  private assertReuseReadiness(job: Job, at: number, expectedAdmissionEpoch?: number | null) {
     if (job.memberStatus !== 'active') {
       fail('复用成员当前不可用', 403);
+    }
+    this.assertKnownExecution(job);
+    if (expectedAdmissionEpoch === null) {
+      fail('复用缺少原接单代次', 410);
     }
     assertMemberAcceptsJobs(
       { acceptingJobs: job.acceptingJobs === 1, jobAdmissionVersion: job.currentAdmissionEpoch },
@@ -915,9 +924,33 @@ export class RelationalGenerationStore {
       .get();
     return row ? { ...row, enabled: row.enabled === 1 } : null;
   }
+  private assertKnownExecution(
+    job: Pick<
+      Job,
+      'requestId' | 'operation' | 'source' | 'acceptedAt' | 'sampleIndex' | 'admissionEpoch'
+    >,
+  ): asserts job is Pick<Job, 'requestId'> & {
+    operation: Publication['operation'];
+    source: string;
+    acceptedAt: number;
+    sampleIndex: number;
+    admissionEpoch: number;
+  } {
+    if (
+      job.operation === null ||
+      job.source === null ||
+      job.acceptedAt === null ||
+      job.sampleIndex === null ||
+      job.admissionEpoch === null ||
+      this.inputs.readOriginalRequestId(job.requestId) === null
+    ) {
+      fail('历史结构容器或未知元数据不能授权执行或发布', 410);
+    }
+  }
   readGenerationExecutionState(jobId: string) {
     const job = this.job(jobId),
       attempt = this.attempt(jobId);
+    this.assertKnownExecution(job);
     const origin = this.sqlite
       .prepare<
         [string, string],
@@ -1365,6 +1398,7 @@ export class RelationalGenerationStore {
       if (job.memberStatus !== 'active' || !job.authEpoch) {
         fail('成员授权已失效', 401);
       }
+      this.assertKnownExecution(job);
       assertMemberAcceptsJobs(
         { acceptingJobs: job.acceptingJobs === 1, jobAdmissionVersion: job.currentAdmissionEpoch },
         job.admissionEpoch,
@@ -1753,6 +1787,7 @@ export class RelationalGenerationStore {
       if (prior) {
         return prior;
       }
+      this.assertKnownExecution(job);
       const attempt = this.attempt(jobId),
         charge = this.readCharge(jobId);
       if (
@@ -1839,7 +1874,7 @@ export class RelationalGenerationStore {
       if (prior) {
         return prior;
       }
-      const { attempt, charge } = this.generationCompletion(job);
+      const { attempt, charge, job: completionJob } = this.generationCompletion(job);
       assertStoredResultDescriptor(publication);
       if (canonicalJson(publication) !== canonicalJson(this.prepared(job, attempt))) {
         fail('发布结果与准备凭据不符');
@@ -1856,7 +1891,7 @@ export class RelationalGenerationStore {
               memberId: job.memberId,
               inputId: job.inputId,
               originalAttemptId: attempt.id,
-              operation: job.operation,
+              operation: publication.operation,
               mimeType: publication.mimeType,
               byteLength: publication.byteLength,
               sha256: publication.sha256,
@@ -1914,7 +1949,7 @@ export class RelationalGenerationStore {
                 acceptingJobs: job.acceptingJobs === 1,
                 jobAdmissionVersion: job.currentAdmissionEpoch,
               },
-              job.admissionEpoch,
+              completionJob.admissionEpoch,
             );
           } catch {
             stopped = true;
@@ -2382,6 +2417,7 @@ export class RelationalGenerationStore {
   }
   // ready 的只读 prepared 检查与真正发布共用完成前置；不运行发布/结算来试探可恢复性。
   private generationCompletion(job: Job) {
+    this.assertKnownExecution(job);
     const attempt = this.attempt(job.id),
       charge = this.readCharge(job.id);
     if (
@@ -2447,7 +2483,7 @@ export class RelationalGenerationStore {
     if (charge.billingMode === 'free' && job.freeSucceededAt === null) {
       this.policy();
     }
-    return { attempt, charge };
+    return { attempt, charge, job };
   }
   private reservation(event: RelationalEvent, jobId: string, reservationEventId: string): Charge {
     const charge = this.reservedCharge(jobId, reservationEventId);
@@ -2704,19 +2740,38 @@ export class RelationalGenerationStore {
         case 'OpeningJobRecorded': {
           const p = e.payload,
             request = this.sqlite
-              .prepare<[string], { memberId: string; operation: string; retiredAt: number | null }>(
-                'SELECT member_id AS memberId,operation,retired_at AS retiredAt FROM generation_requests WHERE id=?',
+              .prepare<
+                [string],
+                {
+                  memberId: string;
+                  operation: Publication['operation'] | null;
+                  source: string | null;
+                  acceptedAt: number | null;
+                  retiredAt: number | null;
+                }
+              >(
+                'SELECT member_id AS memberId,operation,source,accepted_at AS acceptedAt,retired_at AS retiredAt FROM generation_requests WHERE id=?',
               )
               .get(p.requestId);
           if (
             !request ||
             e.memberId !== request.memberId ||
             e.accountId !== null ||
-            (request.operation !== 'generate' && p.actualSeed !== null) ||
+            (request.operation !== null &&
+              request.operation !== 'generate' &&
+              p.actualSeed !== null) ||
             (['pending', 'queued', 'running'].includes(p.status) &&
               (request.retiredAt !== null || p.retiredAt !== null || p.artifactId !== null))
           ) {
             fail('开账任务与原请求/生命周期角色不符');
+          }
+          if (['pending', 'queued', 'running'].includes(p.status)) {
+            this.assertKnownExecution({
+              ...request,
+              requestId: p.requestId,
+              sampleIndex: p.sampleIndex,
+              admissionEpoch: p.admissionEpoch,
+            });
           }
           if (p.status === 'running') {
             const a = openingAttempts.get(p.jobId),
@@ -2750,7 +2805,7 @@ export class RelationalGenerationStore {
           }
           if (p.artifactId !== null) {
             const existing = this.sqlite
-                .prepare<[string], { memberId: string; operation: string }>(
+                .prepare<[string], { memberId: string; operation: string | null }>(
                   'SELECT member_id AS memberId,operation FROM artifacts WHERE id=?',
                 )
                 .get(p.artifactId),
@@ -2759,7 +2814,9 @@ export class RelationalGenerationStore {
             if (
               !artifact ||
               artifact.memberId !== request.memberId ||
-              artifact.operation !== request.operation
+              (artifact.operation !== null &&
+                request.operation !== null &&
+                artifact.operation !== request.operation)
             ) {
               fail('开账任务缺少同成员/操作的唯一原产物');
             }
@@ -2844,7 +2901,8 @@ export class RelationalGenerationStore {
             fail('开账响应证据自相矛盾');
           }
           if (p.preparedArtifactId !== null) {
-            assertStoredResultDescriptor({
+            // 归档描述符不授予执行权；getter/ready/complete 仍共用严格完成前置。
+            assertReadableStoredResultDescriptor({
               imageId: p.preparedArtifactId,
               file: p.preparedFile,
               operation: job.operation,
@@ -2855,7 +2913,6 @@ export class RelationalGenerationStore {
             if (p.response.dispatchState === 'not_sent') {
               fail('未发送尝试不能有上游准备结果');
             }
-            this.inputs.readJobInput(job.id);
           }
           this.sqlite
             .prepare(
@@ -2916,7 +2973,7 @@ export class RelationalGenerationStore {
                   accountId: string;
                   memberId: string;
                   inputId: string;
-                  operation: string;
+                  operation: string | null;
                   artifactId: string | null;
                   dispatchState: Response['dispatchState'];
                 }
@@ -2931,7 +2988,9 @@ export class RelationalGenerationStore {
               original.accountId !== e.accountId ||
               original.memberId !== p.memberId ||
               original.inputId !== p.inputId ||
-              original.operation !== p.operation ||
+              (original.operation !== null &&
+                p.operation !== null &&
+                original.operation !== p.operation) ||
               original.artifactId !== p.artifactId ||
               original.dispatchState === 'not_sent'
             ) {
@@ -3245,6 +3304,7 @@ export class RelationalGenerationStore {
           const p = e.payload,
             job = this.eventJob(e, p.jobId, p.accountId),
             c = this.readCharge(job.id);
+          this.assertKnownExecution(job);
           if (
             p.connectionSourceEventId !==
               relationalAccountConnectionSource(this.sqlite, p.accountId, e) ||
@@ -3300,6 +3360,7 @@ export class RelationalGenerationStore {
           }
           const job = this.eventJob(e, row.job_id),
             a = this.attempt(job.id)!;
+          this.assertKnownExecution(job);
           const descriptor = {
             imageId: p.artifactId,
             file: p.file,
@@ -3337,6 +3398,7 @@ export class RelationalGenerationStore {
           }
           const job = this.job(a.job_id),
             attempt = this.attempt(job.id)!;
+          this.assertKnownExecution(job);
           if (
             job.retiredAt !== null ||
             e.memberId !== job.memberId ||

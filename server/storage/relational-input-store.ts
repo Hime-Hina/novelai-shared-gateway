@@ -15,6 +15,7 @@ import {
   type RelationalPayloads,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { readRelationalRequestOrigin } from './relational-generation-sources.ts';
 import {
   prepareRelationalInput,
   parseRelationalNormalizationContext,
@@ -27,6 +28,7 @@ import {
   validateRelationalInputBody,
   validateRelationalAssetBytes,
   assertRelationalCompleteInput,
+  assertRelationalInputDefinition,
   relationalInputCacheKey,
   type PreparedRelationalInput,
   type RelationalInputAsset,
@@ -103,9 +105,11 @@ interface RequestRow {
   member_id: string;
   input_id: string;
   context_id: string | null;
-  operation: 'generate' | 'upscale' | 'encode-vibe';
+  operation: 'generate' | 'upscale' | 'encode-vibe' | null;
+  source: string | null;
+  accepted_at: number | null;
   model: string | null;
-  sample_count: number;
+  sample_count: number | null;
   seed_mode: string;
   confirmation: string | null;
   retired_at: number | null;
@@ -116,13 +120,19 @@ function fail(statusCode: number, code: string, message: string): never {
 function unavailable(): never {
   return fail(410, 'input_unavailable', '原输入或首次上下文不可用。');
 }
+function knownSampleCount(sampleCount: number | null): number {
+  if (sampleCount === null) {
+    unavailable();
+  }
+  return sampleCount;
+}
 function diagnosticUnavailable(): never {
   return fail(410, 'diagnostic_unavailable', '原诊断正文或来源不可用。');
 }
 
 function assertRequestBody(
   body: Record<string, unknown> | null,
-  expected: { operation: string; model: string | null },
+  expected: { operation: string | null; model: string | null },
 ): void {
   if (
     body &&
@@ -134,12 +144,13 @@ function assertRequestBody(
 }
 
 function assertRequestSeedMode(
-  request: { operation: string; seedMode: string },
+  request: { operation: string | null; seedMode: string },
   context?: RelationalNormalizationContext,
 ) {
   if (
     request.seedMode !== 'unknown' &&
-    ((request.operation === 'generate') === (request.seedMode === 'not_applicable') ||
+    ((request.operation !== null &&
+      (request.operation === 'generate') === (request.seedMode === 'not_applicable')) ||
       (request.operation === 'generate' &&
         context?.kind === 'member' &&
         context.member.randomSeed !== (request.seedMode === 'random')))
@@ -750,7 +761,7 @@ export class RelationalInputStore {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
     const request = this.request(requestId, memberId);
-    if (request.retired_at !== null) {
+    if (request.retired_at !== null || this.readOriginalRequestId(requestId) === null) {
       unavailable();
     }
     return request;
@@ -759,22 +770,13 @@ export class RelationalInputStore {
   private request(requestId: string, memberId: string): RequestRow {
     const request = this.sqlite
       .prepare<[string, string], RequestRow>(
-        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
+        'SELECT id,member_id,input_id,context_id,source,operation,accepted_at,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
       )
       .get(requestId, memberId);
     if (!request) {
       fail(404, 'request_not_found', '请求不存在。');
     }
-    const registered = this.registeredFact(`request:${requestId}`, [
-      'RequestAccepted',
-      'OpeningRequestRecorded',
-    ]);
-    if (
-      registered.eventType !== 'RequestAccepted' &&
-      registered.eventType !== 'OpeningRequestRecorded'
-    ) {
-      unavailable();
-    }
+    const registered = readRelationalRequestOrigin(this.sqlite, requestId);
     const expected = registered.payload;
     if (
       expected.requestId !== request.id ||
@@ -782,6 +784,10 @@ export class RelationalInputStore {
       expected.inputId !== request.input_id ||
       expected.contextId !== request.context_id ||
       expected.operation !== request.operation ||
+      expected.source !== request.source ||
+      (registered.eventType === 'RequestAccepted'
+        ? registered.occurredAt
+        : registered.payload.acceptedAt) !== request.accepted_at ||
       expected.model !== request.model ||
       expected.sampleCount !== request.sample_count ||
       expected.seedMode !== request.seed_mode ||
@@ -790,6 +796,13 @@ export class RelationalInputStore {
       unavailable();
     }
     return request;
+  }
+
+  // 原parent身份只由唯一原接受事实证明；当前FK容器/时间/ID形状都不能代替它。
+  readOriginalRequestId(requestId: string): string | null {
+    const event = readRelationalRequestOrigin(this.sqlite, requestId);
+    this.request(requestId, event.payload.memberId);
+    return event.eventType === 'RequestAccepted' ? requestId : event.payload.originalRequestId;
   }
 
   private registeredFact(streamId: string, types: string[]) {
@@ -1257,7 +1270,8 @@ export class RelationalInputStore {
             inputId: accepted.inputId,
             contextId: prepared.contextId,
             source: accepted.source,
-            operation: prepared.body.operation as RequestRow['operation'],
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
             model: prepared.body.model as string,
             sampleCount: prepared.sampleCount,
             seedMode: accepted.seedMode,
@@ -1289,7 +1303,8 @@ export class RelationalInputStore {
           eventType: 'RequestAliasRegistered',
           payload: {
             memberId: accepted.memberId,
-            operation: prepared.body.operation as RequestRow['operation'],
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
             keyHash: accepted.idempotency.keyHash,
             noCache: accepted.idempotency.noCache,
             seedMode: accepted.seedMode,
@@ -1539,7 +1554,15 @@ export class RelationalInputStore {
           const context = contexts.get(p.contextId) ?? source.context(p.contextId);
           assertRequestSeedMode(p, context);
           if (input.row.completeness === 'complete') {
-            source.assertCompleteInput(input, context, p.sampleCount);
+            if (p.sampleCount === null) {
+              assertRelationalInputDefinition(
+                input.body!,
+                source.validatedAssets(input, context),
+                context,
+              );
+            } else {
+              source.assertCompleteInput(input, context, p.sampleCount);
+            }
           }
           contexts.set(p.contextId, context);
         }
@@ -1757,9 +1780,10 @@ export class RelationalInputStore {
       unavailable();
     }
     const projected = this.sqlite
-      .prepare<[string], { request_id: string; sample_index: number; actual_seed: number | null }>(
-        'SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?',
-      )
+      .prepare<
+        [string],
+        { request_id: string; sample_index: number | null; actual_seed: number | null }
+      >('SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?')
       .get(fact.payload.jobId);
     if (
       projected &&
@@ -1835,7 +1859,10 @@ export class RelationalInputStore {
     }
     if (p.requestId !== null) {
       const request = this.request(p.requestId, p.originalMemberId);
-      if (request.operation !== p.operation) {
+      if (
+        request.operation !== p.operation ||
+        this.readOriginalRequestId(p.requestId) !== p.originalRequestId
+      ) {
         unavailable();
       }
     }
@@ -1862,7 +1889,7 @@ export class RelationalInputStore {
       unavailable();
     }
     assertRequestSeedMode({ operation: p.operation, seedMode: p.seedMode }, context);
-    const assets = this.assertCompleteInput(input, context, request.sample_count),
+    const { assets, sampleCount } = this.assertCompleteInput(input, context, request.sample_count),
       jobs = this.sqlite
         .prepare<
           [string],
@@ -1878,7 +1905,7 @@ export class RelationalInputStore {
         )
         .all(p.requestId);
     if (
-      jobs.length !== request.sample_count ||
+      jobs.length !== sampleCount ||
       jobs[0]?.id !== p.originalJobId ||
       jobs.some(
         (job, index) => job.sample_index !== index || (!replayed && job.retired_at !== null),
@@ -1904,7 +1931,7 @@ export class RelationalInputStore {
     if (
       p.intentFingerprint !==
       this.idempotencyIntentFingerprint(
-        { body: input.body!, assets, context, firstSeed: seed, sampleCount: request.sample_count },
+        { body: input.body!, assets, context, firstSeed: seed, sampleCount },
         p.seedMode,
         p.noCache,
         confirmation,
@@ -2140,11 +2167,11 @@ export class RelationalInputStore {
         (slot.owner as Record<string | number, unknown>)[slot.key] = { slot: slot.slot };
       }
     }
-    let recoverable = input.row.completeness === 'complete';
-    if (recoverable) {
-      if (!request.context_id) {
-        unavailable();
-      }
+    let recoverable =
+      input.row.completeness === 'complete' &&
+      request.sample_count !== null &&
+      request.context_id !== null;
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
       this.context(request.context_id);
     }
     if (body?.operation === 'generate' && recoverable) {
@@ -2182,10 +2209,7 @@ export class RelationalInputStore {
       unavailable();
     }
     let context: RelationalNormalizationContext | null = null;
-    if (input.row.completeness === 'complete') {
-      if (!request.context_id) {
-        unavailable();
-      }
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
       context = this.context(request.context_id);
     }
     const slot = relationalAssetSlots(input.body, input.assets).find(
@@ -2255,11 +2279,12 @@ export class RelationalInputStore {
   private assertCompleteInput(
     input: ReturnType<RelationalInputStore['input']>,
     context: RelationalNormalizationContext,
-    sampleCount: number,
+    sampleCount: number | null,
   ) {
+    sampleCount = knownSampleCount(sampleCount);
     const assets = this.validatedAssets(input, context);
     assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
-    return assets;
+    return { assets, sampleCount };
   }
 
   // 历史种子只按原事实/已知 context 核对；缺正文不使已知 literal 变为未知或当前默认。
@@ -2300,12 +2325,16 @@ export class RelationalInputStore {
       unavailable();
     }
     const accepted = this.request(job.request_id, job.member_id);
+    if (this.readOriginalRequestId(job.request_id) === null) {
+      unavailable();
+    }
     const seed = this.jobSeed(job.request_id, jobId);
     const input = this.requestInput(accepted);
     if (!input.body || input.row.completeness !== 'complete') {
       unavailable();
     }
     const context = this.context(job.context_id);
+    knownSampleCount(accepted.sample_count);
     const assets = this.validatedAssets(input, context);
     const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);

@@ -3,12 +3,17 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, stat, symlink, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { deflateSync, crc32 } from 'node:zlib';
 import {
   describeStoredResult,
   publishStoredResult,
   readStoredResultContent,
   readPreparedStoredResultContent,
+  assertReadableStoredResultDescriptor,
+  assertStoredResultDescriptor,
+  readableResultFile,
+  storedResultReferenceAvailable,
 } from '../../server/storage/result-files.ts';
 
 const png = Buffer.from(
@@ -59,6 +64,63 @@ test('descriptor 仅包含规范路径、按操作验证的媒体类型、长度
   for (const operation of ['img2img', 'unknown', undefined]) {
     assert.throws(() => describeStoredResult('img_result', operation, image), invalid);
   }
+});
+
+test('历史未知operation只按原MIME/hash/长度冷读，不授权正常发布或准备结果', async () => {
+  const directory = await fixture();
+  for (const [mimeType, bytes] of [
+    ['image/png', png],
+    ['application/octet-stream', Buffer.alloc(256, 17)],
+  ]) {
+    const pending = {
+      imageId: mimeType === 'image/png' ? 'unknown_png' : 'unknown_opaque',
+      operation: null,
+      mimeType,
+      byteLength: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    };
+    const descriptor = { ...pending, file: readableResultFile(pending) };
+    assertReadableStoredResultDescriptor(descriptor);
+    await writeFile(path.join(directory, descriptor.file), bytes);
+    const before = await stat(path.join(directory, descriptor.file));
+    assert.deepEqual(await readStoredResultContent(directory, descriptor), {
+      buffer: bytes,
+      mimeType,
+    });
+    assert.equal(await storedResultReferenceAvailable(directory, descriptor), true);
+    assert.throws(() => assertStoredResultDescriptor(descriptor), invalid);
+    assert.throws(
+      () => describeStoredResult(pending.imageId, null, { buffer: bytes, mimeType }),
+      invalid,
+    );
+    await assert.rejects(publishStoredResult(directory, descriptor, bytes), invalid);
+    await assert.rejects(readPreparedStoredResultContent(directory, descriptor), invalid);
+    assert.equal((await stat(path.join(directory, descriptor.file))).mtimeMs, before.mtimeMs);
+    assert.deepEqual(await readFile(path.join(directory, descriptor.file)), bytes);
+    await assert.rejects(
+      readStoredResultContent(directory, { ...descriptor, operation: undefined }),
+      invalid,
+    );
+    await assert.rejects(
+      readStoredResultContent(directory, { ...descriptor, sha256: '0'.repeat(64) }),
+      invalid,
+    );
+    await assert.rejects(
+      readStoredResultContent(directory, { ...descriptor, byteLength: bytes.length + 1 }),
+      invalid,
+    );
+  }
+  const opaque = Buffer.alloc(256, 17);
+  const falseImage = {
+    imageId: 'false_png',
+    operation: null,
+    mimeType: 'image/png',
+    byteLength: opaque.length,
+    sha256: createHash('sha256').update(opaque).digest('hex'),
+  };
+  const descriptor = { ...falseImage, file: readableResultFile(falseImage) };
+  await writeFile(path.join(directory, descriptor.file), opaque);
+  await assert.rejects(readStoredResultContent(directory, descriptor), invalid);
 });
 
 test('新结果用 0600 临时文件发布，原 buffer 复用，重复发布和最终文件恢复不重写内容', async () => {

@@ -108,6 +108,9 @@ export function createRelationalApiDelivery(deps: {
       // 已承诺的产物缺失不能重发或改成新意图，当前 Key 仍须有效。
       for (const jobId of jobIds) {
         const job = await authorize((memberId) => requests.readMemberJobDelivery(jobId, memberId));
+        if (job.requestId === null) {
+          fail(410, '原任务没有可重领的父请求；如需生成，请使用新的操作键');
+        }
         if (job.status === 'done' || job.artifactId) {
           const artifact = await authorize((memberId) =>
             requests.readMemberResult(jobId, memberId),

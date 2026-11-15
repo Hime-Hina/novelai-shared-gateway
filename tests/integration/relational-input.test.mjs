@@ -880,6 +880,7 @@ test('partial 输入可复制已知字段和已校验附件，缺首次上下文
       streamId: 'request:past',
       payload: {
         requestId: 'past',
+        originalRequestId: 'past',
         memberId: 'm1',
         inputId: 'partial',
         contextId: null,

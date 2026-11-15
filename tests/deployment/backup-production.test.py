@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import time
+import tarfile
 import unittest
 from unittest.mock import patch
 from urllib.parse import quote
@@ -35,6 +37,7 @@ class BackupTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.source, self.destination = root / 'live', root / 'backups'
+        module.retained_sources(module.registry_path(self.destination), 'init')
         (self.source / 'images').mkdir(parents=True)
         self.image = self.source / 'images/one.png'
         self.image.write_bytes(b'image fixture')
@@ -72,6 +75,7 @@ class BackupTests(unittest.TestCase):
     def test_legacy_full_image_backup_still_checks_missing_images(self):
         snapshot = self.run_backup()
         manifest = json.loads((snapshot / 'manifest.json').read_text())
+        manifest.pop('retainedSource')  # This fixture models the original pre-registry full-image format.
         del manifest['imagesIncluded']
         (snapshot / 'manifest.json').write_text(json.dumps(manifest))
         with self.assertRaises(ValueError): module.verify(snapshot)
@@ -123,6 +127,7 @@ class BackupTests(unittest.TestCase):
         copied = snapshot / 'data/images/one.png'
         shutil.copyfile(self.image, copied)
         manifest = json.loads((snapshot / 'manifest.json').read_text())
+        manifest.pop('retainedSource')  # Keep the existing explicit legacy cleaner on its real source format.
         manifest['imagesIncluded'] = True
         manifest['files']['data/images/one.png'] = module.digest(copied)
         (snapshot / 'manifest.json').write_text(json.dumps(manifest))
@@ -142,6 +147,7 @@ class BackupTests(unittest.TestCase):
     def test_default_daily_with_real_ready_database_and_verified_encrypted_transport(self):
         root = Path(self.temp.name)
         live, destination, config, cloud_fixture = (root / name for name in ('relational-live', 'relational-backups', 'config', 'transport'))
+        module.retained_sources(module.registry_path(destination), 'init')
         config.mkdir()
         # Real offline bootstrap and the existing R2 transport fixture; neither backup nor cleanup is mocked.
         subprocess.run([NODE, '--input-type=module', '-e', '''
@@ -194,6 +200,8 @@ class BackupTests(unittest.TestCase):
         uploads = []
 
         def upload_transport(command, **options):
+            if command[1].endswith('/scripts/retained-sources.mjs'):
+                return original_run(command, **options)
             self.assertEqual(command[2], 'upload')
             self.assertTrue(command[1].endswith('/scripts/r2-backup.mjs'))
             uploads.append(command[2])
@@ -231,6 +239,93 @@ class BackupTests(unittest.TestCase):
             check=True, stdout=subprocess.DEVNULL)
         self.assertEqual(database_state(restored), before)
         self.assertEqual(module.digest(filename), before_sha)
+
+        # Catalog proof is recovered from the actual authenticated remote archive, not its live directory.
+        downloaded, extracted = root / 'downloaded-business.tar.gz', root / 'downloaded-business'
+        subprocess.run([NODE, '--import', str(cloud_fixture / 'preload.mjs'),
+            str(REPOSITORY / 'scripts/r2-backup.mjs'), 'download', str(snapshot / 'r2-backup.json'),
+            str(downloaded), str(config / 'r2.env'), str(config / 'backup-encryption.key')],
+            check=True, stdout=subprocess.DEVNULL)
+        extracted.mkdir()
+        with tarfile.open(downloaded, 'r:gz') as bundle:
+            bundle.extractall(extracted, filter='data')
+        remote_snapshot = extracted / snapshot.name
+        checkpoint = remote_snapshot / 'retained-catalog'
+        registry = module.registry_path(snapshot.parent)
+        registry.rename(registry.with_name('catalog-loss-original'))
+        recovered_catalog = root / 'catalog-recovered-from-remote'
+        module.retained_sources(recovered_catalog, 'restore', {'checkpoint': str(checkpoint),
+            'sha256': (remote_snapshot / 'retained-catalog.sha256').read_text().strip()})
+        recovered_protection = module.retained_sources(recovered_catalog, 'read')
+        self.assertFalse(registry.exists())
+        self.assertFalse(recovered_protection['releaseAllowed'])
+        recovered_source = next(s for s in recovered_protection['sources'] if s['id'] == manifest['retainedSource']['sourceId'])
+        self.assertEqual(recovered_source['binding']['sourceSha256'], module.digest(backup_database))
+        self.assertEqual(recovered_source['holds'][0]['state'], 'preparing')
+
+    def test_capture_is_durably_preparing_before_real_sqlite_and_kill_does_not_unpin(self):
+        root = Path(self.temp.name)
+        marker, release = root / 'capture-entered', root / 'capture-release'
+        child = subprocess.Popen([os.sys.executable, '-c', '''
+import importlib.util, pathlib, sys, time
+spec=importlib.util.spec_from_file_location('backup',sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+source,destination,config,marker,release=map(pathlib.Path,sys.argv[2:])
+original=module.sqlite3.connect
+def observed(*args,**kwargs):
+    marker.write_text('before original SQLite backup connection')
+    while not release.exists(): time.sleep(.01)
+    return original(*args,**kwargs)
+module.sqlite3.connect=observed
+module.backup(source,destination,{'config/gateway.env':config})
+''', str(REPOSITORY / 'scripts/backup-production.py'), str(self.source), str(self.destination),
+            str(self.config), str(marker), str(release)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 10
+            while not marker.exists():
+                if child.poll() is not None:
+                    self.fail(child.communicate()[1].decode())
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(.01)
+            before = module.retained_sources(module.registry_path(self.destination), 'read')
+            self.assertFalse(before['releaseAllowed'])
+            self.assertEqual(len(before['sources']), 1)
+            self.assertEqual(before['sources'][0]['holds'][0]['state'], 'preparing')
+            self.assertFalse(list(self.destination.glob('.partial-*/data/library.sqlite')))
+            child.kill()
+            child.wait(timeout=10)
+            after = module.retained_sources(module.registry_path(self.destination), 'read')
+            self.assertEqual(before, after)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=10)
+
+    def test_catalog_checkpoint_restores_independently_but_requires_actual_publish_proof(self):
+        snapshot = self.run_backup()
+        manifest = module.verify(snapshot)
+        checkpoint = snapshot / 'retained-catalog'
+        expected = (snapshot / 'retained-catalog.sha256').read_text().strip()
+        restored = Path(self.temp.name) / 'restored-catalog'
+        module.retained_sources(restored, 'restore', {'checkpoint': str(checkpoint), 'sha256': expected})
+        before = module.retained_sources(restored, 'read')
+        self.assertEqual(before['coverage'], 'unknown')
+        self.assertFalse(before['releaseAllowed'])
+        self.assertEqual(before['sources'][0]['holds'][0]['state'], 'preparing')
+        self.assertEqual(before['sources'][0]['binding']['sourceSha256'], module.digest(snapshot / 'data/library.sqlite'))
+        module.retained_sources(restored, 'publish', {'sourceId': manifest['retainedSource']['sourceId'], 'location': str(snapshot)})
+        self.assertEqual(module.retained_sources(restored, 'read')['sources'][0]['holds'][0]['state'], 'retained')
+        with self.assertRaises(subprocess.CalledProcessError):
+            module.retained_sources(restored, 'restore', {'checkpoint': str(checkpoint), 'sha256': expected})
+
+    def test_missing_catalog_is_not_automatically_replaced_with_an_empty_inventory(self):
+        registry = module.registry_path(self.destination)
+        registry.rename(registry.with_name('saved-catalog'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_backup()
+        self.assertFalse(registry.exists())
+        self.assertFalse(list(self.destination.glob('daily-*')))
+
 
 
 if __name__ == '__main__':

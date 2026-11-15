@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { brotliCompressSync } from 'node:zlib';
 import { rename, readFile, writeFile, stat } from 'node:fs/promises';
 import { getPatcher } from 'webdav';
 import { fixture, meta, NOW, image, databaseState } from '../helpers/relational-generation.mjs';
@@ -13,6 +15,8 @@ import {
 } from '../../server/storage/relational-replica-io.ts';
 import { R2Storage } from '../../server/storage/r2-storage.ts';
 import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { readableResultFile } from '../../server/storage/result-files.ts';
 
 const artifactId = 'artifact-read-0',
   unavailable = { code: 'ARTIFACT_CONTENT_UNAVAILABLE', statusCode: 503 };
@@ -117,6 +121,139 @@ test('封存只读 SQLite 和繁忙执行器仍可领取真实 Local，数据库
     pending = f.read();
   })();
   await assert.rejects(pending, /cannot hold a transaction/);
+});
+
+test('Opening未知operation的Local图/opaque及仅namespace的Pik冷读保原字节，NULL不合成时间或写观察', async (t) => {
+  const f = await setup(t);
+  f.db.transaction(() => f.store.registerStorageTarget(meta('history-reader-pik'), 'pikpak'))();
+  const entries = [
+    { id: 'history-local-image', mimeType: 'image/webp', bytes: image, kind: 'local' },
+    {
+      id: 'history-local-opaque',
+      mimeType: 'application/octet-stream',
+      bytes: Buffer.alloc(256, 23),
+      kind: 'local',
+    },
+    { id: 'history-pik-image', mimeType: 'image/webp', bytes: image, kind: 'pikpak' },
+  ];
+  const facts = entries.flatMap((entry) => {
+    const origin = { sourceId: 'synthetic-opening', originalId: entry.id };
+    const sha256 = createHash('sha256').update(entry.bytes).digest('hex');
+    const descriptor = { imageId: entry.id, operation: null, mimeType: entry.mimeType };
+    entry.file = readableResultFile(descriptor);
+    entry.sha256 = sha256;
+    return [
+      {
+        eventType: 'OpeningArtifactRecorded',
+        payload: {
+          artifactId: entry.id,
+          memberId: 'm1',
+          inputId: 'history-reader-input',
+          originalAttemptId: null,
+          operation: null,
+          mimeType: entry.mimeType,
+          byteLength: entry.bytes.length,
+          sha256,
+          publishedAt: null,
+          retiredAt: null,
+          origin,
+        },
+      },
+      {
+        eventType: 'OpeningReplicaRecorded',
+        payload: {
+          artifactId: entry.id,
+          storageTargetId: f.target(entry.kind),
+          objectKey: entry.kind === 'local' ? path.posix.basename(entry.file) : sha256 + '.br',
+          encoding: entry.kind === 'local' ? 'identity' : 'br',
+          uploadedAt: null,
+          verifiedAt: 0,
+          deletedAt: null,
+          lastErrorCode: null,
+          origin,
+        },
+      },
+    ].map((fact) => ({
+      ...fact,
+      streamId: `artifact:${entry.id}`,
+      memberId: 'm1',
+      accountId: null,
+      occurredAt: NOW,
+      policyVersion: 'shared-quota-v1',
+      pricingVersion: 'price1',
+    }));
+  });
+  const { policyVersion: _p, pricingVersion: _v, ...command } = meta('history-reader-unknown');
+  f.db.transaction(() => {
+    const input = f.inputs.stageOpeningInput({
+      inputId: 'history-reader-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...command,
+        expectedVersions: {
+          'input:history-reader-input': '0',
+          ...Object.fromEntries(entries.map((entry) => [`artifact:${entry.id}`, '0'])),
+        },
+        receipt: { imported: true },
+        events: [
+          {
+            eventType: 'OpeningInputRecorded',
+            payload: {
+              ...input,
+              origin: { sourceId: 'synthetic-opening', originalId: entries[0].id },
+            },
+            streamId: 'input:history-reader-input',
+            memberId: 'm1',
+            accountId: null,
+            occurredAt: NOW,
+            policyVersion: 'shared-quota-v1',
+            pricingVersion: 'price1',
+          },
+          ...facts,
+        ],
+      },
+      f.inputs,
+    );
+  })();
+  for (const entry of entries) {
+    if (entry.kind === 'local') {
+      await writeFile(path.join(f.dir, entry.file), entry.bytes);
+    } else {
+      f.objects.set(
+        f.configuration.pikpak.config.url + entry.sha256 + '.br',
+        brotliCompressSync(entry.bytes),
+      );
+    }
+  }
+  const get = f.configuration.pikpak.get.bind(f.configuration.pikpak);
+  t.mock.method(f.configuration.pikpak, 'get', async (descriptor) => {
+    assert.deepEqual(descriptor.pikpak, { url: f.configuration.pikpak.config.url });
+    return get(descriptor);
+  });
+  const before = databaseState(f.db);
+  f.calls.length = 0;
+  for (const entry of entries) {
+    const result = await readRelationalArtifactContent(f.db, entry.id, f.configuration);
+    assert.deepEqual(result.buffer, entry.bytes);
+    assert.equal(result.descriptor.operation, null);
+    assert.equal(result.descriptor.mimeType, entry.mimeType);
+    const row = f.store.readArtifactReplica(entry.id, result.storageTargetId);
+    assert.equal(row.uploadedAt, null);
+    assert.equal(row.verifiedAt, 0);
+    assert.equal(f.store.readArtifact(entry.id).publishedAt, null);
+  }
+  assert.deepEqual(f.calls, ['pikpak:GET']);
+  assert.equal(databaseState(f.db), before);
+  const first = entries[0];
+  await writeFile(path.join(f.dir, first.file), Buffer.alloc(first.bytes.length));
+  await assert.rejects(readRelationalArtifactContent(f.db, first.id, f.configuration), unavailable);
+  assert.equal(databaseState(f.db), before);
 });
 
 test('缺失或坏 Local 回退原 R2，R2 不可读再回退实际 br PikPak；全部读取零写入', async (t) => {

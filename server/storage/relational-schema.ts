@@ -66,6 +66,13 @@ CREATE TABLE domain_events (
   UNIQUE (stream_id, stream_version)
 ) STRICT;
 
+-- 当前FK容器不等于原父请求；原parent身份只来自唯一原接受事实，不按ID/时间推断。
+CREATE VIEW generation_request_origins AS
+SELECT stream_id, json_extract(payload, '$.requestId') AS request_id, event_id,
+  CASE WHEN event_type = 'RequestAccepted' THEN json_extract(payload, '$.requestId')
+    ELSE json_extract(payload, '$.originalRequestId') END AS original_request_id
+FROM domain_events WHERE event_type IN ('RequestAccepted', 'OpeningRequestRecorded');
+
 CREATE VIEW generation_job_origins AS
 SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
   json_extract(payload, '$.requestId') AS request_id, ${jobCreatedAtSql} AS created_at
@@ -263,13 +270,13 @@ CREATE TABLE generation_requests (
   member_id TEXT NOT NULL REFERENCES members(id),
   input_id TEXT NOT NULL,
   context_id TEXT REFERENCES normalization_contexts(id),
-  source TEXT NOT NULL,
-  operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
+  source TEXT,
+  operation TEXT CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
   model TEXT,
-  sample_count INTEGER NOT NULL CHECK (sample_count > 0),
+  sample_count INTEGER CHECK (sample_count > 0),
   seed_mode TEXT NOT NULL CHECK (seed_mode IN ('fixed', 'random', 'not_applicable', 'unknown')),
   confirmation TEXT CHECK (json_valid(confirmation) AND json_type(confirmation) = 'object'),
-  accepted_at INTEGER NOT NULL,
+  accepted_at INTEGER,
   retired_at INTEGER,
   ${fact},
   FOREIGN KEY (input_id, member_id) REFERENCES generation_inputs(id, member_id),
@@ -281,13 +288,13 @@ CREATE INDEX idx_requests_member_time ON generation_requests(member_id, accepted
 CREATE TABLE generation_jobs (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES generation_requests(id),
-  sample_index INTEGER NOT NULL CHECK (sample_index >= 0),
+  sample_index INTEGER CHECK (sample_index >= 0),
   actual_seed REAL CHECK (actual_seed BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
   status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'done', 'failed')),
   queue_seq INTEGER UNIQUE CHECK (queue_seq > 0),
   queue_expires_at INTEGER,
   deadline_at INTEGER,
-  admission_epoch INTEGER NOT NULL CHECK (admission_epoch >= 0),
+  admission_epoch INTEGER CHECK (admission_epoch >= 0),
   artifact_id TEXT REFERENCES artifacts(id) DEFERRABLE INITIALLY DEFERRED,
   cache_key TEXT,
   completed_at INTEGER,
@@ -301,7 +308,7 @@ CREATE TABLE generation_jobs (
   ${fact},
   UNIQUE (request_id, sample_index),
   CHECK (status != 'queued' OR queue_seq IS NOT NULL),
-  CHECK (status != 'done' OR (artifact_id IS NOT NULL AND completed_at IS NOT NULL))
+  CHECK (status != 'done' OR artifact_id IS NOT NULL)
 ) STRICT;
 CREATE INDEX idx_jobs_queue ON generation_jobs(queue_seq) WHERE status = 'queued';
 CREATE INDEX idx_jobs_request_status ON generation_jobs(request_id, status);
@@ -473,11 +480,11 @@ CREATE TABLE artifacts (
   member_id TEXT NOT NULL REFERENCES members(id),
   input_id TEXT NOT NULL,
   original_attempt_id TEXT UNIQUE REFERENCES generation_attempts(id),
-  operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
+  operation TEXT CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
   mime_type TEXT NOT NULL,
   byte_length INTEGER NOT NULL CHECK (byte_length > 0),
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^a-f0-9]*'),
-  published_at INTEGER NOT NULL,
+  published_at INTEGER,
   retired_at INTEGER,
   ${fact},
   FOREIGN KEY (input_id, member_id) REFERENCES generation_inputs(id, member_id)
@@ -503,8 +510,7 @@ CREATE TABLE artifact_replicas (
   deleted_at INTEGER,
   last_error_code TEXT,
   ${fact},
-  PRIMARY KEY (artifact_id, storage_target_id),
-  CHECK (verified_at IS NULL OR uploaded_at IS NOT NULL)
+  PRIMARY KEY (artifact_id, storage_target_id)
 ) STRICT;
 CREATE INDEX idx_replica_object ON artifact_replicas(storage_target_id, object_key);
 
@@ -571,12 +577,16 @@ CREATE TRIGGER job_input_${operation.toLowerCase()} BEFORE ${operation} ON gener
 BEGIN
   SELECT RAISE(ABORT, 'sample index exceeds accepted request') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r
-    WHERE r.id = NEW.request_id AND NEW.sample_index < r.sample_count
+    WHERE r.id = NEW.request_id AND (NEW.sample_index IS NULL OR r.sample_count IS NULL OR NEW.sample_index < r.sample_count)
   );
   SELECT RAISE(ABORT, 'active job requires complete input and first context')
   WHERE NEW.status IN ('queued', 'pending', 'running') AND NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN generation_inputs i ON i.id = r.input_id
     WHERE r.id = NEW.request_id AND i.completeness = 'complete' AND r.context_id IS NOT NULL
+      AND r.sample_count IS NOT NULL AND r.source IS NOT NULL AND r.operation IS NOT NULL
+      AND r.accepted_at IS NOT NULL AND NEW.sample_index IS NOT NULL AND NEW.admission_epoch IS NOT NULL
+      AND EXISTS (SELECT 1 FROM generation_request_origins o
+        WHERE o.request_id=r.id AND o.stream_id='request:'||r.id AND o.original_request_id IS NOT NULL)
       AND r.seed_mode != 'unknown'
   );
 END;
