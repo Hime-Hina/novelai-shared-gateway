@@ -189,6 +189,9 @@ export async function addRetainedHistory({
             {
               jobId: record.jobId,
               requestId: record.requestId,
+              diagnosticId: null,
+              sourceOrder: null,
+              displayCost: null,
               createdAt: record.createdAt,
               sampleIndex: record.sampleIndex,
               actualSeed: null,
