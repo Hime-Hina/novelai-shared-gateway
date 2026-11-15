@@ -79,8 +79,11 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   if (quotaFailureMessages.has(text)) {
     return text;
   }
-  // File and SQL failures can also arise while reading completed images.
-  if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) {
+  // 完成图的文件、SQL 或承诺副本读取失败继续使用原公开文案。
+  if (
+    text === 'No confirmed artifact replica has readable original bytes.' ||
+    /^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)
+  ) {
     return generationFailure;
   }
   if (generation && /^NovelAI returned 401\b/.test(text)) {

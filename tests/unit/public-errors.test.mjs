@@ -50,6 +50,10 @@ test('安全查询原因经历史和生成重复转换仍保留，未知生成�
     publicErrorMessage('private upstream body pst-secret', { generation: true }),
     '生成失败，请稍后重试或联系管理员。',
   );
+  assert.equal(
+    publicErrorMessage('No confirmed artifact replica has readable original bytes.'),
+    '生成失败，请稍后重试或联系管理员。',
+  );
 });
 
 test('唯一已分类容量码跨 Native/OpenAI/Direct/Member 展示仍为原公开文本，未知诊断保持原generic', async () => {
