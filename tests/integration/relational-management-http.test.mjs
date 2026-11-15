@@ -998,6 +998,7 @@ test('最近30条只用原Job时间，未知与真实0不借父受理时间，�
               streamId: 'request:management-history',
               payload: {
                 requestId: 'management-history',
+                originalRequestId: null, // origin 名称不构成已保存的原 parent 证明。
                 memberId: 'm1',
                 inputId: original.input_id,
                 contextId: original.context_id,
@@ -1073,6 +1074,12 @@ test('最近30条只用原Job时间，未知与真实0不借父受理时间，�
     }),
     before = databaseState(f.db),
     view = await f.call();
+  assert.equal(
+    f.db
+      .prepare('SELECT original_request_id FROM generation_request_origins WHERE request_id=?')
+      .get('management-history').original_request_id,
+    null,
+  );
   assert.equal(view.status, 200, view.text);
   assert.deepEqual(view.body.users.find((u) => u.id === 'm1').recentActivity, {
     total: 30,

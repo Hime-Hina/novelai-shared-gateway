@@ -283,6 +283,7 @@ function openingUnknownFailure(f) {
           streamId: 'request:' + id,
           payload: {
             requestId: id,
+            originalRequestId: null, // 此归档夹具只保存原行来源，没有独立原 parent 证明。
             memberId: 'm1',
             inputId: id,
             contextId: null,
@@ -670,6 +671,12 @@ test('admin summary真实Opening未知time/cost不借导入时间、当前genera
   const f = await setup(t, { beforeReady: openingUnknownFailure }),
     before = databaseState(f.db),
     result = await f.call();
+  assert.equal(
+    f.db
+      .prepare('SELECT original_request_id FROM generation_request_origins WHERE request_id=?')
+      .get('unknown-summary-history').original_request_id,
+    null,
+  );
   assert.equal(result.status, 200, result.text);
   assert.deepEqual(result.body.requestStats1m, { total: null });
   assert.deepEqual(result.body.jobStats1h, {
