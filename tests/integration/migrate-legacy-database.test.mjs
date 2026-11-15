@@ -28,6 +28,12 @@ import {
 import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
 import {
+  recordSharedCapacityError,
+  recordSharedCompletion,
+  sharedAccountConcurrency,
+  sharedAccountReadyDelay,
+} from '../../server/quota/shared-capacity.ts';
+import {
   createGenerationAdmission,
   generationIntent,
   generationIdempotencyKeyHash,
@@ -56,6 +62,7 @@ async function fixture(
   artifact = null,
   memberPatch = {},
   jobPatch = {},
+  accounts = [],
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
     store = new JsonStore(path.join(directory, 'old')),
@@ -78,6 +85,7 @@ async function fixture(
       },
     ],
     images: sourceArtifacts,
+    accounts,
     jobs: [
       {
         id: 'job',
@@ -436,6 +444,51 @@ test('无法证明活动责任不丢弃为成功迁移，明确building和原目
       (row) => row.code === 'JOB_REQUIRES_COMPLETE_OPENING_MAPPING' && row.originalId === 'job',
     ),
   );
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('原capacity owner保留的并发标量不冒充旧截止，成功后真实0和原冷却完整开账', async (t) => {
+  const account = {
+    id: 'original-capacity-account',
+    token: 'pst-synthetic-capacity-source',
+    enabled: true,
+  };
+  recordSharedCapacityError(account, 0, { job: { id: 'capacity-failed' } });
+  recordSharedCompletion(account, 100000, { job: { id: 'capacity-recovered' }, kind: 'success' });
+  assert.equal(account.capacityConcurrencyLimit, 1);
+  assert.equal(Object.hasOwn(account, 'capacityLimitedUntil'), false);
+  assert.equal(sharedAccountConcurrency(), 1);
+  const f = await fixture(t, 'failed', null, null, {}, {}, [account]),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    assert.equal(
+      result.findings.some(
+        (finding) => finding.code === 'ACCOUNT_CAPACITY_SOURCE_REQUIRES_MAPPING',
+      ),
+      false,
+    );
+    const row = target
+      .prepare(
+        'SELECT cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,capacity_limited_until,capacity_last_error_at FROM upstream_accounts WHERE id=?',
+      )
+      .get(account.id);
+    assert.deepEqual(row, {
+      cooldown_until: 110000,
+      cooldown_reason: 'success_gap',
+      ordinary_strikes: 0,
+      capacity_strikes: 0,
+      capacity_limited_until: null,
+      capacity_last_error_at: 0,
+    });
+    assert.equal(
+      sharedAccountReadyDelay({ cooldownUntil: row.cooldown_until }, 100000),
+      sharedAccountReadyDelay(account, 100000),
+    );
+    assert.equal(result.readyInstalled, false);
+  } finally {
+    target.close();
+  }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
 

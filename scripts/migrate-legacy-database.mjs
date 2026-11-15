@@ -344,9 +344,7 @@ export function mapLegacyAccounts(source, references) {
     if (account.id !== row.id) {
       reject();
     }
-    if (account.capacityConcurrencyLimit != null && account.capacityLimitedUntil == null) {
-      findings.push({ code: 'ACCOUNT_CAPACITY_SOURCE_REQUIRES_MAPPING', originalId: row.id });
-    }
+    // 旧 owner 并发恒 1；保存的 capacityConcurrencyLimit 不决定冷却，原冷却/计数在下方承接。
     references.accountIds.add(row.id);
     // 首代仅标识目标基线选定的当前 PST，不是旧 dispatch/observation 的历史代次。
     references.credentialEpochByAccount.set(row.id, 1);
