@@ -1595,11 +1595,25 @@ async function reconciliationFixture(t, parent = null) {
     proof: {
       references: refs,
       prepared,
-      artifacts: { facts: [], inputs: [] },
+      artifacts: {
+        facts: [],
+        inputs: [],
+        metadata: { artifacts: [], storageTargets: [], localMaterializationsByArtifact: new Map() },
+      },
       descriptors: [],
       keyDecisions: result.keyDecisions,
       archive,
       privateResult: result.private,
+      readOriginalBaselines: () => {
+        const originalRefs = migrationReferences(f.options.sourceSha256);
+        return {
+          members: mapLegacyMembers(source, originalRefs),
+          accounts: mapLegacyAccounts(source, originalRefs),
+          sharing: mapLegacySharing(source, originalRefs),
+        };
+      },
+      readOriginalDiagnostic: () => null,
+      freeUsage: result.financial.freeUsage,
       proveGenerationIntent: proveLegacyGenerationIntent,
     },
   };
@@ -1826,4 +1840,142 @@ test('正常B入口核对产物原locator/编码与退休承诺，不把未核Lo
     db.close();
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('真实入口从原Source复核取消和独立owner，不接受跟随append篡改的expected', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'original cancellation',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 128, height: 128, steps: 23, seed: 17 },
+      },
+      native,
+    ),
+    bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
+  for (const mode of [
+    'cancellation',
+    'replica-locator',
+    'member-name',
+    'account-weight',
+    'group-name',
+  ]) {
+    await t.test(mode, async (t) => {
+      const parent = ['cancellation', 'account-weight', 'group-name'].includes(mode)
+          ? { native, request }
+          : null,
+        artifacts =
+          mode === 'replica-locator'
+            ? ['source-a', 'source-b'].map((id) => ({
+                id,
+                memberId: 'member',
+                operation: 'generate',
+                file: `images/${id}.webp`,
+                mimeType: 'image/webp',
+                byteLength: bytes.length,
+                sha256: hash(bytes),
+              }))
+            : null,
+        f = await fixture(t, 'failed', parent, artifacts),
+        healthy = await migrateLegacyDatabase(f.options);
+      assert.equal(healthy.sourceReconciliation.status, 'complete');
+      const source = new Database(f.options.source, { readonly: true, fileMustExist: true });
+      try {
+        source.pragma('query_only=ON');
+        if (mode === 'cancellation') {
+          const original = JSON.parse(
+            source.prepare('SELECT data FROM jobs WHERE id=?').get(f.originalReceipt.jobIds[0])
+              .data,
+          );
+          assert.equal(original.cancellationReason, 'request_cancelled');
+        }
+        assert.equal(source.prepare('SELECT total_changes() AS n').get().n, 0);
+      } finally {
+        source.close();
+      }
+      let changed = 0,
+        shadowEqual = false;
+      const append = RelationalCommitReplayer.prototype.appendCommit,
+        hook = t.mock.method(
+          RelationalCommitReplayer.prototype,
+          'appendCommit',
+          function (command, inputs) {
+            let altered = false;
+            for (const event of command.events) {
+              const p = event.payload;
+              if (mode === 'cancellation' && event.eventType === 'OpeningJobRecorded') {
+                assert.equal(p.cancellationReason, 'request_cancelled');
+                p.cancellationReason = null;
+              } else if (
+                mode === 'replica-locator' &&
+                event.eventType === 'OpeningReplicaRecorded'
+              ) {
+                assert.equal(p.objectKey, `${p.artifactId}.webp`);
+                p.objectKey = `${p.artifactId === 'source-a' ? 'source-b' : 'source-a'}.webp`;
+              } else if (mode === 'member-name' && event.eventType === 'OpeningMemberRecorded') {
+                assert.equal(p.displayName, '');
+                p.displayName = 'not the source member name';
+              } else if (
+                mode === 'account-weight' &&
+                event.eventType === 'OpeningAccountRecorded'
+              ) {
+                p.weight += 1;
+              } else if (mode === 'group-name' && event.eventType === 'OpeningGroupRecorded') {
+                p.name += ' changed after mapping';
+              } else {
+                continue;
+              }
+              changed++;
+              altered = true;
+            }
+            const result = append.call(this, command, inputs);
+            if (altered) {
+              const shadow = publicShadow(t, this.sqlite);
+              shadowEqual = databaseState(shadow) === databaseState(this.sqlite);
+            }
+            return result;
+          },
+        );
+      const expected = {
+          cancellation: /job_source_fields/,
+          'replica-locator': /artifact_decision/,
+          'member-name': /OpeningMemberRecorded_decision/,
+          'account-weight': /OpeningAccountRecorded_decision/,
+          'group-name': /sharing_decision/,
+        }[mode],
+        output = path.join(f.directory, 'changed-target');
+      try {
+        await assert.rejects(migrateLegacyDatabase({ ...f.options, output }), expected);
+      } finally {
+        hook.mock.restore();
+      }
+      assert.ok(changed > 0);
+      assert.equal(
+        shadowEqual,
+        true,
+        'changed decisions reach the real owner and remain replayable',
+      );
+      const failed = new Database(path.join(output, 'library.sqlite'));
+      try {
+        for (const table of [
+          'commits',
+          'domain_events',
+          'members',
+          'upstream_accounts',
+          'sharing_groups',
+          'generation_inputs',
+          'generation_jobs',
+          'idempotency_keys',
+          'wallets',
+          'artifacts',
+          'artifact_replicas',
+        ]) {
+          assert.equal(failed.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+        }
+      } finally {
+        failed.close();
+      }
+      assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+    });
+  }
 });

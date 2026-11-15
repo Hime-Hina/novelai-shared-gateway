@@ -1085,12 +1085,10 @@ function planLegacyArtifacts(
     }
     references.inputsByArtifact.set(descriptor.id, input);
   }
-  const mapped = mapLegacyArtifacts(source, references, {
-    artifacts: descriptors,
-    storageTargets,
-    localMaterializationsByArtifact,
-  });
-  return { ...mapped, inputs, findings: [...findings, ...mapped.findings] };
+  // Original metadata is not an append draft: the artifact owner copies its scalar decisions.
+  const metadata = { artifacts: descriptors, storageTargets, localMaterializationsByArtifact };
+  const mapped = mapLegacyArtifacts(source, references, metadata);
+  return { ...mapped, metadata, inputs, findings: [...findings, ...mapped.findings] };
 }
 
 function appendLegacyArtifactInputs(inputs, references, appendOpening, artifacts) {
@@ -1688,6 +1686,16 @@ export async function migrateLegacyDatabase(options) {
               descriptors,
               keyDecisions,
               privateResult,
+              readOriginalBaselines: () => {
+                const originalRefs = migrationReferences(options.sourceSha256);
+                return {
+                  members: mapLegacyMembers(source, originalRefs),
+                  accounts: mapLegacyAccounts(source, originalRefs),
+                  sharing: mapLegacySharing(source, originalRefs),
+                };
+              },
+              readOriginalDiagnostic: originalDiagnostic,
+              freeUsage: financial.expected.freeUsage,
               proveGenerationIntent: proveLegacyGenerationIntent,
               localMaterializations,
               archive: { binding, audit, auditSha256: options.auditSha256, inputs: archivedInputs },

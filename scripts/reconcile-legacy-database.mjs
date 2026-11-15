@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { mapLegacyArtifacts } from './migrate-legacy-artifacts.mjs';
 import { canonicalJson, domainDigest } from '../server/events/domain-events.ts';
 import { readStreamProjection, readProjectedFairQuota } from '../server/events/event-store.ts';
 import { relationalInputDigest } from '../server/generation/relational-input.ts';
@@ -56,6 +57,18 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     refs && prepared && artifacts && Array.isArray(descriptors) && Array.isArray(keyDecisions),
     'proof',
   );
+  requireValue(
+    typeof proof.readOriginalBaselines === 'function' &&
+      typeof proof.readOriginalDiagnostic === 'function' &&
+      Array.isArray(proof.freeUsage) &&
+      artifacts.metadata,
+    'source_owners',
+  );
+  // Appending can mutate a draft. Re-read the small baseline owners and rebuild artifact decisions
+  // from their separate original metadata, never from the same object the writer consumed.
+  const originalBaselines = proof.readOriginalBaselines(),
+    originalArtifacts = mapLegacyArtifacts(source, refs, artifacts.metadata),
+    freeUsage = new Map(proof.freeUsage.map((row) => [row.jobId, row]));
   const facts = new Map(),
     expectedContexts = new Set();
   for (const row of target
@@ -162,26 +175,32 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
       projection(table, { id: fact.payload[primary] }, columns, fact.payload, fact.eventId);
     }
   };
-  checkOwnerFacts(prepared.members, 'members', 'OpeningMemberRecorded', 'memberId', {
+  checkOwnerFacts(originalBaselines.members, 'members', 'OpeningMemberRecorded', 'memberId', {
     display_name: 'displayName',
     status: 'status',
     accepting_jobs: 'acceptingJobs',
     admission_epoch: 'admissionEpoch',
     created_at: 'createdAt',
   });
-  checkOwnerFacts(prepared.accounts, 'upstream_accounts', 'OpeningAccountRecorded', 'accountId', {
-    display_name_json: (p) => JSON.stringify(p.displayName),
-    weight: 'weight',
-    enabled: 'enabled',
-    credential_epoch: 'credentialEpoch',
-    cooldown_until: 'cooldownUntil',
-    cooldown_reason: 'cooldownReason',
-    ordinary_strikes: 'ordinaryStrikes',
-    capacity_strikes: 'capacityStrikes',
-    capacity_limited_until: 'capacityLimitedUntil',
-    capacity_last_error_at: 'capacityLastErrorAt',
-  });
-  const sharing = prepared.sharing.facts;
+  checkOwnerFacts(
+    originalBaselines.accounts,
+    'upstream_accounts',
+    'OpeningAccountRecorded',
+    'accountId',
+    {
+      display_name_json: (p) => JSON.stringify(p.displayName),
+      weight: 'weight',
+      enabled: 'enabled',
+      credential_epoch: 'credentialEpoch',
+      cooldown_until: 'cooldownUntil',
+      cooldown_reason: 'cooldownReason',
+      ordinary_strikes: 'ordinaryStrikes',
+      capacity_strikes: 'capacityStrikes',
+      capacity_limited_until: 'capacityLimitedUntil',
+      capacity_last_error_at: 'capacityLastErrorAt',
+    },
+  );
+  const sharing = originalBaselines.sharing.facts;
   const originalSharing = readProjectedFairQuota(source);
   sets(
     sharing.filter((f) => f.eventType === 'OpeningGroupRecorded').map((f) => f.payload.groupId),
@@ -295,6 +314,19 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
   );
   same(config.originRef, `${refs.sourceId}:app_settings:settings`, 'configuration_origin');
 
+  const sourceInput = source.prepare('SELECT * FROM generation_requests WHERE id=?');
+  const sameSourceRow = (planned, actual, category) => {
+    if (!actual) {
+      requireValue(planned == null, category);
+      return;
+    }
+    requireValue(
+      planned &&
+        Object.keys(actual).length === Object.keys(planned).length &&
+        Object.entries(actual).every(([key, value]) => planned[key] === value),
+      category,
+    );
+  };
   const inputPlans = new Map(),
     requestIds = new Set(),
     jobIds = new Set();
@@ -309,9 +341,41 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
       model,
       count,
       originalRow,
-      original,
       protectedRow,
     } = plan;
+    const firstSource = source.prepare('SELECT data FROM jobs WHERE id=?').get(plan.jobs[0].row.id);
+    requireValue(firstSource, 'request_original_job');
+    const firstJob = JSON.parse(firstSource.data),
+      actualOriginalRow = group.originalRequestId ? sourceInput.get(group.originalRequestId) : null,
+      actualProtectedRow =
+        actualOriginalRow ??
+        sourceInput.get(firstJob.legacyInputRef || `legacy-input:${plan.jobs[0].row.id}`);
+    sameSourceRow(originalRow, actualOriginalRow, 'request_original_row');
+    sameSourceRow(protectedRow, actualProtectedRow, 'request_protected_source');
+    let sourceOriginal = firstJob.request;
+    if (actualProtectedRow) {
+      // Only the required source scalars/confirmation are extracted; large original bodies remain
+      // in the already parsed input owner plan and the exact bound archive.
+      const path =
+        source
+          .prepare(
+            "SELECT json_type(payload,'$.legacyInline') AS legacy FROM generation_requests WHERE id=?",
+          )
+          .get(actualProtectedRow.id).legacy === 'true'
+          ? '$.request'
+          : '$';
+      const values = source
+        .prepare(
+          `SELECT payload -> '${path}.model' AS model,payload -> '${path}.sampleCount' AS sampleCount,payload -> '${path}.seed' AS seed,payload -> '${path}.operation' AS operation,payload -> '${path}.confirmation' AS confirmation FROM generation_requests WHERE id=?`,
+        )
+        .get(actualProtectedRow.id);
+      sourceOriginal = Object.fromEntries(
+        Object.entries(values).map(([key, value]) => [
+          key,
+          value === null ? null : JSON.parse(value),
+        ]),
+      );
+    }
     requireValue(!requestIds.has(group.requestId), 'request_identity');
     requestIds.add(group.requestId);
     // Request fact IDs use the internal FK anchor, while origin retains the real parent/job role.
@@ -358,7 +422,19 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
         (typeof plan.jobs[0].value.source === 'string' ? plan.jobs[0].value.source : null),
       'request_kind',
     );
-    same(r.confirmation, original?.confirmation ?? null, 'request_confirmation');
+    same(r.confirmation, sourceOriginal?.confirmation ?? null, 'request_confirmation');
+    same(
+      r.model,
+      typeof sourceOriginal?.model === 'string' ? sourceOriginal.model : null,
+      'request_source_model',
+    );
+    same(
+      r.sampleCount,
+      Number.isSafeInteger(sourceOriginal?.sampleCount) && sourceOriginal.sampleCount > 0
+        ? sourceOriginal.sampleCount
+        : null,
+      'request_source_count',
+    );
     projection(
       'generation_requests',
       { id: group.requestId },
@@ -403,22 +479,35 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
       ].filter((value) => typeof value === 'string' && value);
       requireValue(owners.length && owners.every((id) => id === memberId), 'job_owner');
       const q = opening('OpeningJobRecorded', row.id);
-      const diagnosticRefs = [
-        job.diagnosticRef,
-        readStreamProjection(source, `request:${group.originalRequestId || `legacy-${job.id}`}`)
-          ?.projection?.jobs?.[job.id]?.diagnosticRef,
-      ].filter((value) => value !== undefined && value !== null);
-      requireValue(new Set(diagnosticRefs).size <= 1, 'diagnostic_origin');
-      same(q.diagnosticId, diagnosticRefs[0] ?? null, 'job_diagnostic');
-      if (q.diagnosticId !== null) {
-        requireValue(
-          target
-            .prepare('SELECT 1 FROM generation_diagnostics WHERE id=? AND job_id=?')
-            .get(q.diagnosticId, job.id),
-          'diagnostic_coverage',
+      const diagnostic = proof.readOriginalDiagnostic(source, job, group.originalRequestId);
+      same(q.diagnosticId, diagnostic?.diagnosticId ?? null, 'job_diagnostic');
+      if (diagnostic) {
+        const saved = target
+          .prepare('SELECT job_id,sha256,created_at,detail FROM generation_diagnostics WHERE id=?')
+          .get(diagnostic.diagnosticId);
+        same(
+          saved,
+          {
+            job_id: diagnostic.jobId,
+            sha256: diagnostic.sha256,
+            created_at: diagnostic.createdAt,
+            detail: diagnostic.detail,
+          },
+          'diagnostic_source',
+        );
+        const recorded = opening('OpeningDiagnosticRecorded', diagnostic.diagnosticId);
+        same(
+          [recorded.jobId, recorded.sha256, recorded.createdAt, recorded.byteLength],
+          [
+            diagnostic.jobId,
+            diagnostic.sha256,
+            diagnostic.createdAt,
+            Buffer.byteLength(diagnostic.detail),
+          ],
+          'diagnostic_original_fields',
         );
       }
-      let seed = original?.seed;
+      let seed = sourceOriginal?.seed;
       if (group.originalRequestId) {
         seed = null;
       }
@@ -449,6 +538,15 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
           q.sampleIndex,
           q.completedAt,
           q.admissionEpoch,
+          q.queueSeq,
+          q.queueExpiresAt,
+          q.deadlineAt,
+          q.cacheKey,
+          q.errorCode,
+          q.errorStatus,
+          q.cancellationReason,
+          q.lateResultAt,
+          q.retiredAt,
         ],
         [
           group.requestId,
@@ -461,8 +559,28 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
           Number.isSafeInteger(job.jobAdmissionVersion) && job.jobAdmissionVersion >= 0
             ? job.jobAdmissionVersion
             : null,
+          Number.isSafeInteger(job.queueSeq) && job.queueSeq > 0 ? String(job.queueSeq) : null,
+          time(job.queueExpiresAt),
+          time(job.deadlineAt),
+          typeof job.cacheKey === 'string' && job.cacheKey ? job.cacheKey : null,
+          typeof job.errorCode === 'string' && job.errorCode ? job.errorCode : null,
+          Number.isSafeInteger(job.errorStatus) && job.errorStatus > 0 ? job.errorStatus : null,
+          typeof job.cancellationReason === 'string' && job.cancellationReason
+            ? job.cancellationReason
+            : null,
+          time(job.lateResultAt),
+          null,
         ],
         'job_source_fields',
+      );
+      const success = freeUsage.get(row.id);
+      if (success) {
+        same(success.memberId, memberId, 'free_success_owner');
+      }
+      same(
+        [q.freeSucceededAt, q.freeWarningThreshold],
+        [success?.succeededAt ?? null, success?.warningThreshold ?? null],
+        'job_free_success',
       );
       projection(
         'generation_jobs',
@@ -572,7 +690,9 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     }
   }
 
-  const artifactFacts = artifacts.facts.filter((f) => f.eventType === 'OpeningArtifactRecorded');
+  const artifactFacts = originalArtifacts.facts.filter(
+    (f) => f.eventType === 'OpeningArtifactRecorded',
+  );
   sets(
     descriptors.map((d) => d.id),
     source
@@ -595,7 +715,7 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     'artifact_projection_coverage',
   );
   const targetsById = new Map(
-    artifacts.facts
+    originalArtifacts.facts
       .filter((f) => f.eventType === 'OpeningStorageTargetRecorded')
       .map((f) => [f.payload.storageTargetId, f.payload]),
   );
@@ -607,7 +727,7 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
       ...(proof.localMaterializations?.has(descriptor.id) ? ['local'] : []),
     ]);
     sets(
-      artifacts.facts
+      originalArtifacts.facts
         .filter(
           (f) => f.eventType === 'OpeningReplicaRecorded' && f.payload.artifactId === descriptor.id,
         )
@@ -630,7 +750,7 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     const original = readStreamProjection(source, `artifact:${descriptor.id}`)?.projection;
     same(artifact.retiredAt, time(original?.retired?.at), 'source_artifact_retirement');
   }
-  for (const fact of artifacts.facts) {
+  for (const fact of originalArtifacts.facts) {
     const p = fact.payload;
     decision(fact, 'artifact_decision');
     if (fact.eventType === 'OpeningArtifactRecorded') {
@@ -678,12 +798,12 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
   }
   same(
     target.prepare('SELECT COUNT(*) AS n FROM artifact_replicas').get().n,
-    artifacts.facts.filter((f) => f.eventType === 'OpeningReplicaRecorded').length,
+    originalArtifacts.facts.filter((f) => f.eventType === 'OpeningReplicaRecorded').length,
     'replica_coverage',
   );
   same(
     target.prepare('SELECT COUNT(*) AS n FROM storage_targets').get().n,
-    artifacts.facts.filter((f) => f.eventType === 'OpeningStorageTargetRecorded').length,
+    originalArtifacts.facts.filter((f) => f.eventType === 'OpeningStorageTargetRecorded').length,
     'target_coverage',
   );
 
