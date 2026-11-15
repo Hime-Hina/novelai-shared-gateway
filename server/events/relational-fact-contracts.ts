@@ -663,6 +663,50 @@ export const relationalPayloadParsers = {
     origin,
   }),
   OpeningQuotaRecorded: fields({ ...quotaFields, origin }),
+  OpeningOperatingGapRecorded: fields({
+    accountId: id,
+    resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+    remaining: nonnegative,
+    originalGapId: nullable(id),
+    originalType: nullable(
+      choices('resource_gap_observed', 'resource_gap_reconciled', 'v5_capacity_observed'),
+    ),
+    occurredAt: nullable(integer),
+    origin,
+  }),
+  OpeningFundingReceiptRecorded: fields({
+    accountId: id,
+    receipt: id,
+    resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+    amount: nullable(nonnegative),
+    originalType: choices(
+      'operating_funding_registered',
+      'operating_funding_received',
+      'operating_loss_covered',
+      'resource_gap_reconciled',
+      'operating_debits_confirmed',
+    ),
+    occurredAt: nullable(integer),
+    request: nullable(
+      fields({
+        action: choices(
+          'operating-contribute',
+          'operating-register-funding',
+          'operating-cover-loss',
+          'operating-reconcile-return',
+          'operating-confirm-debits',
+        ),
+        actorId: id,
+        resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+        amount: nonnegative,
+        destination: choices('members', 'operating'),
+        fromUnattributed: bool,
+        lossEventId: nullable(id),
+      }),
+    ),
+    result: nullable(fields({ eventId: id, duplicate: bool })),
+    origin,
+  }),
   OpeningOperatingRecorded: fields({ ...operatingFields, origin }),
   OpeningFundingRecorded: fields({ ...fundingFields, origin }),
   OpeningInputRecorded: fields({
@@ -839,6 +883,8 @@ export const relationalFactStreams = {
     'OpeningWalletRecorded',
     'OpeningChargeRecorded',
     'OpeningQuotaObservationRecorded',
+    'OpeningOperatingGapRecorded',
+    'OpeningFundingReceiptRecorded',
     'OpeningQuotaRecorded',
     'OpeningOperatingRecorded',
     'OpeningFundingRecorded',
@@ -1023,6 +1069,50 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     parseAmount(row.amount as string) <= 0n
   ) {
     invalid();
+  }
+  if (header.eventType === 'OpeningFundingReceiptRecorded') {
+    const p = payload as RelationalPayloads['OpeningFundingReceiptRecorded'];
+    if (
+      !/^[A-Za-z0-9_-]{8,100}$/.test(p.receipt) ||
+      p.origin.originalId !== `operating-receipt:${p.receipt}` ||
+      (p.result !== null && p.result.eventId !== p.origin.originalId)
+    ) {
+      invalid();
+    }
+    if (p.request !== null) {
+      const r = p.request,
+        types = {
+          'operating-contribute': 'operating_funding_received',
+          'operating-register-funding': r.fromUnattributed
+            ? 'operating_funding_received'
+            : 'operating_funding_registered',
+          'operating-cover-loss': 'operating_loss_covered',
+          'operating-reconcile-return': 'resource_gap_reconciled',
+          'operating-confirm-debits': 'operating_debits_confirmed',
+        };
+      if (
+        p.amount === null ||
+        r.resource !== p.resource ||
+        parseAmount(r.amount) <= 0n ||
+        types[r.action] !== p.originalType ||
+        (r.action !== 'operating-reconcile-return' && r.amount !== p.amount) ||
+        (r.action !== 'operating-register-funding' &&
+          (r.destination !== 'operating' || r.fromUnattributed)) ||
+        (['operating-cover-loss', 'operating-reconcile-return'].includes(r.action) &&
+          r.lossEventId === null) ||
+        (r.resource !== 'v5' &&
+          (parseAmount(r.amount) % AMOUNT_SCALE !== 0n ||
+            parseAmount(r.amount) > BigInt(Number.MAX_SAFE_INTEGER) * AMOUNT_SCALE)) ||
+        (r.resource === 'v5' &&
+          [
+            'operating-register-funding',
+            'operating-confirm-debits',
+            'operating-reconcile-return',
+          ].includes(r.action))
+      ) {
+        invalid();
+      }
+    }
   }
   if (header.eventType === 'OpeningAttemptRecorded') {
     const prepared = [

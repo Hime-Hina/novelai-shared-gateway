@@ -85,11 +85,14 @@ export function mapLegacyFinance(source, references) {
     jobs = new Map(),
     mappedAttempts = new Set(),
     walletKeys = new Set(),
+    fundingReceipts = new Set(),
     expected = {
       wallets: [],
       observations: [],
       quotas: [],
       operating: [],
+      gaps: [],
+      receipts: [],
       funding: [],
       charges: [],
       attempts: [],
@@ -129,11 +132,94 @@ export function mapLegacyFinance(source, references) {
   };
 
   for (const row of source
+    .prepare(
+      `SELECT id,account_id,source,data FROM ledger WHERE source IN (
+    'operating_funding_registered','operating_funding_received','operating_loss_covered',
+    'resource_gap_reconciled','operating_debits_confirmed') ORDER BY id`,
+    )
+    .iterate()) {
+    collect('invalid_funding_receipt_source', () => {
+      const original = object(json(row.data)),
+        accountId = row.account_id;
+      if (
+        !accountIds.has(accountId) ||
+        original.accountId !== accountId ||
+        original.type !== row.source ||
+        original.id !== row.id ||
+        !/^operating-receipt:[A-Za-z0-9_-]{8,100}$/.test(row.id)
+      ) {
+        throw new Error('The funding receipt lacks its original business identity.');
+      }
+      const request = original.request,
+        requestKeys = [
+          'action',
+          'actorId',
+          'resource',
+          'amount',
+          'destination',
+          'fromUnattributed',
+          'lossEventId',
+        ],
+        knownRequest =
+          request &&
+          typeof request === 'object' &&
+          !Array.isArray(request) &&
+          Object.keys(request).length === requestKeys.length &&
+          requestKeys.every((key) => Object.hasOwn(request, key))
+            ? request
+            : null;
+      const decisions = source
+          .prepare(
+            `SELECT c.receipt,e.payload FROM domain_events e
+        JOIN event_commits c ON c.commit_seq=e.commit_seq
+        WHERE e.account_id=? AND EXISTS (SELECT 1 FROM json_each(e.payload,'$.evidence')
+        WHERE json_extract(value,'$.id')=?)`,
+          )
+          .all(accountId, row.id),
+        results = [];
+      for (const decision of decisions) {
+        const evidence = object(json(decision.payload)).evidence,
+          result = json(decision.receipt);
+        if (!evidence.some((value) => canonicalJson(value) === canonicalJson(original))) {
+          throw new Error('The funding evidence differs from its original audit source.');
+        }
+        if (
+          result &&
+          typeof result === 'object' &&
+          !Array.isArray(result) &&
+          Object.keys(result).length === 2 &&
+          result.eventId === row.id &&
+          typeof result.duplicate === 'boolean'
+        ) {
+          results.push(result);
+        }
+      }
+      if (results.some((result) => canonicalJson(result) !== canonicalJson(results[0]))) {
+        throw new Error('Conflicting original funding responses.');
+      }
+      const payload = {
+          accountId,
+          receipt: row.id.slice('operating-receipt:'.length),
+          resource: original.resource,
+          amount: amount(original.amount),
+          originalType: original.type,
+          occurredAt: time(original.at),
+          request: knownRequest,
+          result: results[0] ?? null,
+        },
+        fact = emit('OpeningFundingReceiptRecorded', row.id, payload, null, accountId);
+      if (fact.eventId !== row.id) throw new Error('Funding business identity must remain exact.');
+      expected.receipts.push({ eventId: fact.eventId, ...payload });
+      fundingReceipts.add(row.id);
+    });
+  }
+  for (const row of source
     .prepare("SELECT stream_id FROM event_streams WHERE stream_kind='account' ORDER BY stream_id")
     .iterate()) {
     collect('invalid_account_finance', () => {
       const projection = readStreamProjection(source, row.stream_id)?.projection;
       if (!projection?.quota) {
+        block('account_financial_state_requires_initial_opening');
         return;
       }
       const accountId = projection.id ?? row.stream_id.slice('account:'.length),
@@ -293,10 +379,54 @@ export function mapLegacyFinance(source, references) {
         expected.quotas.push(payload);
       });
       collect('invalid_operating_source', () => {
-        const ops = readOperatingAccount(state);
-        if (Object.values(ops.gapEventIds).some((id) => id !== null) || ops.v5GapEventId !== null) {
-          block('operating_gap_source_requires_opening_role');
-          return;
+        const ops = readOperatingAccount(state),
+          gapIds = {};
+        for (const resource of resources) {
+          const originalGapId = resource === 'v5' ? ops.v5GapEventId : ops.gapEventIds[resource],
+            remaining = amount(resource === 'v5' ? ops.v5CapacityGap : ops.unfunded[resource]);
+          gapIds[resource] = null;
+          if (originalGapId === null && remaining === '0') continue;
+          const row =
+              originalGapId === null
+                ? null
+                : source
+                    .prepare('SELECT id,account_id,source,data FROM ledger WHERE id=?')
+                    .get(originalGapId),
+            original = row ? object(json(row.data)) : null;
+          if (
+            original &&
+            (row.id !== original.id ||
+              original.id !== originalGapId ||
+              row.account_id !== accountId ||
+              original.accountId !== accountId ||
+              original.type !== row.source ||
+              original.resource !== resource ||
+              ![
+                'resource_gap_observed',
+                'resource_gap_reconciled',
+                'v5_capacity_observed',
+              ].includes(original.type))
+          ) {
+            throw new Error('The current operating gap has a different original source.');
+          }
+          const payload = {
+              accountId,
+              resource,
+              remaining,
+              originalGapId,
+              originalType: original?.type ?? null,
+              occurredAt: time(original?.at),
+            },
+            fact = emit(
+              'OpeningOperatingGapRecorded',
+              canonicalJson([accountId, resource]),
+              payload,
+              null,
+              accountId,
+              accountId,
+            );
+          gapIds[resource] = fact.eventId;
+          expected.gaps.push({ eventId: fact.eventId, ...payload });
         }
         const payload = {
           accountId,
@@ -306,9 +436,9 @@ export function mapLegacyFinance(source, references) {
           unattributedFixed: amount(ops.unattributedReturns.anlasFixed),
           unattributedPurchased: amount(ops.unattributedReturns.anlasPurchased),
           v5CapacityGap: amount(ops.v5CapacityGap),
-          fixedGapEventId: null,
-          purchasedGapEventId: null,
-          v5GapEventId: null,
+          fixedGapEventId: gapIds.anlasFixed,
+          purchasedGapEventId: gapIds.anlasPurchased,
+          v5GapEventId: gapIds.v5,
         };
         emit('OpeningOperatingRecorded', accountId, payload, null, accountId);
         expected.operating.push(payload);
@@ -319,6 +449,33 @@ export function mapLegacyFinance(source, references) {
       }
       for (const funding of ops.pendingExternalFunding) {
         collect('invalid_pending_funding', () => {
+          if (!fundingReceipts.has(funding.eventId)) {
+            if (source.prepare('SELECT 1 FROM ledger WHERE id=?').get(funding.eventId)) {
+              throw new Error('Pending funding has a contradictory original audit role.');
+            }
+            const original = {
+                accountId,
+                receipt: funding.receipt,
+                resource: funding.resource,
+                amount: null,
+                originalType: 'operating_funding_registered',
+                occurredAt: requiredTime(funding.registeredAt),
+                request: null,
+                result: null,
+              },
+              fact = emit(
+                'OpeningFundingReceiptRecorded',
+                funding.eventId,
+                original,
+                null,
+                accountId,
+              );
+            if (fact.eventId !== funding.eventId)
+              throw new Error('Funding business identity must remain exact.');
+            expected.receipts.push({ eventId: fact.eventId, ...original });
+            fundingReceipts.add(funding.eventId);
+          }
+
           const payload = {
             receipt: funding.receipt,
             accountId,
@@ -556,16 +713,6 @@ export function mapLegacyFinance(source, references) {
       });
     });
   }
-  const receipts = source
-    .prepare(
-      `SELECT COUNT(*) AS count FROM ledger WHERE source IN (
-    'operating_funding_registered','operating_funding_received','operating_loss_covered',
-    'resource_gap_reconciled','operating_debits_confirmed')`,
-    )
-    .get().count;
-  if (receipts) {
-    findings.set('funding_receipt_history_requires_opening_decision', receipts);
-  }
   return {
     facts,
     findings: [...findings].map(([code, count]) => ({ code, count, blocking: true })),
@@ -627,6 +774,21 @@ export function assertLegacyFinanceProjection(target, expected) {
         return { eventId, ...original };
       }),
   );
+  for (const [name, type] of [
+    ['gaps', 'OpeningOperatingGapRecorded'],
+    ['receipts', 'OpeningFundingReceiptRecorded'],
+  ]) {
+    equal(
+      name,
+      target
+        .prepare('SELECT event_id AS eventId,payload FROM domain_events WHERE event_type=?')
+        .all(type)
+        .map(({ eventId, payload }) => {
+          const { origin: _origin, ...original } = JSON.parse(payload);
+          return { eventId, ...original };
+        }),
+    );
+  }
   equal(
     'operating',
     target

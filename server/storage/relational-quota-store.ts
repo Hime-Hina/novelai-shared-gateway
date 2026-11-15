@@ -239,6 +239,8 @@ export const relationalQuotaFacts = new Set<RelationalEvent['eventType']>([
   'FundingRegistered',
   'OpeningFundingRecorded',
   'OpeningQuotaObservationRecorded',
+  'OpeningOperatingGapRecorded',
+  'OpeningFundingReceiptRecorded',
   'FundingReceived',
   'ResourceGapObserved',
   'ReturnClassified',
@@ -447,6 +449,41 @@ export class RelationalQuotaStore {
     }
     assertRelationalOpeningSource(this.sqlite, event);
     return event.payload;
+  }
+  assertOpeningOperating(
+    event: Extract<RelationalEvent, { eventType: 'OpeningOperatingRecorded' }>,
+  ) {
+    for (const [resource, id, remaining] of [
+      ['anlasFixed', event.payload.fixedGapEventId, event.payload.unfundedFixed],
+      ['anlasPurchased', event.payload.purchasedGapEventId, event.payload.unfundedPurchased],
+      ['v5', event.payload.v5GapEventId, event.payload.v5CapacityGap],
+    ] as const) {
+      if (id === null) {
+        if (remaining !== '0') fail('非零开账责任必须有原切点差额来源');
+        continue;
+      }
+      const source = this.fact(id),
+        gap = readRelationalCommit(this.sqlite, source.commitSeq).events.find(
+          (e) => e.eventId === id,
+        );
+      if (
+        !gap ||
+        gap.eventType !== 'OpeningOperatingGapRecorded' ||
+        gap.accountId !== event.accountId ||
+        gap.memberId !== null ||
+        gap.streamId !== event.streamId ||
+        gap.commitSeq !== event.commitSeq ||
+        gap.eventIndex >= event.eventIndex ||
+        gap.payload.accountId !== event.payload.accountId ||
+        gap.payload.resource !== resource ||
+        gap.payload.remaining !== remaining ||
+        gap.payload.origin.sourceId !== event.payload.origin.sourceId ||
+        gap.payload.origin.originalId !== event.payload.origin.originalId
+      ) {
+        fail('开账责任必须引用同笔同账户同来源且金额相等的原差额');
+      }
+      assertRelationalOpeningSource(this.sqlite, gap);
+    }
   }
   private insertAccountQuota(p: AccountQuota, eventId: string) {
     this.sqlite
@@ -2893,6 +2930,7 @@ export class RelationalQuotaStore {
             if (
               !('receipt' in source) ||
               typeof source.receipt !== 'string' ||
+              !('destination' in source) ||
               source.resource !== p.resource ||
               source.destination !== p.destination
             ) {
@@ -2996,6 +3034,30 @@ export class RelationalQuotaStore {
     }
     const e = this.fact(id),
       p = e.payload;
+    if (e.type === 'OpeningFundingReceiptRecorded') {
+      const original = p as unknown as RelationalPayloads['OpeningFundingReceiptRecorded'];
+      if (original.request === null || original.amount === null)
+        fail('原资金意图已归档，不能重新执行', 410);
+      return {
+        id,
+        type: original.originalType,
+        accountId: original.accountId,
+        resource: original.resource,
+        amount: original.amount,
+        request: original.request,
+      };
+    }
+    if (e.type === 'OpeningOperatingGapRecorded') {
+      const original = p as unknown as RelationalPayloads['OpeningOperatingGapRecorded'];
+      return {
+        id,
+        type: 'opening_operating_gap',
+        accountId: original.accountId,
+        resource: original.resource,
+        amount: original.remaining,
+      };
+    }
+
     const receipt = this.sqlite
       .prepare<[bigint], { receipt: string }>('SELECT receipt FROM commits WHERE commit_seq=?')
       .get(BigInt(e.commitSeq));
@@ -3056,7 +3118,9 @@ export class RelationalQuotaStore {
       fail('资金回执缺少原提交或账户来源');
     }
     const source = this.fact(receipt.eventId),
+      imported = source.type === 'OpeningFundingReceiptRecorded',
       manual =
+        source.type === 'OpeningFundingReceiptRecorded' ||
         source.type === 'FundingRegistered' ||
         source.type === 'OperatingLossCovered' ||
         source.type === 'DebitsConfirmed' ||
@@ -3085,7 +3149,7 @@ export class RelationalQuotaStore {
       duplicate = receipt.duplicate;
     }
     if (
-      duplicate !== earlier ||
+      (imported ? !duplicate || source.payload.request === null : duplicate !== earlier) ||
       (!duplicate &&
         (!receipt.funding ||
           Array.isArray(receipt.funding) ||
@@ -3145,6 +3209,14 @@ export class RelationalQuotaStore {
           fail('操作未产生可提交事实，请刷新后确认结果');
         }
         const event = this.fact(planned.result.eventId);
+        if (event.type === 'OpeningFundingReceiptRecorded') {
+          return {
+            replayed: true,
+            commitSeq: event.commitSeq,
+            receipt: { accountId, eventId: planned.result.eventId, duplicate: true },
+            response: planned.result,
+          };
+        }
         const receipt = JSON.parse(
           this.sqlite
             .prepare<[bigint], { receipt: string }>(
@@ -3545,6 +3617,36 @@ export class RelationalQuotaStore {
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Quota projection requires the owning transaction.');
+      }
+      if (e.eventType === 'OpeningOperatingGapRecorded') {
+        assertRelationalOpeningSource(this.sqlite, e);
+        const openings = events.filter(
+          (candidate) =>
+            candidate.eventType === 'OpeningOperatingRecorded' &&
+            [
+              candidate.payload.fixedGapEventId,
+              candidate.payload.purchasedGapEventId,
+              candidate.payload.v5GapEventId,
+            ].includes(e.eventId),
+        );
+        if (openings.length !== 1 || openings[0]?.eventType !== 'OpeningOperatingRecorded') {
+          fail('开账差额必须属于同笔唯一运营责任');
+        }
+        this.assertOpeningOperating(openings[0]);
+        return;
+      }
+      if (e.eventType === 'OpeningFundingReceiptRecorded') {
+        assertRelationalOpeningSource(this.sqlite, e);
+        if (
+          e.memberId !== null ||
+          e.accountId !== e.payload.accountId ||
+          e.streamId !== `account:${e.payload.accountId}` ||
+          e.eventId !== e.payload.origin.originalId ||
+          !this.sqlite.prepare('SELECT 1 FROM upstream_accounts WHERE id=?').get(e.accountId)
+        ) {
+          fail('历史资金回执缺少本账户原业务标识');
+        }
+        return;
       }
       if (e.eventType === 'OpeningQuotaObservationRecorded') {
         const openings = events.filter(
@@ -4453,6 +4555,29 @@ export class RelationalQuotaStore {
           const p = e.payload;
           if (e.eventType === 'OpeningFundingRecorded') {
             assertRelationalOpeningSource(this.sqlite, e);
+            const receipts = events.filter(
+                (candidate) =>
+                  candidate.eventType === 'OpeningFundingReceiptRecorded' &&
+                  candidate.payload.accountId === accountId &&
+                  candidate.payload.receipt === p.receipt,
+              ),
+              original = receipts[0];
+            if (
+              receipts.length !== 1 ||
+              original?.eventType !== 'OpeningFundingReceiptRecorded' ||
+              original.eventIndex >= e.eventIndex ||
+              original.memberId !== null ||
+              original.payload.origin.sourceId !== e.payload.origin.sourceId ||
+              original.payload.resource !== p.resource ||
+              original.payload.originalType !== 'operating_funding_registered' ||
+              original.payload.occurredAt !== p.registeredAt ||
+              (original.payload.amount !== null &&
+                parseAmount(original.payload.amount) < parseAmount(p.remaining)) ||
+              (original.payload.request !== null &&
+                original.payload.request.destination !== p.destination)
+            ) {
+              fail('待到账开账必须完整引用本笔先行的同账户同来源原登记回执');
+            }
           }
           if (!['members', 'operating'].includes(p.destination)) {
             fail('资金归属无效');
@@ -4559,9 +4684,12 @@ export class RelationalQuotaStore {
           const loss = this.fact(p.lossEventId);
           if (
             loss.accountId !== accountId ||
-            !['ResourceGapObserved', 'ReturnClassified', 'V5CapacityObserved'].includes(
-              loss.type,
-            ) ||
+            ![
+              'ResourceGapObserved',
+              'ReturnClassified',
+              'V5CapacityObserved',
+              'OpeningOperatingGapRecorded',
+            ].includes(loss.type) ||
             (loss.type === 'ReturnClassified' && loss.payload.kind !== 'gap_correction') ||
             (p.resource === 'v5' ? ops.v5GapEventId : ops.gapEventIds[p.resource]) !==
               p.lossEventId ||
