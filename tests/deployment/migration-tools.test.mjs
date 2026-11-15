@@ -85,14 +85,22 @@ await assert.rejects(migrateLegacyDatabase({}), /selected unchanged offline sour
     bundle,
   );
   assert.equal(loaded.status, 0, loaded.stderr);
+  const conversionEnvironment = {
+    ...process.env,
+    MIGRATE_LEGACY_TEST_ENTRY: path.join(bundle, 'scripts/migrate-legacy-database.mjs'),
+  };
+  // 子进程必须独立运行测试，不能继承父 runner 的内部标记。
+  delete conversionEnvironment.NODE_TEST_CONTEXT;
   const converted = run(
     ['--test', path.join(root, 'tests/integration/migrate-legacy-database.test.mjs')],
     root,
-    {
-      ...process.env,
-      MIGRATE_LEGACY_TEST_ENTRY: path.join(bundle, 'scripts/migrate-legacy-database.mjs'),
-    },
+    conversionEnvironment,
   );
   assert.equal(converted.status, 0, converted.stderr + converted.stdout);
+  const total = /^# tests (\d+)$/m.exec(converted.stdout),
+    passed = /^# pass (\d+)$/m.exec(converted.stdout);
+  assert.ok(total && Number(total[1]) > 0, converted.stdout);
+  assert.equal(passed?.[1], total[1], converted.stdout);
+  t.diagnostic(`Compiled conversion: ${passed[1]}/${total[1]}, no skipped tests.`);
   assert.equal(await readFile(canary, 'utf8'), 'export const privateCanary = true;\n');
 });
