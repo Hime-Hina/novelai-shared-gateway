@@ -1111,11 +1111,11 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
           .jobs()
           .filter((job) => job.request_id === response.headers.get('x-nai-request-id'))
           .sort((a, b) => a.sample_index - b.sample_index);
-      let jobs = batchRows();
-      assert.equal(jobs[0].status, 'done');
-      assert.ok(jobs[0].artifact_id);
-      assert.equal(charge(jobs[0].id).status, 'settled');
-      assert.notEqual(jobs[1].status, 'done');
+      let batchJobs = batchRows();
+      assert.equal(batchJobs[0].status, 'done');
+      assert.ok(batchJobs[0].artifact_id);
+      assert.equal(charge(batchJobs[0].id).status, 'settled');
+      assert.notEqual(batchJobs[1].status, 'done');
       assert.equal(calls.length, beforeCalls + 1, '首个final不能等第二张派发才发送');
       const preview = (await reader.next()).value;
       assert.equal(preview.event_type, 'intermediate');
@@ -1131,13 +1131,13 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.ok(failureFrame.message);
       assert.equal(failureFrame.code, '500');
       assert.equal((await reader.next()).done, true);
-      jobs = batchRows();
+      batchJobs = batchRows();
       assert.deepEqual(
-        jobs.map((job) => job.status),
+        batchJobs.map((job) => job.status),
         ['done', 'failed', 'failed'],
       );
-      assert.equal(charge(jobs[1].id).status, 'refunded');
-      assert.equal(jobs[2].attempt_id, null);
+      assert.equal(charge(batchJobs[1].id).status, 'refunded');
+      assert.equal(batchJobs[2].attempt_id, null);
       assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
       assert.equal(calls.length, beforeCalls + 2);
     },
