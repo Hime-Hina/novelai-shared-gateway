@@ -37,6 +37,18 @@ const amounts = (value, signed = false) =>
   Object.fromEntries(
     resources.map((resource) => [resource, amount(object(value)[resource], signed)]),
   );
+// V4 normalized the current cut, but retained Number leaves in immutable attempt/terminal JSON.
+// Decode each original decision with the same nearest-decimal12 owner; never round live balances.
+const historicalAmount = (value) => {
+  if (typeof value === 'number' && value < 0) {
+    throw new RangeError('Negative legacy liability amount.');
+  }
+  return amount(typeof value === 'number' ? formatAmount(parseAmount(value, 'nearest')) : value);
+};
+const historicalAmounts = (value) =>
+  Object.fromEntries(
+    resources.map((resource) => [resource, historicalAmount(object(value)[resource])]),
+  );
 const time = (value) => {
   if (value == null) {
     return null;
@@ -612,8 +624,12 @@ export function mapLegacyFinance(source, references) {
         !charge ||
         charge.accountId !== attempt.accountId ||
         charge.userId !== attempt.memberId ||
-        canonicalJson(amounts(attempt.localReserved)) !==
-          canonicalJson(amounts(generationChargeResources(charge)))
+        canonicalJson(historicalAmounts(attempt.localReserved)) !==
+          canonicalJson(
+            (charge.status === 'reserved' ? amounts : historicalAmounts)(
+              generationChargeResources(charge),
+            ),
+          )
       ) {
         throw new Error('Attempt/charge/job/account/member original identities disagree.');
       }
@@ -621,7 +637,7 @@ export function mapLegacyFinance(source, references) {
         resources: Object.fromEntries(
           Object.entries(object(candidate.resources)).map(([resource, value]) => [
             resource,
-            amount(value),
+            historicalAmount(value),
           ]),
         ),
         amountSource: candidate.amountSource,
@@ -677,7 +693,7 @@ export function mapLegacyFinance(source, references) {
           candidateMode: attempt.candidateMode,
           upstreamCandidates,
           actualConsumption:
-            attempt.actualConsumption == null ? null : amounts(attempt.actualConsumption),
+            attempt.actualConsumption == null ? null : historicalAmounts(attempt.actualConsumption),
           lossCoverageRemaining: Object.fromEntries(resources.map((resource) => [resource, null])),
           reviewStatus: review?.status ?? null,
           firstUnknownAt: time(review?.firstUnknownAt),
@@ -713,9 +729,10 @@ export function mapLegacyFinance(source, references) {
       ) {
         throw new Error('An unresolved reservation cannot be archived or lose its real attempt.');
       }
-      const originalAmount = amount(charge.amount),
-        originalFixed = amount(charge.fixed),
-        originalPurchased = amount(charge.purchased);
+      const chargeAmount = charge.status === 'reserved' ? amount : historicalAmount,
+        originalAmount = chargeAmount(charge.amount),
+        originalFixed = chargeAmount(charge.fixed),
+        originalPurchased = chargeAmount(charge.purchased);
       if (
         !['free', 'v5', 'anlas'].includes(charge.resource) ||
         (charge.resource === 'free' &&
@@ -740,12 +757,15 @@ export function mapLegacyFinance(source, references) {
           status: charge.status,
           resolution: live ? 'live' : 'archived',
           originRef: charge.attemptId ?? jobId,
-          resources: amounts(generationChargeResources(charge)),
+          resources: (charge.status === 'reserved' ? amounts : historicalAmounts)(
+            generationChargeResources(charge),
+          ),
           billingMode: charge.billingMode ?? charge.resource,
           estimated: typeof charge.estimated === 'boolean' ? charge.estimated : null,
-          v5Equivalent: charge.billingMode === 'anlas_fallback' ? amount(charge.v5Equivalent) : '0',
+          v5Equivalent:
+            charge.billingMode === 'anlas_fallback' ? chargeAmount(charge.v5Equivalent) : '0',
           sharedV5Reserved:
-            charge.billingMode === 'anlas_fallback' ? amount(charge.sharedV5Reserved) : '0',
+            charge.billingMode === 'anlas_fallback' ? chargeAmount(charge.sharedV5Reserved) : '0',
           configVersion: charge.configVersion,
           reservedAt: requiredTime(charge.reservedAt),
           terminalAt: charge.status === 'reserved' ? null : requiredTime(charge.settledAt),
