@@ -1225,9 +1225,10 @@ test('admin薄统计实际SQL范围计划、不读canonical输入/assetBLOB，�
     f.db.prepare = original;
   }
   const selection = selected.find((sql) =>
-      sql.includes("(origin.event_type='JobAccepted') AS orderKnown"),
-    ),
-    selectionPlan = original('EXPLAIN QUERY PLAN ' + selection).all(50);
+    sql.includes("SELECT j.id,(origin.event_type='JobAccepted'"),
+  );
+  assert.ok(selection, '实际failed-list选择SQL必须先被捕获');
+  const selectionPlan = original('EXPLAIN QUERY PLAN ' + selection).all(50);
   t.diagnostic('admin failed50: ' + JSON.stringify(selectionPlan));
 });
 
