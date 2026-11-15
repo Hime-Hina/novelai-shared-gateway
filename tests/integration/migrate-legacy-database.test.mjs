@@ -1448,3 +1448,285 @@ test('现代原ArtifactPublished拥有creator/input，storage流没有member也�
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
+
+async function rescuedSelection(f, ids, bytes) {
+  const config = await selectedCutConfiguration(f);
+  config.value.sourceNamespaces.r2AccountId = 'a'.repeat(32);
+  config.value.sourceNamespaces.r2Bucket = 'selected-bucket';
+  config.bytes = Buffer.from(JSON.stringify(config.value));
+  await writeFile(config.file, config.bytes);
+  const exported = await readFile(f.options.artifacts),
+    lines = exported.toString('utf8').split('\n'),
+    local = path.join(f.directory, 'rescued-sample.bin');
+  await writeFile(local, bytes, { flag: 'wx' });
+  const value = {
+      format: 'novelai-legacy-rescued-originals-v1',
+      sourceSha256: f.options.sourceSha256,
+      sourceCommit,
+      cut: f.options.cut,
+      auditSha256: f.options.auditSha256,
+      cutConfigurationSha256: hash(config.bytes),
+      namespace: `r2://${'a'.repeat(32)}/selected-bucket`,
+      namespaceReceipt: config.proofs.namespaceReceipt,
+      originals: ids.map((id) => {
+        const line = lines.findIndex((line) => line && JSON.parse(line).id === id);
+        return {
+          artifactId: id,
+          memberId: 'member',
+          inputId: `legacy-artifact-input:${id}`,
+          sha256: hash(bytes),
+          byteLength: bytes.length,
+          sourceArtifactRowPointer: {
+            file: f.options.artifacts,
+            fileSha256: hash(exported),
+            line: line + 1,
+            lineSha256: hash(lines[line] + '\n'),
+          },
+          file: local,
+          r2: { bucket: 'selected-bucket', key: `images/${id}/${hash(bytes)}` },
+          downloadReceipt: null,
+        };
+      }),
+    },
+    file = path.join(f.directory, 'rescued-selection.private.json');
+  await writeFile(file, JSON.stringify(value), { flag: 'wx' });
+  return { config, value, file, local };
+}
+
+test('rescued batch preserves distinct same-SHA entities and actual planned owner/input through offline intake and full replay', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    ids = ['rescued-a', 'rescued-b'],
+    f = await fixture(
+      t,
+      'done',
+      null,
+      ids.map((id) => ({
+        id,
+        memberId: 'member',
+        token: 'STA1N-synthetic-current-key',
+        mimeType: 'image/webp',
+        byteLength: bytes.length,
+        sha256: hash(bytes),
+        file: `images/${id}.webp`,
+      })),
+    ),
+    selected = await rescuedSelection(f, ids, bytes),
+    selectedBytes = await readFile(selected.file),
+    result = await migrateLegacyDatabase({
+      ...f.options,
+      cutConfig: selected.config.file,
+      cutConfigSha256: hash(selected.config.bytes),
+      rescuedOriginals: selected.file,
+      rescuedOriginalsSha256: hash(selectedBytes),
+    }),
+    db = new Database(path.join(f.options.output, 'library.sqlite')),
+    replay = new Database(':memory:');
+  try {
+    const manifestBytes = await readFile(
+        path.join(f.options.output, 'migration-inputs.private.json'),
+      ),
+      manifest = JSON.parse(manifestBytes);
+    assert.equal(manifest.localMaterializations.length, 2);
+    assert.equal(manifest.rescuedOriginalsSha256, hash(selectedBytes));
+    assert.equal(result.inputManifestSha256, hash(manifestBytes));
+    assert.equal(new Set(manifest.localMaterializations.map((row) => row.inputId)).size, 2);
+    for (const id of ids) {
+      const replica = db.prepare('SELECT * FROM artifact_replicas WHERE artifact_id=?').get(id);
+      assert.ok(replica.verified_at >= result.effectiveAt);
+      assert.equal(replica.uploaded_at, null);
+      assert.deepEqual(await readFile(path.join(f.options.output, `images/${id}.webp`)), bytes);
+    }
+    assert.equal(result.readyInstalled, false);
+    initializeRelationalStorage(
+      replay,
+      db.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    for (const { seq } of db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      replay.transaction(() =>
+        new RelationalCommitReplayer(replay).replayCommit(
+          readRelationalCommit(db, seq),
+          new RelationalInputStore(db),
+        ),
+      )();
+    }
+    for (const table of ['artifacts', 'artifact_replicas', 'generation_inputs'])
+      assert.deepEqual(
+        replay.prepare(`SELECT * FROM ${table}`).all(),
+        db.prepare(`SELECT * FROM ${table}`).all(),
+      );
+    assert.equal(relationalPrivateStateEmpty(replay), true);
+  } finally {
+    db.close();
+    replay.close();
+  }
+  assert.deepEqual(await readFile(selected.local), bytes);
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('rescued intake rejects wrong cut/config/namespace/export/owner/input and broken bytes without constructing a target DB or proof', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    f = await fixture(t, 'done', null, {
+      id: 'rescued',
+      memberId: 'member',
+      token: 'STA1N-synthetic-current-key',
+      mimeType: 'image/webp',
+      byteLength: bytes.length,
+      sha256: hash(bytes),
+      file: 'images/rescued.webp',
+    }),
+    selected = await rescuedSelection(f, ['rescued'], bytes);
+  for (const kind of [
+    'cut',
+    'audit',
+    'config',
+    'namespace',
+    'receipt',
+    'duplicate',
+    'export',
+    'owner',
+    'input',
+    'bytes',
+    'half-pair',
+  ])
+    await t.test(kind, async () => {
+      const value = structuredClone(selected.value),
+        file = path.join(f.directory, `rescued-${kind}.json`),
+        output = path.join(f.directory, `reject-${kind}`);
+      if (kind === 'cut') value.cut = String(BigInt(value.cut) + 1n);
+      if (kind === 'audit') value.auditSha256 = '0'.repeat(64);
+      if (kind === 'config') value.cutConfigurationSha256 = '0'.repeat(64);
+      if (kind === 'namespace') value.namespace = `r2://${'b'.repeat(32)}/other-bucket`;
+      if (kind === 'receipt') value.namespaceReceipt.sha256 = '0'.repeat(64);
+      if (kind === 'duplicate') value.originals.push(structuredClone(value.originals[0]));
+      if (kind === 'export')
+        value.originals[0].sourceArtifactRowPointer.lineSha256 = '0'.repeat(64);
+      if (kind === 'owner') value.originals[0].memberId = 'another-member';
+      if (kind === 'input') value.originals[0].inputId = 'another-input';
+      if (kind === 'bytes') {
+        value.originals[0].file = path.join(f.directory, 'broken.bin');
+        await writeFile(value.originals[0].file, Buffer.alloc(bytes.length), { flag: 'wx' });
+      }
+      const raw = Buffer.from(JSON.stringify(value));
+      await writeFile(file, raw, { flag: 'wx' });
+      await assert.rejects(
+        migrateLegacyDatabase({
+          ...f.options,
+          output,
+          cutConfig: selected.config.file,
+          cutConfigSha256: hash(selected.config.bytes),
+          rescuedOriginals: file,
+          ...(kind === 'half-pair' ? {} : { rescuedOriginalsSha256: hash(raw) }),
+        }),
+      );
+      await assert.rejects(readFile(path.join(output, 'library.sqlite')), { code: 'ENOENT' });
+      await assert.rejects(readFile(path.join(output, 'migration-inputs.private.json')), {
+        code: 'ENOENT',
+      });
+    });
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+  assert.deepEqual(await readFile(selected.local), bytes);
+});
+
+test('selected R2 preparation reuses local sample, serially calls original getFile and retains only successful fresh inputs on first failure', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    ids = ['sample', 'fetched', 'failed'],
+    f = await fixture(
+      t,
+      'done',
+      null,
+      ids.map((id) => ({
+        id,
+        memberId: 'member',
+        token: 'STA1N-synthetic-current-key',
+        mimeType: 'image/webp',
+        byteLength: bytes.length,
+        sha256: hash(bytes),
+        file: `images/${id}.webp`,
+      })),
+    ),
+    selected = await rescuedSelection(f, ids, bytes),
+    { materializeLegacyOriginals } = await import(
+      entry
+        ? new URL('./materialize-legacy-originals.mjs', pathToFileURL(entry)).href
+        : new URL('../../scripts/materialize-legacy-originals.mjs', import.meta.url).href
+    ),
+    { R2Storage } = await import(
+      entry
+        ? new URL('../server/storage/r2-storage.js', pathToFileURL(entry)).href
+        : new URL('../../server/storage/r2-storage.ts', import.meta.url).href
+    ),
+    saved = Object.fromEntries(
+      ['R2_ACCOUNT_ID', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'].map((key) => [
+        key,
+        process.env[key],
+      ]),
+    ),
+    original = R2Storage.prototype.getFile,
+    calls = [];
+  Object.assign(process.env, {
+    R2_ACCOUNT_ID: 'a'.repeat(32),
+    R2_BUCKET: 'selected-bucket',
+    R2_ACCESS_KEY_ID: 'synthetic',
+    R2_SECRET_ACCESS_KEY: 'synthetic',
+  });
+  t.after(() => {
+    R2Storage.prototype.getFile = original;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  selected.value.originals[1].file = null;
+  selected.value.originals[2].file = null;
+  const selectionBytes = Buffer.from(JSON.stringify(selected.value));
+  await writeFile(selected.file, selectionBytes);
+  const output = path.join(f.directory, 'prepared-r2'),
+    options = {
+      selection: selected.file,
+      selectionSha256: hash(selectionBytes),
+      cutConfig: selected.config.file,
+      cutConfigSha256: hash(selected.config.bytes),
+      output,
+    };
+  process.env.R2_BUCKET = 'wrong-bucket';
+  await assert.rejects(materializeLegacyOriginals(options));
+  await assert.rejects(readFile(path.join(output, 'rescued-originals.private.json')), {
+    code: 'ENOENT',
+  });
+  process.env.R2_BUCKET = 'selected-bucket';
+  R2Storage.prototype.getFile = async function (descriptor, file) {
+    calls.push(structuredClone(descriptor));
+    assert.equal(this.config.bucket, 'selected-bucket');
+    if (calls.length === 2) throw new Error('synthetic first read failure');
+    await writeFile(file, bytes, { flag: 'wx', mode: 0o600 });
+  };
+  await assert.rejects(
+    materializeLegacyOriginals(options),
+    (error) => error.materializationResult.completed === 2,
+  );
+  assert.deepEqual(
+    calls.map((row) => row.key),
+    ids.slice(1).map((id) => `images/${id}/${hash(bytes)}`),
+  );
+  const manifestBytes = await readFile(path.join(output, 'rescued-originals.private.json')),
+    manifest = JSON.parse(manifestBytes);
+  assert.deepEqual(
+    manifest.originals.map((row) => row.artifactId),
+    ids.slice(0, 2),
+  );
+  assert.deepEqual(await readFile(manifest.originals[0].file), bytes);
+  assert.deepEqual(await readFile(manifest.originals[1].file), bytes);
+  await assert.rejects(materializeLegacyOriginals(options));
+  assert.equal(calls.length, 2);
+  const result = await migrateLegacyDatabase({
+    ...f.options,
+    cutConfig: selected.config.file,
+    cutConfigSha256: hash(selected.config.bytes),
+    rescuedOriginals: path.join(output, 'rescued-originals.private.json'),
+    rescuedOriginalsSha256: hash(manifestBytes),
+  });
+  assert.equal(result.readyInstalled, false);
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});

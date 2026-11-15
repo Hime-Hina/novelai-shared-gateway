@@ -41,6 +41,7 @@
 - [隔离测试部署](operations/test-deployment.md)：测试环境、模拟上游、发布产物和阶段验收。
 - [关系格式离线恢复](operations/relational-recovery.md)：完整提交与保护内容重建、所选私有快照及合法 ready 安装；不解释旧格式或执行生产切换。
 - [独立旧归档精确查询](operations/legacy-archive-lookup.md)：固定旧包的原身份、原回执、保护输入与本地图审计，不接入在线运行时。
+- [B 迁移选定原图准备](operations/legacy-original-materialization.md)：选定 R2/已取本地原图与同一离线转换入口的来源绑定，不构成旧远端承诺或 ready。
 
 ## 历史与证据
 

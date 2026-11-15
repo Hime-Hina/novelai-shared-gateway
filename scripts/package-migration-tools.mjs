@@ -145,6 +145,7 @@ try {
   await mkdir(path.join(bundle, 'scripts'));
   for (const name of [
     'migrate-legacy-database.mjs',
+    'materialize-legacy-originals.mjs',
     'migrate-legacy-finance.mjs',
     'migrate-legacy-private.mjs',
     'migrate-legacy-artifacts.mjs',
@@ -172,6 +173,7 @@ try {
         private: true,
         scripts: {
           migrate: 'node scripts/migrate-legacy-database.mjs',
+          'materialize-originals': 'node scripts/materialize-legacy-originals.mjs',
           restore: 'node scripts/restore-relational.mjs',
           retained: 'node scripts/retained-sources.mjs',
           verify: 'node scripts/verify-migration-package.mjs',

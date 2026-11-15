@@ -56,7 +56,14 @@ test('independent migration package excludes ignored private sources and runs co
   assert.equal(manifest.sourceCommit, result.sourceCommit);
   assert.ok(!names.some((name) => name.includes(canaryName.replace(/\.ts$/, '.js'))));
   assert.ok(!names.some((name) => /^(?:server|scripts)\/.*\.(?:ts|tsx|mts|cts)$/.test(name)));
-  assert.deepEqual(Object.keys(packageJson.scripts), ['migrate', 'restore', 'retained', 'verify']);
+  assert.deepEqual(Object.keys(packageJson.scripts), [
+    'migrate',
+    'materialize-originals',
+    'restore',
+    'retained',
+    'verify',
+  ]);
+  assert.ok(names.includes('scripts/materialize-legacy-originals.mjs'));
   assert.equal(packageJson.main, undefined);
   assert.equal(packageJson.devDependencies, undefined);
   const verified = run(
@@ -74,11 +81,13 @@ test('independent migration package excludes ignored private sources and runs co
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { migrateLegacyDatabase } from './scripts/migrate-legacy-database.mjs';
+import { materializeLegacyOriginals } from './scripts/materialize-legacy-originals.mjs';
 const require = createRequire(new URL('./package.json', import.meta.url));
 const db = new (require('better-sqlite3'))(':memory:');
 assert.equal(db.pragma('integrity_check', {simple:true}), 'ok');
 db.close();
 assert.equal(typeof migrateLegacyDatabase, 'function');
+assert.equal(typeof materializeLegacyOriginals, 'function');
 await assert.rejects(migrateLegacyDatabase({}), /selected unchanged offline source/);
 `,
     ],
