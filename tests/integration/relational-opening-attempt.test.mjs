@@ -31,6 +31,15 @@ import { verifyAndInstallRelationalStorage } from '../../server/storage/relation
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { createRelationalQueueRuntime } from '../../server/generation/relational-queue-runtime.ts';
 import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import { describeRetainedSnapshot } from '../../scripts/retained-sources.mjs';
+import {
+  initializeRetainedSources,
+  beginRetainedCapture,
+  bindRetainedCapture,
+  publishRetainedArchive,
+  readRetainedSourceProtection,
+  retainedFileSha256,
+} from '../../server/storage/retained-sources.ts';
 
 const zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const unknown = { v5: null, anlasFixed: null, anlasPurchased: null };
@@ -610,6 +619,7 @@ test('archived prepared NULL parent/operation/input stays in building and replay
       job: { sampleIndex: null, actualSeed: null, admissionEpoch: null, completedAt: null },
     });
   await writeFile(path.join(f.dir, result.descriptor.file), image);
+  await writeFile(path.join(f.dir, result.descriptor.file + '.part'), image);
   const stored = f.db.prepare('SELECT * FROM generation_attempts WHERE id=?').get(result.attemptId);
   assert.equal(stored.prepared_sha256, result.descriptor.sha256);
   assert.equal(stored.prepared_file, result.descriptor.file);
@@ -659,6 +669,174 @@ test('archived prepared NULL parent/operation/input stays in building and replay
   assert.deepEqual(f.db.serialize(), targetBytes);
   assert.equal(relationalSnapshotSha256(selected), sha);
   assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file)), image);
+  assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file + '.part')), image);
+  const dependency = f.generations.readGenerationResultDependency(result.jobId),
+    descriptor = { ...result.descriptor, operation: null };
+  assert.deepEqual(dependency.descriptor, descriptor);
+  assert.equal(dependency.event.eventId, 'old-OpeningAttemptRecorded');
+  assert.throws(() => f.generations.readGenerationExecutionState(result.jobId), reason);
+  f.db.transaction(() =>
+    assert.throws(
+      () =>
+        f.generations.prepareGenerationResult(
+          meta('unknown-prepared-new'),
+          result.jobId,
+          result.descriptor,
+          response,
+        ),
+      reason,
+    ),
+  )();
+  await assert.rejects(publishStoredResult(f.dir, descriptor, image), /operation is invalid/);
+  const output = path.join(f.dir, 'unknown-prepared-dependencies.jsonl'),
+    declaration = await describeRetainedSnapshot(selected, output, f.dir),
+    dependencies = (await readFile(output, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(declaration.dependencies, 'known');
+  assert.equal(declaration.sourceSha256, sha);
+  assert.deepEqual(dependencies, [
+    {
+      kind: 'prepared-result',
+      jobId: result.jobId,
+      attemptId: result.attemptId,
+      sourceEventId: dependency.event.eventId,
+      dataDir: f.dir,
+      descriptor,
+    },
+  ]);
+  // 原 file 与固定 .part 后缀声明两个保留位置；本次只声明，不证明这些字节可 ready。
+  const registry = path.join(f.dir, 'retained-registry'),
+    manifest = path.join(f.dir, 'unknown-prepared-manifest.json');
+  await initializeRetainedSources(registry);
+  const capture = await beginRetainedCapture(registry, 'archive', selected);
+  await writeFile(manifest, JSON.stringify({ sourceSha256: sha, declaration }));
+  await bindRetainedCapture(
+    registry,
+    capture.sourceId,
+    manifest,
+    {
+      ...declaration,
+      manifestSha256: await retainedFileSha256(manifest),
+    },
+    output,
+  );
+  await publishRetainedArchive(registry, capture.sourceId, selected, manifest);
+  const protection = await readRetainedSourceProtection(registry);
+  assert.equal(protection.sources[0].binding.dependencies, 'known');
+  assert.equal(protection.sources[0].binding.sourceSha256, sha);
+  assert.equal(protection.sources[0].holds[0].state, 'retained');
+  assert.deepEqual(
+    (await readFile(path.join(registry, 'sources', capture.sourceId, 'dependencies.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map(JSON.parse),
+    dependencies,
+  );
+  assert.equal(protection.coverage, 'unknown');
+  assert.equal(protection.releaseAllowed, false);
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(f.db.serialize(), targetBytes);
+  assert.equal(relationalSnapshotSha256(selected), sha);
+  assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file)), image);
+  assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file + '.part')), image);
+});
+
+test('prepared dependency rejects writable descriptors and preserves SQL identity guards', async (t) => {
+  const f = await source(t),
+    result = open(f, {
+      prepared: true,
+      unavailable: true,
+      request: {
+        originalRequestId: null,
+        contextId: null,
+        source: null,
+        operation: null,
+        model: null,
+        sampleCount: null,
+        seedMode: 'unknown',
+        acceptedAt: null,
+      },
+      job: { sampleIndex: null, actualSeed: null, admissionEpoch: null, completedAt: null },
+    });
+  const before = databaseState(f.db),
+    expected = f.generations.readGenerationResultDependency(result.jobId);
+  const descriptorMismatch = /准备结果与原事实不一致/;
+  const mutations = [
+    [
+      "UPDATE generation_attempts SET prepared_file='images/another.webp' WHERE id=?",
+      [result.attemptId],
+      descriptorMismatch,
+    ],
+    [
+      "UPDATE generation_attempts SET prepared_mime_type='image/png' WHERE id=?",
+      [result.attemptId],
+      descriptorMismatch,
+    ],
+    [
+      'UPDATE generation_attempts SET prepared_sha256=? WHERE id=?',
+      ['f'.repeat(64), result.attemptId],
+      descriptorMismatch,
+    ],
+    [
+      'UPDATE generation_attempts SET prepared_byte_length=prepared_byte_length+1 WHERE id=?',
+      [result.attemptId],
+      descriptorMismatch,
+    ],
+  ];
+  for (const [sql, params, rejection] of mutations) {
+    const rollback = Error('rollback intentional corrupt projection');
+    assert.throws(
+      () =>
+        f.db.transaction(() => {
+          assert.equal(f.db.prepare(sql).run(...params).changes, 1);
+          assert.throws(
+            () => f.generations.readGenerationResultDependency(result.jobId),
+            rejection,
+          );
+          throw rollback;
+        })(),
+      (error) => error === rollback,
+    );
+    assert.equal(databaseState(f.db), before);
+    assert.deepEqual(f.generations.readGenerationResultDependency(result.jobId), expected);
+  }
+  // 身份在原 SQL 层不可变；这些拒绝不冒充 changed projection 已到 getter。
+  const identities = [
+    [
+      'UPDATE generation_attempts SET credential_epoch=0 WHERE id=?',
+      [result.attemptId],
+      /immutable generation_attempts identity/,
+    ],
+    [
+      "UPDATE generation_requests SET operation='generate' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_requests SET input_id=(SELECT input_id FROM generation_requests WHERE id='definition') WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_requests SET member_id='m2' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+    [
+      "UPDATE generation_jobs SET sample_index=0 WHERE id='old-job'",
+      [],
+      /immutable generation_jobs identity/,
+    ],
+    [
+      "UPDATE generation_requests SET source='novelai-native' WHERE id='old-request'",
+      [],
+      /immutable generation_requests identity/,
+    ],
+  ];
+  for (const [sql, params, rejection] of identities) {
+    assert.throws(() => f.db.prepare(sql).run(...params), rejection);
+    assert.equal(databaseState(f.db), before);
+    assert.deepEqual(f.generations.readGenerationResultDependency(result.jobId), expected);
+  }
 });
 
 test('ready shares the real running prepared completion closure and original coordinator settles only its original charge', async (t) => {

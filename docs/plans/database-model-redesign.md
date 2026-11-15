@@ -2546,6 +2546,22 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 根在该同字节技术并集运行 Core precision 与 public-errors 两个完整文件 **12/12、零跳过，3.199秒**，两个worker的入口前网络guard均denied0；未知Local库存实际安装/选定私有源/重开与原安全错误文案同时到场。backend类型、architecture、默认及可信main88迁移、204文件语法、31变更路径格式与diff通过。根保留证明绑定30份非plan文件逐字等于631及实际共同基线85，原归档CLI、保留源保护与公共错误owner不变；日志/命令在上述root-preservation和root-checks文件。此根交点组不替代作者分片、独审或同候选最终full/编译/发布验收。
 
+### 9.99 保留依赖证据补全（只读首片，未开放源删除）
+
+9.98 的 failed Opening archive 可保存未知原 parent、operation 和不可执行输入的 prepared 描述符；它仍不能通过执行 getter、实际 complete 或唯一 ready。保留源 describe 原先借用严格完成 getter，因而正确拒绝执行能力却也无法声明这份确实存在的 final/part 依赖。本片只在 Gen owner 新增 `readGenerationResultDependency()`，供现 retained describe 一个 caller 使用，JSONL 结构不变。它声明原位置及摘要，不读取或验证产物文件、不执行上游、扣退或写账，也不授予 ready/发布能力。
+
+严格 getter 保持 completion → 原来源 → 严格 descriptor/attempt 比较 → 执行输入的次序。两口共用原唯一准备事实及完整 commit 读取；Opening 继续核原 source 登记、request/member/account/attempt 角色，并复用 Input 现只读 request、保护摘要和 seed 核验，已知信息不能降 NULL 绕过。普通 ArtifactPrepared 仍调用严格 getter，normal prepare、publisher、complete、结果恢复及 ready 不放宽。未知操作仅通过原 readable descriptor 校验，原 file/MIME/hash/len 与投影必须逐字段一致。
+
+聚焦检查覆盖未知归档非空 JSONL、实际 registry 不可变依赖副本、原 descriptor.file 与固定 `.part` 定位；原三口 410、publisher/正常 prepare 严格拒绝和源表/文件/认证不变继续保留。四个可写 prepared file/MIME/hash/len 字段各真实 changes=1 后由 Gen getter 精确拒绝并回滚；六个不可变 request/input/seed/成员/尝试身份和 source/op 字段应由原 SQL identity 拒绝，再核 getter 与全表不变，不能把 SQL 先拒冒充 changed projection 已到 getter。普通 ArtifactPrepared 控制核两口读取相同、零写，并核 operation=NULL 被原 SQL identity 拒绝后仍返回原严格结果。
+
+固定70b首个精准组实际 **2/4、零跳过，2.133秒**：未知归档声明/registry 与原known Opening ready/recovery控制通过；矩阵 credential_epoch 和普通控制 operation=NULL 被正确的 SQL immutable trigger 拦截，使原先要求先改投影再到 getter 的两项夹具断言失败。它们不是新产品红，原log/源保持；70f之前只静态发现不可写 view，未运行。后继仅把测试角色对齐上述四个真实 getter 反例与六个 SQL identity 门禁，不DROP/添加trigger或增加prepare/get模拟层；这仍是两个top-level用例，不加算成十个测试。修后两项源码验证另授槽，已通过两项不重复。
+
+test/docs 后继 `8d415108` 在原网络入口前 deny guard 下只复验首轮失败两项，实际 **2/2、零跳过，1.450秒**：上述四个可变字段与六个immutable门禁、原正常准备结果/退休产物依赖全到场，所有表和原源字节保持。主进程及两个worker均正常退出，guard denied0。两产品从70f至8d逐字不变；首轮已过的未知归档/known Opening两个test body亦逐字未改，它们不重跑、不与第二批伪称一次4/4。当前四个不同用例的证据分两批保存，原两项夹具红保留。类型/架构/可信13723ac迁移检查及变更格式/语法/diff通过，固定Git/raw、17相连authority和原严格方法体绑定见 `H:/TEMP/novelai-prepared-retained-read-20261115/`；未执行mutant/full/build/发布物/native安装/实云或生产，非作者独审待同固定后继进行。
+
+registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现总门禁，并非本片实现了逐物理 key pin、完整来源域证明或 DELETE。独立旧 archive 的 source 与导出 JSONL 共同摘要缺口仍由原 CLI owner 单独处理。本片没有新事实、DDL、domain 完成/删除合法迁移、外部删除、守卫或 CI 变化，生产释放未获授权。
+
+固定只读片技术8d415108d98e326a53896a5153f19f66ed79f73d、文档后继452e0005b21b6fdeee4632366af2e2cac8136b59已通过非作者独审，报告 H:/TEMP/novelai-prepared-dependency-independent-452e000-20261115/INDEPENDENT-REVIEW.md，SHA256 a76399723bbf1c4f018a666638b7065846661e51585b3ede3cbe23cbb50bfea2。独立archive正例真实公共回放私有空、describe/registry非空来源、原final/part、三执行入口410及表/字节不变通过；normal正例与严格getter等值，真实SHA/长度投影变更由Gen原事实比较拒绝，非法filename由result-files身份校验拒绝，均外层回滚。独审首轮2项为1通过/1夹具预期错误、1.071秒；只修私有测试的owner层预期后，原失败项1/1、零跳过、0.677秒，原成功项未重跑。原程序/首红不改，不声称同轮2/2；SQL immutable的提前拒绝单列，不冒getter到场。Root从4cc8714普通整合整个452，实际共同基线13723ac，四份非plan路径保持受审原字节；coverage仍unknown、没有逐key释放、domainproof晋级或DELETE，根交点结果另见 H:/TEMP/novelai-prepared-dependency-root-preservation.json。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

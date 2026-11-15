@@ -7,7 +7,14 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { fixture, meta, keys, NOW, image } from '../helpers/relational-generation.mjs';
+import {
+  fixture,
+  meta,
+  keys,
+  NOW,
+  image,
+  databaseState,
+} from '../helpers/relational-generation.mjs';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { describeStoredResult } from '../../server/storage/result-files.ts';
@@ -68,6 +75,22 @@ test('retained source uses original owners for retired artifact and unpublished 
       f.response(NOW + 100003),
     ),
   )();
+  const changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual(
+    f.generations.readGenerationResultDependency('prepared-0'),
+    f.generations.readGenerationResultPreparation('prepared-0'),
+  );
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  const beforeIdentity = databaseState(f.db);
+  assert.throws(
+    () => f.db.prepare("UPDATE generation_requests SET operation=NULL WHERE id='prepared'").run(),
+    /immutable generation_requests identity/,
+  );
+  assert.equal(databaseState(f.db), beforeIdentity);
+  assert.deepEqual(
+    f.generations.readGenerationResultDependency('prepared-0'),
+    f.generations.readGenerationResultPreparation('prepared-0'),
+  );
   const before = await readFile(path.join(f.dir, 'images/artifact-retired-0.webp'));
   const filename = f.db.name;
   f.db.pragma('wal_checkpoint(TRUNCATE)');

@@ -74,7 +74,7 @@ export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
         }
         for (const jobId of jobs) {
           const { descriptor, event, attemptId } =
-            generations.readGenerationResultPreparation(jobId);
+            generations.readGenerationResultDependency(jobId);
           await emit({
             kind: 'prepared-result',
             jobId,
