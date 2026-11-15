@@ -456,6 +456,7 @@ test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不�
       eventType: 'OpeningJobRecorded',
       streamId: `request:${origin.originalId}`,
       payload: {
+        diagnosticId: null,
         sourceOrder: null,
         displayCost: null,
         ...child.payload,
@@ -1015,6 +1016,7 @@ test('partial 输入可复制已知字段和已校验附件，缺首次上下文
       eventType: 'OpeningJobRecorded',
       streamId: 'request:past',
       payload: {
+        diagnosticId: null,
         sourceOrder: null,
         displayCost: null,
         jobId: 'past-job',

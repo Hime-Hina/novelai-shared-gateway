@@ -415,9 +415,12 @@ function command(finance, accounts = ['a', 'b']) {
       eventType: 'OpeningJobRecorded',
       memberId: 'm1',
       payload: {
+        diagnosticId: null,
         jobId: 'failed-review',
         requestId: 'retained-failed-request',
         createdAt: NOW,
+        sourceOrder: null,
+        displayCost: null,
         sampleIndex: null,
         actualSeed: null,
         status: 'failed',
