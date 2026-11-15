@@ -2584,6 +2584,14 @@ Web/执行器固定 `7f6e789` 只改三份测试/夹具：原 Opening 未知元�
 
 固定 `df0` 的原两个 Windows 跳过项另在缓存 Linux Node22 镜像 `c380909e…` 执行原测试体：真实 dir_sync SIGKILL 与正常 SIGTERM 两项 2/2、零 skip，4.734417125 秒；六个真实 server 均退出，容器已移除，source/native 绑定保持。此结果只补这两项跨平台行为，不改写原 full 的 5 skip，也不证明最新源码、发布包、掉电或生产文件系统验收。日志与身份记录见 `H:/TEMP/novelai-linux22-recovery-df0-20261115/RESULT.md`。
 
+### 9.103 历史到期核对复用原责任来源
+
+原真实启动用例及单独只读观察确认：到期核对误用 `readGenerationExecutionState`，使合法终态 Opening 因未知 parent/执行元数据在启动时 410。后继 `3c34c97` 在 Gen owner 复用既有 `assertReviewAnchor`，仅派生原任务、尝试、因果事件和政策/计价版本；queue 的到期结案改用此窄读。普通来源取真实 `ReviewOpened`，Opening 取已注册且承担原责任的自身事实，opaque 原 loss ID 不作本地事件授权。严格执行、prepared、发布与 ready 校验、原退款/授权/回执及公共 projector 事务规则未放宽；契约维护在[原核对模块](../architecture/failure-accounting.md#五分钟核对与迟到结果)，没有新命令、事件或 DDL。
+
+原 OpeningAttempt 整文件首轮为 27 节点中 26 pass、1 fail、零 skip，6.2520224 秒；唯一新例在已验证只读来源、SQL 尾错全表回滚、健康结案、NULL 和钱包不变后，误把重复回执当作首次提交结果。`5b27def` 只修该期望为原 `replayed:true/events:[]`，仅原失败项后继 1/1、零 skip，0.6837345 秒，最终完整公回放、重复零写、私有空和零 fetch 到场；其余 26 项未重跑。非作者三组独立反例 3/3、零 skip，1.3717216 秒，覆盖不同原 ReviewOpened 版本、窄读不接触保护内容、0/NULL、opaque 同号外事件、已知实耗保留及五类合法完整错角色 envelope 的 owner 拒绝/外层捕获后回滚/健康重试。
+
+原停用离线账户的真实 HTTP 用例在产品修后先通过启动、原 PNG 两种领取、他人 403、到期结案与完整钱包审计，但最终原成员余额映射误纳入 bootstrap 零钱包，仍记失败；`d0cf3c9` 仅按原 source 成员限定最后映射，前面的全钱包比较不筛选。后继原完整标题无 spy 一次 1/1、零 skip，2.672985 秒，原金额、账户仍停用、零上游调用和停止后完整公共回放均到场。非作者逆删这一 filter 后整文件 AST 精确原基线，固定 `d0cf3c9` 复审通过。Root 五份受影响路径逐字整合，证据 `H:/TEMP/novelai-review-context-root-integration-20261115/REPORT.md` 与 `H:/TEMP/novelai-review-context-independent-3c34-20261115/FINAL-REVIEW-d0cf.md`；原红及准备路径误写后按原 SHA 恢复的审计单列保留。此为局部修复，不替代下一轮完整后端、发布物或切换验收，关键测试断言仍列维护者复核。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
