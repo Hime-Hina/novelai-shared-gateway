@@ -902,6 +902,21 @@ export class RelationalGenerationStore {
       .all(now, limit)
       .map((row) => row.id);
   }
+  readGenerationReviewSource(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    if (!attempt) {
+      fail('核对责任缺少原尝试');
+    }
+    const source = this.assertReviewAnchor(job, attempt);
+    return {
+      id: job.id,
+      attemptId: attempt.id,
+      eventId: source.eventId,
+      policyVersion: source.policyVersion,
+      pricingVersion: source.pricingVersion,
+    };
+  }
   readNextGenerationWakeAt(): number | null {
     return this.sqlite
       .prepare<[], { at: number | null }>(
@@ -2424,7 +2439,7 @@ export class RelationalGenerationStore {
       if (opening.payload.reviewStatus === null) {
         fail('开账事实未证明原核对责任');
       }
-      return;
+      return opening;
     }
     const row = this.sqlite
       .prepare<[string], { seq: string }>(
@@ -2446,6 +2461,7 @@ export class RelationalGenerationStore {
     ) {
       fail('核对责任缺少原尝试来源');
     }
+    return source;
   }
   // ready 的只读 prepared 检查与真正发布共用完成前置；不运行发布/结算来试探可恢复性。
   private generationCompletion(job: Job) {
