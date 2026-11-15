@@ -2746,6 +2746,26 @@ Node22 与 Node24 各自实际 25/25、零 fail/skip：normal-package 原 whole 
 
 本轮实际包含 9.111 产品与 9.112 test-only 前置：sole queued/done 整例 14.9545624 秒通过，原冷历史 55.6516313 秒在原 60 秒内通过。617 源、工具/native/控制前后相同，初始 pnpm 实际 16 名环境与显式环境块相等，400 个 OS Node 身份和 13 个线程全部闭合后释放运行槽。完整阶段、原四轮记录及本轮封存 SHA 见[源码验证记录](../history/database-model-full-source-20261115.md#后继-147aabd-的第四次完整运行)。本轮不替代最新候选实际三包、Nuxt/Docker、真实外存、迁移及同规模联合恢复；这些接续进行，未操作生产迁移、删除或切换。
 
+### 9.115 固定 147 的实际三包与预构建 Web
+
+固定 `147aabd6f7996442d5c8d242379e080ff27afe19` 的 617 个 Git 文件在新目录执行原 executor build（内含唯一 backend build）及标准 Web build，分别 exit 0、12.750 秒和 23.984 秒。实际 backend 为 115 文件，executor 业务包为同 115 文件加三份许可，外壳含业务包共 126 文件，Web 为 331 文件；对应 backend/业务包逐字相同，没有 owned TS、旧在线 Store/migrations/replay 工具或产物链接。原 normal-package 整文件指向本次实际业务包，6/6、零 skip；原 executor runtime 整文件指向实际 start.mjs，三 pass、一项原 Windows Unix-signal skip、零 fail。构建允许原 TS 配置，运行入口均禁 strip-types、拒源业务回退，未安装或重建共享 native。
+
+Web 原整文件只补 test-only `b713dea` 的显式 `WEB_TEST_ENTRY`：已有 fixture 直接接收实际标准产物，默认分支仍按原 context/load/build/cleanup 顺序运行。test-utils 改为默认分支 lazy import；独审实读当前 test-utils 初始化，确认 hook 只在显式 setup 内注册。13 个场景、449 处断言、240 秒/并发 2 及公共 stat 后所有正文保持。固定该 harness 对上述实际 Web/executor 一次完整执行，**15 节点为 14 pass、一项原 Windows SIGTERM skip、零 fail/cancel**，原文件 101.4181067 秒；全部 13 场景正文通过。51 个实际 Node 入口均有 builder 拒载观察且零触发，没有另行 build 或借旧隔离测试产物。
+
+本次 147 的实际业务包另逐字复制到已选隔离 Node24 依赖域，只运行 binding probe 和原 normal 整文件，6/6、零 skip。实际 v24.22.1/ABI137、预选 C045 native 物理叶及 SHA、SQLite 3.53.1/integrity 均匹配；没有重复 Node22/build/十九个 owner。两 runtime 的 normal 是相同六场景，不是十二种业务。各组源码、产物、native、工具和控制前后相同，实际进程均关闭后还槽；预期拒绝 CLI 与 kill 场景不冒称全部 self-exit 0。
+
+封存：`H:/TEMP/novelai-release-147aabd-20261115/STAGE-A-RESULT.md`（SHA `69407ca6…72534`）、实际产物 manifest `51589aa0…19676`；Web `H:/TEMP/novelai-web-prebuilt-run-b713-20261115/ACTUAL-RESULT.md`（SHA `119dd92e…b74e6`）、final manifest `bb976376…bca87`；Node24 `node24-normal-20261115/RESULT.md`（SHA `e3f3319f…030a5`）。default Web build 分支仅静态保留/独审，本轮未重跑；Node24 executor/Web、Linux Docker/tar 解包、真实云及同规模迁移恢复继续另验，原 500/503 和完整后端红灯未因本片消失。
+
+### 9.116 真实外存当前清单与 Pik 超时边界
+
+获准只读盘点复用原选定 reader/namespace、旧源声明和官方导出行动，先独审冻结 runner。独审发现 Pik 输出展开 row.kind 覆盖 provider 标记，最小修复为 provider 与 entryType 分开、未知类型仍 NULL；同一实际 writer 的旧副本精准失败，新版 file/directory/NULL 三种对照通过。原预算、方法和来源不变，不造对象 catalog 或引用计数。随后只执行一次真实批次，约 34.562 秒，三个应用请求、585,655 B 响应正文：两页 R2 LIST 均 200/完整 EOF；原 Pik GET 在 SDK 约 30 秒超时，后续 PROPFIND 按原规则未执行。整体仍 **NOTPASS / READ_TIMEOUT**，没有更换对象、秘密、代理、namespace 或重试。
+
+当前 R2 两页共 1,989 条非原子元数据：images 1,982 条、provider 声明 stored bytes 2,895,206,370 B；backups 七条、966,425,572 B；other 零。与原 cut 9,412 条 R2 声明精确 locator 匹配 1,576 条，匹配长度冲突零，当前未见 7,836 条。未见不等于孤儿、丢失或可删除；未匹配也不证明新建。本轮没有 R2 对象内容 GET/SHA，备份长度只是列举包实体长度，非解压数据库/原图量；quota/free/decoded bytes 仍未知。
+
+Pik 实际到达 DNS/TCP/TLS，响应头、first byte 和 EOF 均未到，应用正文零。原日志顺序为 SDK abort→socket error→operation end→socket close→无 active task 的 TLS 入口拒绝；该拒绝发生在原 TLS 实现之前，整轮只有三个获准 fetch/socket/TLS 及 close，没有第四个应用请求或放行连接。日志缺 initiator/stack，不猜认证、SDK 重试或远端缺图根因；denied=1 和整体失败原样保留，不能追认旧两 GET 记录的原因。
+
+46 条小 metadata/code/Node/自身绑定前后相同，原进程和三条连接全部结束，未打开或重算 605 MB 源 DB/gzip、未执行 SQL/写入/删除。凭据仅在获准启动时核原封存摘要和 namespace，不冒称另做 post-hash。原始 selectors 和清单只留受保护目录，安全聚合证据 `H:/TEMP/novelai-external-inventory-next-20261115/runner-v3/ACTUAL-HANDOFF.md`（SHA `5ac540a2…d9d119`）、manifest `99c20bb7…43332c`。本片不证明 Pik 库存、全部 9,412 项内容、物理 wire、容量性能或同候选发布验收；源释放仍禁止。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
