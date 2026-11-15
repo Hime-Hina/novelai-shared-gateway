@@ -100,6 +100,8 @@ await assert.rejects(migrateLegacyDatabase({}), /selected unchanged offline sour
   const total = /^# tests (\d+)$/m.exec(converted.stdout),
     passed = /^# pass (\d+)$/m.exec(converted.stdout);
   assert.ok(total && Number(total[1]) > 0, converted.stdout);
+  assert.doesNotMatch(converted.stdout, /^1\.\.0$/m);
+  assert.match(converted.stdout, /^# Subtest: 私有尾部真实SQL错外catch回滚整笔公共\/正文\/私有/m);
   assert.equal(passed?.[1], total[1], converted.stdout);
   t.diagnostic(`Compiled conversion: ${passed[1]}/${total[1]}, no skipped tests.`);
   assert.equal(await readFile(canary, 'utf8'), 'export const privateCanary = true;\n');
