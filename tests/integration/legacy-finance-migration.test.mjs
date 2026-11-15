@@ -55,6 +55,7 @@ async function sourceFixture(
   t,
   {
     blockedLiabilities = false,
+    historicalNumbers = false,
     huge = false,
     latestUnknownTime = false,
     coveredGap = false,
@@ -202,6 +203,26 @@ async function sourceFixture(
     : latestMatchesBaseline
       ? NOW
       : NOW + 5;
+  if (historicalNumbers) {
+    // Old job/terminal JSON kept Number leaves even when the live quota cut was normalized.
+    const convert = (value) =>
+      Object.fromEntries(
+        Object.entries(value).map(([key, raw]) => [
+          key,
+          typeof raw === 'string' ? Number(raw) : raw,
+        ]),
+      );
+    failed.generationAttempt.localReserved = convert(failed.generationAttempt.localReserved);
+    for (const candidate of failed.generationAttempt.upstreamCandidates)
+      candidate.resources = convert(candidate.resources);
+    for (const charge of Object.values(db.settings.fairQuota.reservations)) {
+      if (charge.status !== 'reserved') {
+        for (const field of ['amount', 'fixed', 'purchased', 'v5Equivalent', 'sharedV5Reserved']) {
+          if (typeof charge[field] === 'string') charge[field] = Number(charge[field]);
+        }
+      }
+    }
+  }
   await store.write(db);
   await store.enableEventAuthority();
 
@@ -647,7 +668,7 @@ test('opening latest observation rejects cross-account/source, changed original 
 });
 
 test('actual last charge SQL failure rolls back the entire finance commit and protected staging, then healthy retry succeeds', async (t) => {
-  const f = await sourceFixture(t, { blockedLiabilities: true }),
+  const f = await sourceFixture(t, { blockedLiabilities: true, historicalNumbers: true }),
     mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))(),
     db = new Database(':memory:');
   t.after(() => db.close());
@@ -1756,4 +1777,245 @@ test('real official observation and non-quota availability history do not fabric
   assert.equal(q.observedCredentialEpoch, null);
   assert.equal(q.observedSequence, null);
   assert.equal(q.baselineEventId, null);
+});
+
+test('historical Number attempts and cold decisions use original nearest-decimal12 owner without changing the current financial cut', async (t) => {
+  const rawV5 = 0.004690468641132209,
+    f = await sourceFixture(t, {
+      historicalNumbers: true,
+      unopenedSourceEdit(sqlite) {
+        const charges = [
+          {
+            id: 'known-historical-number-v5',
+            resource: 'v5',
+            amount: rawV5,
+            status: 'settled',
+            estimated: true,
+          },
+          {
+            id: 'known-historical-number-tie',
+            resource: 'v5',
+            amount: 0.0000000000005,
+            status: 'settled',
+            estimated: true,
+          },
+          {
+            id: 'known-historical-number-anlas',
+            resource: 'anlas',
+            amount: 5,
+            fixed: 2,
+            purchased: 3,
+            billingMode: 'anlas',
+            status: 'settled',
+            estimated: false,
+          },
+          {
+            id: 'known-historical-number-free',
+            resource: 'free',
+            amount: 0,
+            status: 'refunded',
+            estimated: false,
+          },
+        ];
+        appendOriginalC(
+          sqlite,
+          charges.map(({ id, ...fields }) => ({
+            eventType: 'OpeningStateRecorded',
+            streamId: `settlement:${id}`,
+            occurredAt: NOW - 50,
+            payload: {
+              source: 'legacy-opening',
+              state: {
+                jobId: id,
+                charge: {
+                  userId: 'm1',
+                  accountId: 'a',
+                  fixed: 0,
+                  purchased: 0,
+                  configVersion: 1,
+                  reservedAt: NOW - 100,
+                  settledAt: NOW - 50,
+                  ...fields,
+                },
+              },
+            },
+          })),
+        );
+        assert.equal(
+          sqlite
+            .prepare(
+              "SELECT json_type(charge,'$.amount') AS type FROM fair_quota_settlements WHERE job_id='known-historical-number-v5'",
+            )
+            .get().type,
+          'real',
+        );
+      },
+    }),
+    before = await readFile(f.filename),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+  assert.deepEqual(mapped.findings, []);
+  assert.equal(mapped.expected.attempts.length, 1);
+  const historical = mapped.expected.charges.find(
+      (value) => value.originalJobId === 'known-historical-number-v5',
+    ),
+    free = mapped.expected.charges.find(
+      (value) => value.originalJobId === 'known-historical-number-free',
+    );
+  assert.equal(historical.resources.v5, '0.004690468641');
+  assert.equal(historical.resources.anlasFixed, '0');
+  assert.equal(
+    mapped.expected.charges.find((value) => value.originalJobId === 'known-historical-number-tie')
+      .resources.v5,
+    '0.000000000001',
+  );
+  assert.deepEqual(
+    mapped.expected.charges.find((value) => value.originalJobId === 'known-historical-number-anlas')
+      .resources,
+    { v5: '0', anlasFixed: '2', anlasPurchased: '3' },
+  );
+  assert.equal(historical.resolution, 'archived');
+  assert.equal(historical.jobId, null);
+  assert.equal(historical.attemptId, null);
+  assert.equal(historical.billingMode, 'v5');
+  assert.equal(historical.estimated, true);
+  assert.deepEqual(free.resources, { v5: '0', anlasFixed: '0', anlasPurchased: '0' });
+  assert.equal(free.billingMode, 'free');
+  assert.equal(free.status, 'refunded');
+  assert.equal(free.estimated, false);
+  const quota = f.source.transaction(
+    () => readStreamProjection(f.source, 'account:a').projection.quota,
+  )();
+  assert.equal(typeof quota.balances.m1.v5Available, 'string');
+  assert.equal(
+    mapped.expected.wallets.find((value) => value.accountId === 'a' && value.memberId === 'm1')
+      .available.v5,
+    quota.balances.m1.v5Available,
+  );
+  const db = new Database(':memory:'),
+    replay = new Database(':memory:');
+  t.after(() => {
+    db.close();
+    replay.close();
+  });
+  const { inputs, c } = applyFinanceFixture(db, mapped);
+  db.transaction(() => assertLegacyFinanceProjection(db, mapped.expected))();
+  const state = databaseState(db),
+    changes = db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal(
+    db.transaction(() => new RelationalCommitReplayer(db).appendCommit(c, inputs))().replayed,
+    true,
+  );
+  assert.equal(databaseState(db), state);
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+  initializeRelationalStorage(replay, 'finance-history');
+  for (const row of db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    replay.transaction(() =>
+      new RelationalCommitReplayer(replay).replayCommit(readRelationalCommit(db, row.seq), inputs),
+    )();
+  }
+  assert.equal(databaseState(replay), state);
+  assert.equal(relationalPrivateStateEmpty(replay), true);
+  assert.deepEqual(await readFile(f.filename), before);
+});
+
+test('historical decoding does not accept missing, negative or conflicting amounts or loosen the current financial cut', async (t) => {
+  for (const kind of [
+    'noncanonical-history',
+    'unknown-history',
+    'negative-history',
+    'conflicting-pools',
+    'conflicting-attempt',
+    'numeric-wallet',
+    'numeric-quota',
+  ]) {
+    await t.test(kind, async (t) => {
+      const f = await sourceFixture(t, {
+          historicalNumbers: true,
+          unopenedSourceEdit(sqlite) {
+            if (kind === 'conflicting-attempt') {
+              const row = sqlite.prepare("SELECT data FROM jobs WHERE id='failed-review'").get(),
+                job = JSON.parse(row.data);
+              job.generationAttempt.localReserved.anlasFixed += 1;
+              sqlite
+                .prepare("UPDATE jobs SET data=? WHERE id='failed-review'")
+                .run(JSON.stringify(job));
+            } else if (kind === 'numeric-wallet' || kind === 'numeric-quota') {
+              const projection = readStreamProjection(sqlite, 'account:a').projection;
+              if (kind === 'numeric-wallet')
+                projection.quota.balances.m1.v5Available = Number(
+                  projection.quota.balances.m1.v5Available,
+                );
+              else projection.quota.unallocatedV5 = Number(projection.quota.unallocatedV5);
+              sqlite
+                .prepare(
+                  'UPDATE event_streams SET projection=?,projection_sha256=? WHERE stream_id=?',
+                )
+                .run(JSON.stringify(projection), domainDigest(projection), 'account:a');
+            } else {
+              appendOriginalC(sqlite, [
+                {
+                  eventType: 'OpeningStateRecorded',
+                  streamId: 'settlement:known-invalid-history',
+                  occurredAt: NOW - 50,
+                  payload: {
+                    source: 'legacy-opening',
+                    state: {
+                      jobId: 'known-invalid-history',
+                      charge: {
+                        userId: 'm1',
+                        accountId: 'a',
+                        resource: kind === 'conflicting-pools' ? 'anlas' : 'v5',
+                        amount:
+                          kind === 'noncanonical-history'
+                            ? '0.10'
+                            : kind === 'unknown-history'
+                              ? null
+                              : kind === 'negative-history'
+                                ? -0.0000000000001
+                                : 3,
+                        fixed: kind === 'conflicting-pools' ? 1 : 0,
+                        purchased: kind === 'conflicting-pools' ? 1 : 0,
+                        status: 'settled',
+                        configVersion: 1,
+                        reservedAt: NOW - 100,
+                        settledAt: NOW - 50,
+                      },
+                    },
+                  },
+                },
+              ]);
+            }
+          },
+        }),
+        bytes = await readFile(f.filename),
+        mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+      const code =
+        kind === 'conflicting-attempt'
+          ? 'invalid_attempt_source'
+          : kind === 'numeric-wallet'
+            ? 'invalid_wallet_source'
+            : kind === 'numeric-quota'
+              ? 'invalid_quota_source'
+              : 'invalid_charge_source';
+      assert.ok(
+        mapped.findings.some((value) => value.code === code && value.blocking && value.count > 0),
+      );
+      if (kind === 'conflicting-attempt') assert.equal(mapped.expected.attempts.length, 0);
+      else if (kind === 'numeric-wallet')
+        assert.ok(
+          !mapped.expected.wallets.some(
+            (value) => value.accountId === 'a' && value.memberId === 'm1',
+          ),
+        );
+      else if (kind === 'numeric-quota')
+        assert.ok(!mapped.expected.quotas.some((value) => value.accountId === 'a'));
+      else
+        assert.ok(
+          !mapped.expected.charges.some((value) => value.originalJobId === 'known-invalid-history'),
+        );
+      assert.deepEqual(await readFile(f.filename), bytes);
+    });
+  }
 });
