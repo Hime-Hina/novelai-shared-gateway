@@ -13,7 +13,10 @@ import {
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
-import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
+import {
+  RELATIONAL_EVENT_SCHEMA_VERSION,
+  parseRelationalFact,
+} from '../../server/events/relational-events.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
@@ -192,7 +195,7 @@ function fixture(t) {
     fingerprint: sha256,
     actor_kind: 'system',
     recorded_at: 1000,
-    event_count: 1,
+    event_count: 3,
     receipt: '{"requestId":"r1"}',
   });
   insert(sqlite, 'domain_events', event());
@@ -231,6 +234,35 @@ function fixture(t) {
       logical_bytes: 2,
       body: '{}',
     });
+    // 物理DDL夹具仍是building；只补原接受身份，不冒充完整受理/合法ready。
+    const accepted = parseRelationalFact({
+      eventType: 'RequestAccepted',
+      payload: {
+        requestId: `r${n}`,
+        memberId: `m${n}`,
+        inputId: `i${n}`,
+        contextId: 'ctx',
+        source: 'native',
+        operation: 'generate',
+        model: 'synthetic-model',
+        sampleCount: 2,
+        seedMode: 'fixed',
+        confirmation: null,
+      },
+    });
+    insert(
+      sqlite,
+      'domain_events',
+      event({
+        event_id: `request-source-${n}`,
+        event_index: n,
+        stream_id: `request:r${n}`,
+        stream_kind: 'request',
+        event_type: accepted.eventType,
+        member_id: `m${n}`,
+        payload: JSON.stringify(accepted.payload),
+      }),
+    );
     insert(sqlite, 'generation_requests', {
       id: `r${n}`,
       member_id: `m${n}`,
@@ -238,10 +270,12 @@ function fixture(t) {
       context_id: 'ctx',
       source: 'native',
       operation: 'generate',
+      model: 'synthetic-model',
       sample_count: 2,
       seed_mode: 'fixed',
       accepted_at: 1000,
       ...fact,
+      source_event_id: `request-source-${n}`,
     });
     insert(sqlite, 'generation_jobs', {
       id: `j${n}`,
@@ -466,6 +500,7 @@ test('DDL 中断整笔回滚，空历史身份与外层事务不能创建半库'
 
 test('ready 门禁拒绝缺失游标、未来版本、DDL 漂移和关闭外键，保留 64 位游标', (t) => {
   const sqlite = fixture(t);
+  // 此处只测物理格式门禁，不能作为完整业务数据已由唯一installer安装的证据。
   sqlite.prepare("UPDATE projection_state SET status='ready'").run();
   assert.throws(() => assertRelationalStorageReady(sqlite), /incomplete/);
   sqlite.prepare('UPDATE projection_state SET last_commit_seq=1').run();
@@ -753,10 +788,13 @@ test('产物属于原成员，缓存复用保留原 input/attempt，上传确认
   };
   insert(sqlite, 'artifact_replicas', replica);
   assert.equal(sqlite.prepare('SELECT verified_at FROM artifact_replicas').get().verified_at, null);
-  assert.throws(
-    () => sqlite.prepare('UPDATE artifact_replicas SET uploaded_at=NULL, verified_at=2000').run(),
-    /CHECK/,
-  );
+  // 历史存在承诺允许原uploaded未知、verified已知0；普通首次确认在Replica owner拒绝。
+  // 原正常reserved→verified及完整提交回滚反例见relational-replicas的Opening已确认R2用例。
+  sqlite.prepare('UPDATE artifact_replicas SET uploaded_at=NULL, verified_at=0').run();
+  assert.deepEqual(sqlite.prepare('SELECT uploaded_at,verified_at FROM artifact_replicas').get(), {
+    uploaded_at: null,
+    verified_at: 0,
+  });
   assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
 });
 
@@ -933,7 +971,7 @@ test('新活动键需要完整关系和原命令，事件顺序与子任务索�
     /UNIQUE/,
   );
   assert.throws(
-    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 1 })),
+    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 3 })),
     /UNIQUE/,
   );
   assert.throws(
