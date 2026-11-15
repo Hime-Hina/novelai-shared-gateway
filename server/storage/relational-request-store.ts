@@ -12,16 +12,16 @@ function fail(statusCode: number, code: string, message: string): never {
 }
 interface RequestRow {
   id: string;
-  source: string;
-  operation: string;
+  source: string | null;
+  operation: string | null;
   model: string | null;
-  acceptedAt: number;
+  acceptedAt: number | null;
 }
 interface JobRow {
   id: string;
   requestId: string;
   model: string | null;
-  sampleIndex: number;
+  sampleIndex: number | null;
   createdAt: number | null;
   status: string;
   updatedAt: number | null;
@@ -96,10 +96,10 @@ function jobCharge(job: JobRow) {
     : null;
 }
 
-function memberJob(job: JobRow) {
+function memberJob(job: JobRow, requestId: string | null) {
   return {
     id: job.id,
-    requestId: job.requestId,
+    requestId,
     createdAt: iso(job.createdAt),
     model: job.model,
     status: job.status,
@@ -112,9 +112,16 @@ function memberJob(job: JobRow) {
 // 只读取薄关系状态；完整输入和附件继续由 RelationalInputStore 按需校验。
 export class RelationalRequestStore {
   private sqlite: Database.Database;
+  private inputs: RelationalInputStore;
   constructor(sqlite: Database.Database) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+    this.inputs = new RelationalInputStore(sqlite);
+  }
+
+  private publicRequestId(requestId: string) {
+    // 导入容器保留内部归属，但只有原受理/原父事实能授予公开父请求身份。
+    return this.inputs.readOriginalRequestId(requestId) === null ? null : requestId;
   }
 
   private assertMember(memberId: string): void {
@@ -184,7 +191,7 @@ export class RelationalRequestStore {
         WHERE r.member_id=? AND j.request_id=? AND j.retired_at IS NULL ORDER BY j.sample_index,j.id`,
       )
       .all(memberId, request.id);
-    const createdAt = iso(request.acceptedAt)!;
+    const createdAt = iso(request.acceptedAt);
     return {
       id: request.id,
       source: request.source,
@@ -260,7 +267,7 @@ export class RelationalRequestStore {
         page: options.page,
         pageSize: options.pageSize,
         until: options.until,
-        jobs: rows.map(memberJob),
+        jobs: rows.map((job) => memberJob(job, this.publicRequestId(job.requestId))),
       };
     })();
   }
@@ -275,7 +282,10 @@ export class RelationalRequestStore {
         ORDER BY j.late_result_at DESC,j.id DESC LIMIT 10`,
         )
         .all(memberId)
-        .map((job) => ({ ...memberJob(job), lateResultAt: iso(job.lateResultAt)! }));
+        .map((job) => ({
+          ...memberJob(job, this.publicRequestId(job.requestId)),
+          lateResultAt: iso(job.lateResultAt)!,
+        }));
     })();
   }
 
@@ -288,7 +298,7 @@ export class RelationalRequestStore {
           FROM generation_requests WHERE id=? AND member_id=? AND retired_at IS NULL`,
         )
         .get(requestId, memberId);
-      if (!request) {
+      if (!request || this.publicRequestId(requestId) === null) {
         fail(404, 'request_not_found', '请求不存在。');
       }
       return this.requestState(request, memberId);
@@ -298,15 +308,15 @@ export class RelationalRequestStore {
   readMemberRequests(
     memberId: string,
     limit = 20,
-    before: { acceptedAt: number; id: string } | null = null,
+    before: { acceptedAt: number | null; id: string } | null = null,
   ) {
     if (
       !Number.isSafeInteger(limit) ||
       limit < 1 ||
       limit > 100 ||
       (before &&
-        (!Number.isSafeInteger(before.acceptedAt) ||
-          before.acceptedAt < 0 ||
+        ((before.acceptedAt !== null &&
+          (!Number.isSafeInteger(before.acceptedAt) || before.acceptedAt < 0)) ||
           typeof before.id !== 'string' ||
           !before.id))
     ) {
@@ -314,14 +324,34 @@ export class RelationalRequestStore {
     }
     return this.sqlite.transaction(() => {
       this.assertMember(memberId);
+      const parameters: unknown[] = [memberId];
+      let cursor = '';
+      if (before) {
+        if (before.acceptedAt === null) {
+          cursor = 'AND r.accepted_at IS NULL AND r.id<?';
+          parameters.push(before.id);
+        } else {
+          cursor = 'AND (r.accepted_at IS NULL OR (r.accepted_at,r.id)<(?,?))';
+          parameters.push(before.acceptedAt, before.id);
+        }
+      }
+      parameters.push(limit);
       const rows = this.sqlite
         .prepare<unknown[], RequestRow>(
-          `SELECT id,source,operation,model,accepted_at AS acceptedAt
-          FROM generation_requests WHERE member_id=? AND retired_at IS NULL
-          ${before ? 'AND (accepted_at,id)<(?,?)' : ''}
-          ORDER BY accepted_at DESC,id DESC LIMIT ?`,
+          `SELECT r.id,r.source,r.operation,r.model,r.accepted_at AS acceptedAt
+          FROM generation_requests r JOIN generation_request_origins origin
+            ON origin.stream_id='request:'||r.id AND origin.request_id=r.id
+            AND origin.original_request_id IS NOT NULL
+          WHERE r.member_id=? AND r.retired_at IS NULL ${cursor}
+          ORDER BY r.accepted_at DESC,r.id DESC LIMIT ?`,
         )
-        .all(...(before ? [memberId, before.acceptedAt, before.id, limit] : [memberId, limit]));
+        .all(...parameters);
+      // DESC 的 NULL 尾阶段用稳定 ID 继续，不借导入时点或数值 0 补出时间游标。
+      for (const row of rows) {
+        if (this.publicRequestId(row.id) === null) {
+          fail(503, 'request_source_mismatch', '原父请求来源不一致。');
+        }
+      }
       return {
         requests: rows.map((row) => this.requestState(row, memberId)),
         before:
@@ -373,7 +403,7 @@ export class RelationalRequestStore {
             artifactId: string;
             inputId: string;
             originalAttemptId: string | null;
-            operation: string;
+            operation: string | null;
             mimeType: string;
             byteLength: number;
             sha256: string;
@@ -429,7 +459,7 @@ export class RelationalRequestStore {
       if (job.retiredAt !== null || job.requestRetiredAt !== null) {
         fail(410, 'result_unavailable', '原结果已不可领取。');
       }
-      return job;
+      return { ...job, requestId: this.publicRequestId(job.requestId) };
     })();
   }
 
@@ -469,7 +499,7 @@ export class RelationalRequestStore {
         [string],
         JobRow & {
           memberId: string;
-          source: string;
+          source: string | null;
           seed: number | null;
           accountId: string | null;
           currentAccepted: number;
@@ -498,6 +528,7 @@ export class RelationalRequestStore {
     }
     return {
       ...job,
+      requestId: this.publicRequestId(job.requestId),
       createdAt: iso(job.createdAt),
       updatedAt: iso(job.updatedAt),
       completedAt: iso(job.completedAt),

@@ -13,7 +13,9 @@ export interface PikPakConfig {
   username: string;
   password: string;
 }
-type PikPakImage = Pick<R2Image, 'key' | 'byteLength' | 'sha256' | 'pikpak'>;
+type PikPakImage = Pick<R2Image, 'key' | 'byteLength' | 'sha256'> & {
+  pikpak?: { url: string; uploadedAt?: string };
+};
 
 export function pikpakConfig(env: NodeJS.ProcessEnv = process.env): PikPakConfig | null {
   const {

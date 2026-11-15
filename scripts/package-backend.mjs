@@ -12,6 +12,7 @@ export async function packageBackend(root = fileURLToPath(new URL('../', import.
       'scripts/bootstrap.mjs',
       'scripts/restore-relational.mjs',
       'scripts/r2-backup.mjs',
+      'scripts/retained-sources.mjs',
       'scripts/mock-novelai.mjs',
     ],
     files = new Set(),

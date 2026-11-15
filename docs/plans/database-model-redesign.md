@@ -2407,6 +2407,95 @@ TEMP仅撤回未知分支的定义校验调用，原独审同程序精准 Missin
 
 根在 `5e62968` 上接入整个 lineage，九个非plan路径逐字等于909，含五个实际产品owner及准确旧格式fixture；原会话/复制/Native/汇总源与四个原计划小节保留，仅将9.92移到事实修订前。两完整Opening与完整汇总的实际新DDL交点 **45/45、零跳过，14.574 秒**；类型、architecture、默认与可信main88迁移、201文件语法和变更格式通过。证明 `H:/TEMP/novelai-opening-definition-root-preservation.json`，日志 `H:/TEMP/novelai-opening-definition-root-*`。格式仍未发布event7/writer5，DDL SHA256 `2314a5a3e20179083ca93a8a886ff8aaa83205ce395069b447a54a76c5be7c8a`；原61bc库由现格式guard拒绝，不能在线改ready或绕过旧hash。尚无同根最终发行矩阵/实际迁移与容量/真实端点或生产切换证据；类似正文定义规则仍在唯一 relational-input owner 维护。
 
+### 9.93 保留源登记与捕获保护（首片，未开放源删除）
+
+在固定 `bb308a5` 上接续9.87，只实现实际备份producer及只读保护reader。当前数据库不能推导旧snapshot、remote-only备份或独立archive仍保留的引用，故在日常轮换域外保存一份私有registry；不增加DDL、业务事实、refcount或第二份对象状态。来源身份绑定原manifest/整SQLite SHA；新格式依赖由Replica/Gen现owner按100行分页派生，含退休artifact原承诺和未发布prepared原descriptor；原final/part语义继续归文件owner。旧格式不在线解释，固定旧工具的audit/artifacts.jsonl仅按原SHA登记，未知来源仍为opaque/unknown。
+
+| 契约项      | 唯一来源与允许变化                                                                                                                                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 登记        | `storage/retained-sources.ts` 保存registryId/revision、始终unknown的coverage、source身份及local/remote/archive各自hold。状态仅preparing/retained/retiring/retired。immutable manifest与依赖JSONL证明副本共用sourceId，local轮换不丢remote-only的离线pin依据           |
+| 捕获        | Python在真实SQLite backup前，先经同一CLI持久化preparing。封存manifest和源SHA后绑定证明，checkpoint随业务包保存，再沿原rename发布目录并凭原manifest/源SHA确认retained。失败/kill留下责任，不按PID/年龄自动解pin                                                        |
+| lease       | 短wx nonce lease只覆盖fs元数据变更，不跨SQLite或网络IO；fsync后原子发布。恢复需原inode/内容SHA/registryId/revision/nonce一致且原metadata进程不存在；alive/EPERM均拒。清lease不取消任何preparing/retiring或宣称外部IO结束                                              |
+| 各自退休    | local daily先候选retiring，原rmtree实际成功后确认；remote在原PUT前preparing、GCM回读及receipt保存后retained，原remote删除确认后才退休。未知结果仍pin。本地七份轮换不解除remote、cutover或archive；过期不等于消失                                                      |
+| 灾后        | checkpoint包含registry及不可变证明副本，不将自身SHA写回自身manifest。它与普通manifest一起受原完整tar/GCM/回读及外部receipt保护。凭已验证包给出的checkpoint SHA向全新目录恢复，不覆盖已有catalog；恢复可能仍preparing/unknown，必须用实际原manifest/源SHA显式reconcile |
+| fail closed | 缺catalog不自动初始化为空；schema/manifest/SHA/namespace/依赖或coverage未知不解释为零引用。本片无coverage-complete、enable-release、source DELETE、删除表/事实或新的D8期限                                                                                            |
+
+首次init是部署者显式离线动作，不自动代表旧保留物盘点完成。旧manifest和artifact清单可重算自绑定的固定source；不可变证明副本的维护成本是每次捕获/保留物退休及灾后恢复都核同一source身份。目录权限为私有；Node Windows标准库不具等同POSIX的目录fsync，Windows仅核功能和进程崩溃，不宣称断电安全删除。后续任何物理释放必须先满足平台持久性与完整保留源域，不借本片绿例批准。
+
+PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/platform、boot ID及`/proc/self/ns/pid`；当前域不能证明或不一致时，即使nonce/inode相同且本机该PID不存在，也拒绝接管。Windows标准库不能证明该域，本片恢复lease一律拒绝，不能借Hybrid功能证据冒称Linux正向恢复。checkpoint有独立类型标记且不包含lease；restore拒绝输入中的lease/recovery文件，只保留preparing/retiring数据责任，不导入活锁或自动清pin。
+
+远端身份绑定实际R2 account/bucket namespace、原key、密文SHA和长度；同物理key不能登记第二份独立hold。失败上传的preparing只能由原R2 owner在当前完整listing及拟保留七份全部GCM核验后收敛：原source binding/明文archive SHA/namespace/object必须匹配，且可证明原uploader属于当前Linux PID域并已退出。此时先转retiring仍pin，原DELETE成功或原owner可证明404后才retired。Windows或未知域拒绝这一步，可能保留多于七份；不能以年龄、同名key、PID不存在或一次上传成功代替上述证明。旧listed备份只登记opaque存在，不伪造上传者或已知依赖；cutover/archive不进入daily自动退休。
+
+实际入口为既有`backup-production.py`、`r2-backup.mjs`及一个必要`retained-sources.mjs` CLI；普通包仅追加该实际CLI seed。SQLite格式/归属继续由现owner检查，旧基本备份与显式verify保留；新捕获不含图片，不进入旧清理器的manifest改写路径。未完成的checkpoint之后新增来源也不能在灾后恢复成完整coverage，必须重新核对登记域。
+
+当前Node22源码两文件同批13/13、零跳过、16.926秒：登记五项、原R2六项及新增namespace/过期preparing两项。原R2六个test body及四个加密函数逐字保留；Python原八方法的47条原assert调用保留。Linux CPython3.12.12在WSL ext4跑原七项及新增capture barrier/kill、checkpoint proof publish和缺catalog三项，10/10、250.303秒；原真实ready/加密R2/完整public replay/selected-private installer一项在NTFS夹具和Windows Node22桥下1/1、9.720秒，并实际从认证后的远端包提取checkpoint、移走原catalog后独立恢复。桥只转换所选CLI的路径字段，未改业务值、原场景或超时。上述是两种明确环境的源码检查，不合称Linux Node正例。
+
+删去域校验的TEMP错误实现使用原foreign-domain断言，精准报`Missing expected rejection`；原实现控制恢复1/1，产品字节始终未改。Windows远端7+1坏+7健康序列确实完成最后七份GCM GET，因无法证明uploader域而保持preparing/十五份且零DELETE；受支持Linux Node22上的同域恢复及成功收敛、Linux RSS条件分支、POSIX目录fsync/断电、编译发布物、实云和生产仍未验。旧首次10项及短Python4项日志保留为前置范围，不冒充最新结果。backend类型、架构、可信bb308a5迁移历史、局部格式和差异检查通过；完整命令/源码与工具摘要见`H:/TEMP/novelai-retained-sources-20261115/`交接。独立审查待固定候选完成，下一片继续持久删除责任与原IO闭环，当前全部source仍保留。
+
+### 9.93.1 checkpoint完整性共同校验（4db独审P2后继）
+
+原`4db5453`保持NOTPASS及冻结。非作者真实CPython/Node桥反例先完成健康SQLite capture/checkpoint、backup verify和真正restore，再仅删checkpoint.json而保留registry/manifest/proof/SHA；真正restore拒绝，但Python.verify仍通过，原`assertRaises`精准未抛。这是备份验证与恢复的caller断裂，不能用GCM认证或前置250秒自检替代修复。
+
+后继只把原owner的锁/registry/schema/SHA/marker及所需source证明读取收敛为一个私有函数。既有read命令接受可选checkpointSha256，Python.verify附原外部SHA；restore也调用同一函数，仍要求明确SHA和全新输出，不通过创建TEMP恢复来verify。marker仍是原三字段格式，registry revision由其整文件SHA绑定；缺失/错format/id/hash/额外未知字段、源proof缺失或registry变化均拒绝，普通live registry读不要求checkpoint marker。未增加持久状态、DDL、事实、删除能力或第二份Python JSON规范；unknown/reconcile及原no-overwrite保持。实际复验与固定SHA在完成后交接，不沿用4db旧绿作为后继结果。
+
+原独审程序和driver保持原SHA（6b877671…/683e1df0…），仅用外部loader重绑新source，Linux CPython3.12/原Windows Node22桥复验1/1、1.758秒；外部loader选回旧Python及其__file__定位的旧CLI入口，共同core仍新（旧CLI无SHA与新CLI(undefined)在本路径语义相同，但不是物理单文件mutant），精确同line40报`Exception not raised`、1.665秒，恢复caller后1/1、1.723秒。source原五项加新共同拒绝矩阵六项同次6/6、零跳过、1.296秒，矩阵含坏marker语义/缺证明，且拒绝不创建输出。类型、架构、可信4db迁移历史、局部格式/diff通过。证据在`H:/TEMP/novelai-retained-checkpoint-fix-20261115/`；原4db NOTPASS/红例不改，未重跑原13或250秒Python组、未新增build/实云/生产或LinuxNode22正向恢复证据，固定后交原非作者复审。
+
+固定后继 `76e669c98e663f68ea5cc926eeef0f95139f7bfd` 已由原非作者独审 **PASS**，报告 `H:/TEMP/novelai-retained-checkpoint-independent-76e669c-20261115/INDEPENDENT-REVIEW.md`，SHA256 `914b4513de22f21c0028f93d34a0798fa9e2aa21154a3042028068732809f9da`。原三个独立metadata例与新增marker/id/SHA/依赖矩阵同批 **4/4、零跳过，0.660秒**；真实Linux CPython3.12/原Windows Node22桥的原精确程序 **1/1、1.723秒**，健康verify/restore先到场，坏marker时两入口同拒并且无恢复输出。原program/driver/hash不改，只外部绑定独立Git export；普通live read、未知覆盖/release=false、no-overwrite/Windows未知域拒绝保持。原4db NOTPASS、真实反例与作者双entry语义负控保留，不将其写成物理单文件修改或把250秒前置绿称后继独审。
+
+根在 `c653bf2` 上整合整个76 lineage，十一非plan路径逐字等于独审固定源；仅新增Replica只读分页、一个实际CLI及普通包seed，原9.87–9.92/当前DDL/账户/会话/Native/汇总源保持。当前格式下两个完整Node文件 **14/14、零跳过，15.631秒**，包括原R2六例、source五例、两个R2保护例和新的共同校验矩阵；类型、architecture、默认与可信main88迁移、203文件语法、两Python模块AST及变更格式通过。证据 `H:/TEMP/novelai-retained-checkpoint-root-preservation.json` 和 root-* 日志。作者13/原Python8+新3实际管道和独审原反例分列复用，未无故重跑250秒。当前仍只保存来源和保护信息；所有产物源保留，archive依赖列表原导出绑定与checkpoint之后来源需后续核对，coverage始终unknown。新正常发布包/compiled/Node24、LinuxNode22正向恢复与成功轮换、掉电/实云/同规模容量性能/生产切换尚未验，不借source检查冒充。
+
+### 9.98 终态 Opening 的未知元数据与原 parent 证据
+
+原公开合成历史的 child/image 行没有 parent、操作、受理/完成/发布时间和样本位置；job.createdAt 或 image.createdAt 不能补成这些角色。范围依据为固定 `5e629689` 的 result-recovery/r2-history 原件与 `H:/TEMP/novelai-opening-precision-scope-998/SCOPE.md`，不代表真实旧源已转换或迁移路线已验收。
+
+OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，不加投影列。当前 request/input ID 可以只是 FK 容器，其 origin 必须指明真实旧行，不能宣称存在旧受理。非持久 `generation_request_origins` view 统一正常 RequestAccepted 与 Opening 的原 parent 证明；InputStore 的 `readOriginalRequestId` 仍核对注册事实、来源及 request 投影，薄查询不展开正文、附件或 child。公开 parentless job 的 requestId 为 NULL，不能凭容器取得 parent 查询、输入、取消或 live/alias 授权；已知原 parent 仍使用当前路由 ID，不把原外部 ID 当当前路由。
+
+终态 Opening 允许 source/operation/acceptedAt、sampleIndex/admissionEpoch、done.completedAt、artifact.operation/publishedAt 为 NULL。已知零、literal seed、原创建时间仍保留；文件 MIME 不决定原操作，单个 child 不决定 count。正常接受、活动任务、派发、准备和发布继续要求完整已知元数据及真实原 parent。已知 Input/context 即使 count 未知仍走 9.92 原定义校验，不以新增 NULL 绕过正文或已知 seed 规则。
+
+副本 Opening 的已知 verifiedAt 与未知 uploadedAt 可并存；同一副本 owner 必须将其作为已有存在承诺，冷读与复制继续实际核对 namespace、来源和内容，不将未知 upload 变成待 PUT。未知操作仅冷读/按实际字节复制，不进入严格 publisher 或伪补旧 Local 时间。该冷读及普通首次验证边界由 9.98.2 同批交付。
+
+仍为单一未发布 event7；DDL hash 随表示变化为 `057d74f270c29492ab799d485b54966ab5e4c944b42f9a6bd70346a331261f86`，实际 `c653bf2` DDL/hash `2314a5a3…c5be7c8a` 固定为拒绝反例，不改 SQL/journal、不保留在线旧格式 fallback，不手标 ready。首核心以静态检查点接合，各后续实际源码范围如下；发布物、实云、全量恢复/容量和切换尚未验，不沿用旧绿计数。
+
+#### 9.98.1 核心 owner 与可运行反例
+
+事实解析与唯一 DDL 保存真实未知；InputStore 维护原 parent/定义/seed 来源；GenerationStore 在活动和执行入口共用已知执行条件。新增 `relational-opening-precision.test.mjs` 直接从独立原行形状断言缺失字段，覆盖 NULL/0 投影、parentless 授权隔离、公共原序回放无网络或私有认证、第二 owner SQL 故障的外层捕获回滚/健康重试/重复，以及实际旧 DDL 正确 hash 零写拒绝。五个既有合成 Opening fixture 仅显式声明其本来已知的原 parent，不给产品 parser 默认填值。首静态点 `603df1c` 未运行这些反例，后续实际范围分别记录，不借静态点标 PASS。
+
+静态读组复核指出首检查点 `603df1c` 的 request 投影核对仍经旧 registeredFact 扫描整个公共 request stream。后继改为复用唯一原接受角色 helper，保留原字段 compare，新增禁止整 stream 展开的薄读断言；不复制 source 规则或读取正文。此为同一未验收片的静态修正，不把旧检查点称为薄读验收通过。
+
+首联合 `208896ff` 的五文件精确 pattern 为 16 项，13 通过、3 个 Core fixture 失败，零跳过，4.512 秒；读组三项及 Cold 新三/原二均已到实际断言。Core 重领误再暂存输入造成真实 UNIQUE、临时新增 trigger 被真实 schema guard 提前拒绝、初始化原语的 empty-target 错误与测试统一格式 regex 不符。原日志保留；后继只改测试使用原完整 command 重领、在实际 artifact INSERT.run 注入故障并核尝试次数1、区分初始化原精确拒因，未放宽产品。`190ee618` 后续 Core 八项与读组三项同次 **11/11、零跳过，2.226 秒**；原行 NULL/0、真实 parent 隔离、完整公共回放无私有/网络、SQL 尾错原子回滚/重试、实际 c653 正确旧 DDL/hash 零写拒绝及原 stream 索引都实际到达。证据 `H:/TEMP/novelai-opening-precision-scope-998/{joint-first,core-read-second}*`，不是整片验收或非作者复审。
+
+静态继续发现 imported prepared 的角色需要与 6dd 保全合同一致：历史 failed 的原 prepared 描述符不是执行能力。仅 OpeningAttempt 归档投影复用既有 readable 描述符，保留 not_sent、身份/来源/原序检查，去掉执行输入索取；已知定义与 seed 仍由原 Input/Job owner 校验。正常 prepare/ArtifactPrepared/Published、prepared getter、实际 complete 和唯一 ready 继续同一严格完成前置。新增未知 parent/op/input 归档 building/完整回放保全而三口拒绝，另有真实 Local 清单到公共重建/所选私有/唯一 ready/重开字节的完整小检查。未放宽 live 或手改 ready。
+
+`dc320281` 三文件精确组 **14/15、零跳过，5.066 秒**：Attempt 四项（新归档保全及三口拒绝、原 noCharge 等矩阵、knownprepared 原字节恢复、queued 真 localhost 一次派发）和 Input 两项（原 known/NULL count 坏 Native 定义及完整恶意来源不能 replay/ready）全部通过；Core 唯一失败是新清单手拼 storageTargetId，被原规范来源身份拒绝，未到 ready。后继 `36b24d2` 仅该测试复用实际 ReplicaStore 的 configured Local target，原失败与所有断言保留，产品逐字未改。原 case 实际 **1/1、零跳过，TAP 1.098 秒**：公共重建先无 Key，随后选定私有与唯一 installer 联合恢复并磁盘重开，原 bytes/源 SHA、NULL parent/op/发布时间/上传时间及本次实际 inventory 核验时点均不变。首 14 项不与该 1 项伪称一次全 15 重跑。三文件组只有实际 queued worker 发生 1 次 loopback fetch/socket，其余与修后 Local 单例均零网络，所有 guard 的外联拒绝计数为 0。
+
+隔离 TEMP 固定当前 fixture/DDL，仅 Gen 回选 `75bdb120`，新未知 prepared 归档原例实际 **0/1**，准确失败于 OpeningAttempt 的 known-execution 能力索取；没有 loader/schema 早拒。还原 `36b24d2` 的同一 Gen 后，隔离树 Git/raw 字节恢复，原例 **1/1、零跳过，TAP 0.805 秒**，归档存在与 live/ready 权限的差异可运行辨识。这是作者负控，不算独立审查。命令、前后 Git/raw、计数、首失败及后继单例在 `H:/TEMP/novelai-opening-precision-scope-998/closure-first*`、`local-ready-fixed*`、`prepared-negative-*`；独立复审、同候选完整源码/发布物及真实旧源转换仍未完成。
+
+#### 9.98.2 冷读描述符与副本存在承诺
+
+只读描述符继续归原`result-files`：新增readableResultFile/assertReadableStoredResultDescriptor，operation可明确NULL，其余原ID、MIME枚举、规范路径、长度/SHA及图像结构校验保持。NULL按MIME核严格图片或opaque域，不补generate/encode；正常resultFile、describe、descriptor写入收窄、publisher和prepared读取仍要求已知operation，文件final/part及fsync边界不变。相同nullable结构不能成为新业务执行、Local发布或收费依据。
+
+Replica owner统一以未deleted且uploadedAt或verifiedAt至少一项已知表示原存在承诺；known0保留，不能把verified已知/uploaded未知当作从未上传。冷读/cache、copy重领、verify及调度同规则：R2原verified承诺可实GET并清当前错误而保留原NULL/known0；正常reserved没有任何上传/验证前态仍不得首次verified，已确认前态也不得被普通uploaded覆盖。未知publishedAt不取得24h资格；有原verifiedAt的R2仍按原7d/登记水位规则处理，不把开账header当年龄。SQL候选与原source/namespace/控制门禁保持，无持久bool/refcount或新timer。
+
+旧OpeningReplica envelope把uploadedNULL/verified0列为非法的断言属于错误角色，按批准契约移到原positive并核NULL/0及原完整public回放/重开零IO；原negative位置改真正非法负时间，保持数量/整笔回滚断言。普通从未上传的确认仍由真实reserved→ticket拒绝/零写，以及字段parser已接受但共同完整command/reducer拒绝并全表回滚两层控制，不能只依赖在线票据早拒。此关键断言角色修正需维护者最终复核，未为已知契约变化伪造一次修前红。
+
+Opening复制Local只读既有final，不调用publisher或写local_verified补造过去Local上传；实际新R2/Pik PUT/GET分别记录本次真实上传/核验时点，不改旧artifact publishedAt。正常ArtifactPublished仍沿原publisher恢复和首次Local确认，writer/reducer同时保已知描述符界线。Pik实读仅需原namespace/key/hash/len，不用new Date(NULL)造1970时间，也不收窄原uploaded-URL可读政策或每次额外GET；Brotli/原长/hash/MIME及IO后票据/source/config重核保持。无旧解释器、源DELETE、归档重定向或9.99实现。
+
+本分片在独立c653树静态推进；合法NULL的共同facts/DDL由Core片负责，不能SQL改NULL绕过旧DDL，也不能把source字段不完整时的单个内部一致性验证称为真实旧503/7行迁移闭环。复验命令、技术fixed与原source/负控证据在完成后补记，目前不声明测试、发布物或生产已通过。
+
+#### 9.98.3 历史查询、统计与公开 DTO
+
+RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin view 的列表 JOIN 同时绑定 `request:<当前ID>` 和 requestId，以既有 stream 索引限定来源，不逐页展开正文、附件或 child。原 parent 缺失的 child 公开 requestId 为 NULL，原 FK 容器不能出现在成员批次列表或取得 detail/cancel/input/live replay 权限；原单 child 内容权限仍由原 owner 核对。已知 parent 的分页先按真实受理时间和 ID 倒序，再进入 NULL 时间的稳定 ID 阶段，不用导入日、0 或数组位置补未知。
+
+公开批次保留 source、operation、createdAt、sampleIndex、model 与终态时间的原 NULL；已知时间和位置 0 保留。正常未完成任务的 completedAt 仍为空串，终态未知则为 NULL。model 原来经空串缺省时，本片明确改为 NULL DTO/type；当前真实辅助操作 producer 有规范化模型的，仍逐字返回该真实值，纯 formatter 的 NULL 对照不冒充 producer 产生了缺失模型。Report 原统计 owner 不重写：未知 operation 不计 generate，无 charge 不当作免费或金融 0。Web 只将原批次位置文案改为 NULL 显示“原位置未知”，已知 0 仍显示“第 1 张”，未新增 DOM、样式或状态。
+
+两个新历史检查先保存显式原行形状和来源/映射 SHA，再经受保护 InputStore 与完整 common replay 构造事实；断言原字段缺失、真正原 parent、已知 0、未知操作/费用、NULL 分页及 query_only 全表/total_changes 零写。原历史 helper 的手写四表投影改用同一 common owner，不 SQL 改 ready/epoch/cooldown。这是代表性合成原行验证，不是原 503 条旧源的迁移、真实图片或 installer 验收。
+
+联合技术点 `190ee618` 的 Core 与读组定向由 Core 作者实际运行 **11/11、零跳过，2.226 秒**；其中读组三项与随后 whole 范围重叠，不累加为独立审查。读组随后同源串行运行三个完整文件：member-history **8/8**、reports **18/19**、member-read 实际 localhost HTTP **21/21**，共 **47/48、零跳过**。唯一失败是旧 reports 断言把历史终态 updatedAt 的 NULL 期待为空串；首日志保留，后继 `a7ce00c` 仅对齐该断言并补同源 completedAt 已知 0/未知 NULL 两对照，产品逐字未改。原精确失败 case 随后实际 **1/1、零跳过，TAP 1.128 秒**，case 本体 0.301 秒；不把它称为后继全 48 项重跑。命令、源/15 个权威文件 Git/raw 前后绑定、首日志与后继控制在 `H:/TEMP/novelai-opening-reads-998-20261115/whole-three-{argv,result}.json`、`whole-*.log` 和 `terminal-focused-{argv,result}.json`。
+
+同后继 backend 类型、architecture 和默认 migration 检查通过。随后普通合入共同 `dc32028`，读组和 Web 八个相关文件的 Git blob 与固定 `5e6d810` 相同；现有 Node22/pnpm 的 `pnpm --dir web run typecheck` 实际通过，仅生成本树 ignored Nuxt 类型，未安装依赖或改配置。既有 Nuxt/happy-dom harness 的 MemberBatch describe 过滤首轮 **6 项通过、6 项同文件非匹配过滤、零失败，Vitest 8.57 秒**：新 NULL/0 展示和原三个直接用例，另有原循环生成的折叠/卸载两用例。准备阶段的四项预估漏计该循环，保留原准备记录并在结果报告更正，不将过滤数称为原条件 skip 或整文件通过。实际 wrapper 断言确认 NULL 显示“原位置未知”且不显示“第 1 张”，已知 0 显示“第 1 张”；八个源/配置文件 Git/raw 前后相同，源树保持干净。
+
+上述 Web 命令、实际 worker 继承的低层 loopback guard、Git/raw 和结果绑定见同目录 `web-type-source-dc32028.json`、`web-mount-{argv,result}-dc32028.json` 及 `web-mount-dc32028-first.log`。未跑全 Web、全后端、Nuxt 生产 build、编译发布物、Node24、真实浏览器、真实云或生产，不将局部通过称为整体验收或非作者 PASS。Modern Web Guidance 已按批准范围读取和检索，原代理失败后的离线检索无适用 guide，未改代理或套用无关规则。类似新历史展示继续在原 Request/Report/formatter owner 与上述唯一 origin 能力维护，不新增影子状态或格式兼容分支。
+
 ### 9.94 Native HTTP 正常路径的真实关系子进程夹具
 
 本片只迁移 `tests/integration/native-http.test.mjs`，基础固定为 `a87f9279e782694a9f2a10b1e3e19ce078154f75`。复用唯一 `relational-child.mjs` 的真实离线 bootstrap、公共与获选私有来源、完整内容和唯一 installer，以及实际 `server/index.ts` 子进程、当前管理员启用账户和真实 loopback 官方额度 GET；不种旧 JsonStore、不写 SQL ready/epoch/排队/冷却投影。两个 NAI origin 显式 loopback，子进程在 IO 前拒绝其他网络及旧 Store/migrations 加载。本片不修改产品、事件/DDL、共享 helper 或 guard。

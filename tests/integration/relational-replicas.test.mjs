@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { brotliDecompressSync } from 'node:zlib';
 import { getPatcher } from 'webdav';
 import { fixture, meta, NOW, image, databaseState } from '../helpers/relational-generation.mjs';
@@ -10,12 +10,16 @@ import { RelationalReplicaStore } from '../../server/storage/relational-replica-
 import {
   copyRelationalArtifactReplica,
   verifyRelationalArtifactReplica,
+  readRelationalArtifactContent,
+  relationalArtifactReferenceAvailable,
 } from '../../server/storage/relational-replica-io.ts';
 import { R2Storage } from '../../server/storage/r2-storage.ts';
 import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { parseRelationalFact } from '../../server/events/relational-fact-contracts.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
+import { describeRetainedSnapshot } from '../../scripts/retained-sources.mjs';
 
 async function setup(t, second = false) {
   const f = await fixture(t);
@@ -107,6 +111,262 @@ function record(f, id, ticket, phase, error = null) {
 function register(f, kind, id = `target-${kind}`) {
   return f.db.transaction(() => f.store.registerStorageTarget(meta(id), kind))();
 }
+
+test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故障及新复制保留原NULL与0', async (t) => {
+  const f = await setup(t);
+  register(f, 'r2');
+  const reserved = f.store.beginArtifactReplica('artifact-replica-0', f.target('r2'));
+  const reservation = record(f, 'normal-reservation', reserved, 'reserved');
+  const beforeUpload = databaseState(f.db);
+  assert.throws(
+    () =>
+      record(
+        f,
+        'cannot-verify-before-upload',
+        f.store.beginArtifactReplica('artifact-replica-0', f.target('r2')),
+        'verified',
+      ),
+    /待核验/,
+  );
+  assert.equal(databaseState(f.db), beforeUpload);
+  const forged = structuredClone(readRelationalCommit(f.db, reservation.commitSeq).command);
+  forged.commandId = 'forged-verification-envelope';
+  forged.fingerprint = meta(forged.commandId).fingerprint;
+  forged.expectedVersions = {
+    'artifact:artifact-replica-0': f.db
+      .prepare('SELECT CAST(stream_version AS TEXT) version FROM stream_heads WHERE stream_id=?')
+      .get('artifact:artifact-replica-0').version,
+  };
+  forged.events[0].payload.verifiedAt = forged.events[0].occurredAt;
+  assert.doesNotThrow(() =>
+    parseRelationalFact({
+      eventType: forged.events[0].eventType,
+      payload: forged.events[0].payload,
+    }),
+  );
+  f.db.transaction(() =>
+    assert.throws(() => new RelationalCommitReplayer(f.db).appendCommit(forged), /状态迁移/),
+  )();
+  assert.equal(databaseState(f.db), beforeUpload, '共同事实边界也拒绝从未上传的普通确认并整笔回滚');
+  await f.copy('r2');
+  const original = f.store.readArtifact('artifact-replica-0');
+  const hot = f.target('r2'),
+    local = f.target('local');
+  const facts = ['history-confirmed', 'history-local'].flatMap((artifactId) => {
+    const origin = { sourceId: 'synthetic-opening', originalId: artifactId };
+    const remote = artifactId === 'history-confirmed';
+    return [
+      {
+        eventType: 'OpeningArtifactRecorded',
+        payload: {
+          artifactId,
+          memberId: 'm1',
+          inputId: 'history-unknown-input',
+          originalAttemptId: null,
+          operation: null,
+          mimeType: original.mimeType,
+          byteLength: original.byteLength,
+          sha256: original.sha256,
+          publishedAt: null,
+          retiredAt: null,
+          origin,
+        },
+      },
+      {
+        eventType: 'OpeningReplicaRecorded',
+        payload: {
+          artifactId,
+          storageTargetId: remote ? hot : local,
+          objectKey: remote ? `images/${artifactId}/${original.sha256}` : `${artifactId}.webp`,
+          encoding: 'identity',
+          uploadedAt: null,
+          verifiedAt: remote ? 0 : null,
+          deletedAt: null,
+          lastErrorCode: null,
+          origin,
+        },
+      },
+    ].map((fact) => ({
+      ...fact,
+      streamId: `artifact:${artifactId}`,
+      memberId: 'm1',
+      accountId: null,
+      occurredAt: NOW,
+      policyVersion: 'shared-quota-v1',
+      pricingVersion: 'price1',
+    }));
+  });
+  const { policyVersion: _p, pricingVersion: _v, ...command } = meta('history-unknown-times');
+  f.db.transaction(() => {
+    const input = f.inputs.stageOpeningInput({
+      inputId: 'history-unknown-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...command,
+        expectedVersions: {
+          'input:history-unknown-input': '0',
+          'artifact:history-confirmed': '0',
+          'artifact:history-local': '0',
+        },
+        receipt: { imported: true },
+        events: [
+          {
+            eventType: 'OpeningInputRecorded',
+            payload: {
+              ...input,
+              origin: { sourceId: 'synthetic-opening', originalId: 'history-confirmed' },
+            },
+            streamId: 'input:history-unknown-input',
+            memberId: 'm1',
+            accountId: null,
+            occurredAt: NOW,
+            policyVersion: 'shared-quota-v1',
+            pricingVersion: 'price1',
+          },
+          ...facts,
+        ],
+      },
+      f.inputs,
+    );
+  })();
+  const checkpoint = f.db.serialize();
+  const cutoff = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n;
+  f.objects.set(
+    `https://${'a'.repeat(32)}.r2.cloudflarestorage.com/replica-images/images/history-confirmed/${original.sha256}`,
+    image,
+  );
+  await writeFile(path.join(f.dir, 'images/history-local.webp'), image);
+  const dependencies = f.store.readRetainedArtifactDependencies();
+  for (const id of ['history-confirmed', 'history-local']) {
+    const dependency = dependencies.find((row) => row.id === id);
+    assert.ok(dependency, '保留源不能漏掉未知operation的既有来源');
+    assert.equal(dependency.descriptor.operation, null);
+    assert.equal(dependency.replicas[0].replica.uploadedAt, null);
+    assert.equal(dependency.replicas[0].replica.verifiedAt, id === 'history-confirmed' ? 0 : null);
+  }
+  const captured = path.join(f.dir, 'nullable-opening-source.sqlite');
+  await f.db.backup(captured);
+  const snapshot = new Database(captured);
+  snapshot.pragma('journal_mode=DELETE');
+  snapshot.close();
+  const jsonl = path.join(f.dir, 'nullable-dependencies.jsonl');
+  const description = await describeRetainedSnapshot(captured, jsonl, f.dir);
+  assert.equal(description.format, 'relational', '合法NULL不能静默退成opaque或空依赖');
+  assert.equal(description.dependencies, 'known');
+  const saved = (await readFile(jsonl, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((row) => JSON.parse(row));
+  for (const id of ['history-confirmed', 'history-local']) {
+    const dependency = saved.find((row) => row.kind === 'artifact' && row.id === id);
+    assert.ok(dependency);
+    assert.equal(dependency.descriptor.operation, null);
+    assert.equal(dependency.replicas[0].replica.uploadedAt, null);
+    assert.equal(dependency.replicas[0].replica.verifiedAt, id === 'history-confirmed' ? 0 : null);
+  }
+  const before = databaseState(f.db);
+  f.calls.length = 0;
+  assert.deepEqual(
+    (await readRelationalArtifactContent(f.db, 'history-confirmed', f.configuration)).buffer,
+    image,
+  );
+  assert.equal(f.store.readArtifactCacheReference('history-confirmed').persistent, true);
+  assert.equal(
+    await relationalArtifactReferenceAvailable(f.db, 'history-confirmed', f.configuration),
+    true,
+  );
+  await f.copy('r2', 'history-confirmed');
+  assert.deepEqual(f.calls, ['r2:GET']);
+  assert.equal(databaseState(f.db), before);
+  assert.throws(
+    () =>
+      record(
+        f,
+        'cannot-reupload-confirmed',
+        f.store.beginArtifactReplica('history-confirmed', hot),
+        'uploaded',
+      ),
+    /待确认/,
+  );
+  assert.throws(
+    () =>
+      record(
+        f,
+        'cannot-invent-local-upload',
+        f.store.beginArtifactReplica('history-confirmed', local),
+        'local_verified',
+      ),
+    /本地副本/,
+  );
+  assert.equal(databaseState(f.db), before);
+  const pikpak = f.configuration.pikpak;
+  f.configuration.pikpak = null;
+  assert.equal(
+    f.store.readDueArtifactReplica(NOW + 30 * 86400000),
+    null,
+    '未知publishedAt不授Local年龄资格，已确认R2也不空转',
+  );
+  f.controls.failRead = true;
+  await assert.rejects(f.verify(hot, 'history-confirmed'));
+  let row = f.store.readArtifactReplica('history-confirmed', hot);
+  assert.equal(row.uploadedAt, null);
+  assert.equal(row.verifiedAt, 0);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40000 + 3600000), null);
+  assert.equal(
+    f.store.readDueArtifactReplica(NOW + 40000 + 3600001).artifactId,
+    'history-confirmed',
+  );
+  f.controls.failRead = false;
+  assert.deepEqual(await f.verify(hot, 'history-confirmed'), image);
+  row = f.store.readArtifactReplica('history-confirmed', hot);
+  assert.equal(row.uploadedAt, null);
+  assert.equal(row.verifiedAt, 0);
+  assert.equal(row.lastErrorCode, null);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40 * 86400000), null);
+  f.configuration.pikpak = pikpak;
+  f.calls.length = 0;
+  const cold = await f.copy('pikpak', 'history-confirmed');
+  assert.deepEqual(f.calls, ['r2:GET', 'pikpak:PUT']);
+  assert.equal(cold.uploadedAt, NOW + 30000);
+  assert.equal(cold.verifiedAt, null);
+  f.calls.length = 0;
+  const copied = await f.copy('r2', 'history-local');
+  assert.deepEqual(f.calls, ['r2:PUT', 'r2:GET']);
+  assert.equal(copied.uploadedAt, NOW + 30000);
+  assert.equal(copied.verifiedAt, NOW + 30000);
+  const originalLocal = f.store.readArtifactReplica('history-local', local);
+  assert.equal(originalLocal.uploadedAt, null);
+  assert.equal(originalLocal.verifiedAt, null);
+  assert.equal(f.store.readArtifact('history-local').publishedAt, null);
+  assert.deepEqual(await readFile(path.join(f.dir, 'images/history-local.webp')), image);
+  const target = new Database(checkpoint);
+  t.after(() => target.close());
+  target.pragma('foreign_keys=ON');
+  const replay = new RelationalCommitReplayer(target);
+  const sequences = f.db
+    .prepare(
+      'SELECT CAST(commit_seq AS TEXT) seq FROM commits WHERE commit_seq>? ORDER BY commit_seq',
+    )
+    .all(cutoff);
+  const calls = f.calls.length;
+  // 现Gen/Replica窄回放可继承该checkpoint；不冒称带私有快照的full public replay。
+  for (const { seq } of sequences) {
+    target.transaction(() => replay.replayGenerationCommit(readRelationalCommit(f.db, seq)))();
+  }
+  assert.equal(databaseState(target), databaseState(f.db));
+  const replayed = target.serialize();
+  for (const { seq } of sequences) {
+    target.transaction(() => replay.replayGenerationCommit(readRelationalCommit(f.db, seq)))();
+  }
+  assert.deepEqual(target.serialize(), replayed);
+  assert.equal(f.calls.length, calls);
+});
 
 test('后台候选沿原24h/7d，只复制一次；已上传R2先验证，Pik回执不形成空转', async (t) => {
   const f = await setup(t);

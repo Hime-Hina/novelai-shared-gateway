@@ -1,8 +1,45 @@
 import type Database from 'better-sqlite3';
+import { parseRelationalEvent } from '../events/relational-events.ts';
 import {
   assertRelationalOpeningSource,
   readRelationalCommit,
 } from '../events/relational-event-store.ts';
+
+// 薄查询只展开唯一原请求元数据，不读取整笔 child 或受保护 input/context。
+export function readRelationalRequestOrigin(sqlite: Database.Database, requestId: string) {
+  const rows = sqlite
+    .prepare<[string, string], Record<string, unknown>>(
+      `SELECT o.original_request_id AS originalRequestId,e.event_id AS eventId,
+      CAST(e.commit_seq AS TEXT) AS commitSeq,e.event_index AS eventIndex,
+      e.stream_id AS streamId,e.stream_kind AS streamKind,CAST(e.stream_version AS TEXT) AS streamVersion,
+      e.event_type AS eventType,e.schema_version AS schemaVersion,e.occurred_at AS occurredAt,
+      e.correlation_id AS correlationId,e.causation_id AS causationId,e.member_id AS memberId,
+      e.account_id AS accountId,e.policy_version AS policyVersion,e.pricing_version AS pricingVersion,
+      e.amount_version AS amountVersion,e.payload
+      FROM generation_request_origins o JOIN domain_events e ON e.event_id=o.event_id
+      WHERE o.stream_id=? AND o.request_id=? LIMIT 2`,
+    )
+    .all(`request:${requestId}`, requestId);
+  if (rows.length !== 1) {
+    throw new Error('请求缺少唯一原接受来源。');
+  }
+  const { originalRequestId, ...row } = rows[0]!;
+  const event = parseRelationalEvent({ ...row, payload: JSON.parse(row.payload as string) });
+  if (
+    (event.eventType !== 'RequestAccepted' && event.eventType !== 'OpeningRequestRecorded') ||
+    event.streamId !== `request:${requestId}` ||
+    event.payload.requestId !== requestId ||
+    event.accountId !== null ||
+    originalRequestId !==
+      (event.eventType === 'RequestAccepted' ? requestId : event.payload.originalRequestId)
+  ) {
+    throw new Error('请求原parent来源与结构容器不符。');
+  }
+  if (event.eventType === 'OpeningRequestRecorded') {
+    assertRelationalOpeningSource(sqlite, event);
+  }
+  return event;
+}
 
 // Opening 是当前 cut 的来源；原归档 loss/closure 身份不能借同号新事件充当授权或核对事实。
 export function readRelationalOpeningAttempt(sqlite: Database.Database, attemptId: string) {

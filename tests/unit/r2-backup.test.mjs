@@ -6,11 +6,84 @@ import path from 'node:path';
 import { backupFixture } from '../helpers/r2-backup-fixture.mjs';
 import { encryptBackup, decryptBackup } from '../../scripts/r2-backup.mjs';
 import { fileChecksums } from '../../server/storage/r2-storage.ts';
+import { readRetainedSourceProtection } from '../../server/storage/retained-sources.ts';
 
 function dailyKey(day, encrypted) {
   const sha256 = createHash('sha256').update(encrypted).digest('hex');
   return `backups/daily-202610${String(day).padStart(2, '0')}T000000Z/${sha256}`;
 }
+
+test('远端过期preparing只有同可证PID域并完成保留集核验后才实际删除；未知域保持pin', async (t) => {
+  const { root, cloud, registry, envFile, keyFile, call } = await backupFixture(t);
+  const archive = path.join(root, 'small-business.tar.gz');
+  await writeFile(archive, 'small original archive bytes');
+  const name = (day) => 'daily-202611' + String(day).padStart(2, '0') + 'T000000Z';
+  const upload = (day, env = {}) =>
+    call(
+      ['upload', archive, path.join(root, name(day) + '.json'), envFile, keyFile, name(day)],
+      env,
+    );
+  for (let day = 1; day <= 7; day++) {
+    await upload(day);
+  }
+  await assert.rejects(upload(8, { R2_TEST_CORRUPT_UPLOAD: '1' }), { code: 1 });
+  const preparing = (await readRetainedSourceProtection(registry)).sources
+    .flatMap((source) => source.holds.map((hold) => ({ source, hold })))
+    .find(({ hold }) => hold.kind === 'remote' && hold.location.key.includes(name(8)));
+  assert.equal(preparing.hold.state, 'preparing');
+  for (let day = 9; day <= 14; day++) {
+    await assert.rejects(upload(day), { code: 2 });
+  }
+  const trace = path.join(root, 'final-retention.log');
+  const failure = await upload(15, { R2_TEST_TRACE: trace }).then(
+    () => null,
+    (error) => error,
+  );
+  const domainProven = process.platform === 'linux' && preparing.hold.producer.domain !== null;
+  const after = await readRetainedSourceProtection(registry);
+  const hold = after.sources
+    .find((row) => row.id === preparing.source.id)
+    .holds.find((row) => row.id === preparing.hold.id);
+  const operations = await readFile(trace, 'utf8');
+  for (let day = 9; day <= 15; day++) {
+    assert.match(operations, new RegExp('GET backups/' + name(day) + '/'));
+  }
+  if (domainProven) {
+    assert.equal(failure, null, failure?.stderr);
+    assert.equal((await readdir(cloud)).length, 7);
+    assert.equal(hold.state, 'retired');
+    assert.match(operations, new RegExp('DELETE ' + preparing.hold.location.key));
+  } else {
+    assert.equal(failure?.code, 1);
+    assert.equal((await readdir(cloud)).length, 15);
+    assert.equal(hold.state, 'preparing');
+    assert.doesNotMatch(operations, /^DELETE /m);
+  }
+  assert.equal(after.releaseAllowed, false);
+  t.diagnostic(
+    JSON.stringify({ verifiableLinuxDomain: domainProven, expiredPreparing: hold.state }),
+  );
+});
+
+test('相同bucket/key和原bytes也不能把新receipt的R2 namespace改成另一账户', async (t) => {
+  const { root, envFile, keyFile, call } = await backupFixture(t);
+  const archive = path.join(root, 'source.tar.gz'),
+    receipt = path.join(root, 'receipt.json');
+  await writeFile(archive, 'small namespace original archive');
+  await call(['upload', archive, receipt, envFile, keyFile, 'daily-20261115T000000Z']);
+  const other = JSON.parse(await readFile(receipt, 'utf8'));
+  other.namespace = 'r2://' + 'b'.repeat(32) + '/' + other.bucket;
+  const altered = path.join(root, 'foreign-receipt.json'),
+    output = path.join(root, 'no-output.tar.gz'),
+    trace = path.join(root, 'no-fetch.log');
+  await writeFile(altered, JSON.stringify(other));
+  await assert.rejects(
+    call(['download', altered, output, envFile, keyFile], { R2_TEST_TRACE: trace }),
+    { code: 1 },
+  );
+  await assert.rejects(stat(output), { code: 'ENOENT' });
+  await assert.rejects(stat(trace), { code: 'ENOENT' });
+});
 
 test('业务备份 AES-256-GCM 可还原，密钥/密文/认证标签损坏必须拒绝', () => {
   const original = Buffer.from('synthetic credentials and database bytes'),
