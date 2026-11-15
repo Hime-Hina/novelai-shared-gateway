@@ -170,10 +170,18 @@ export class PikPakStorage {
 
   async get(image: PikPakImage): Promise<Buffer> {
     const filename = this.filename(image);
-    const response = await this.client.customRequest(filename, {
-      method: 'GET',
-      signal: AbortSignal.timeout(30000),
-    });
+    const response = await this.client
+      .customRequest(filename, {
+        method: 'GET',
+        signal: AbortSignal.timeout(30000),
+      })
+      .catch((error) => {
+        // SDK 在交出响应前拒绝 HTTP 错误，未消费的 Node body 仍由本次读取关闭。
+        try {
+          error?.response?.body?.destroy?.();
+        } catch {}
+        throw error;
+      });
     const body = (response as typeof response & { body: AsyncIterable<Uint8Array> }).body;
     if (!body) {
       throw new Error('PikPak object body is missing');
