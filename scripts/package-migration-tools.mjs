@@ -146,6 +146,7 @@ try {
   for (const name of [
     'migrate-legacy-database.mjs',
     'migrate-legacy-finance.mjs',
+    'reconcile-legacy-database.mjs',
     'migrate-legacy-private.mjs',
     'migrate-legacy-artifacts.mjs',
     'database-model-inventory.mjs',

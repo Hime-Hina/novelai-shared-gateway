@@ -13,12 +13,19 @@ if (entry && !path.isAbsolute(entry)) {
   throw new Error('MIGRATE_LEGACY_TEST_ENTRY must name an absolute compiled file.');
 }
 const TargetDatabase = entry ? createRequire(entry)('better-sqlite3') : Database;
-const { migrateLegacyDatabase, proveLegacyGenerationIntent, readLegacyCutConfiguration } =
-  await import(
-    entry
-      ? pathToFileURL(entry).href
-      : new URL('../../scripts/migrate-legacy-database.mjs', import.meta.url).href
-  );
+const {
+  migrateLegacyDatabase,
+  proveLegacyGenerationIntent,
+  readLegacyCutConfiguration,
+  migrationReferences,
+  mapLegacyMembers,
+  mapLegacyAccounts,
+  mapLegacySharing,
+} = await import(
+  entry
+    ? pathToFileURL(entry).href
+    : new URL('../../scripts/migrate-legacy-database.mjs', import.meta.url).href
+);
 
 import {
   nativeNormalizationContext,
@@ -50,6 +57,9 @@ import { RelationalConfigurationStore } from '../../server/storage/relational-co
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
+import { assertLegacyDatabaseProjection } from '../../scripts/reconcile-legacy-database.mjs';
+import { databaseState } from '../helpers/relational-generation.mjs';
+import { readStreamProjection } from '../../server/events/event-store.ts';
 import { relationalPrivateStateEmpty } from '../../server/storage/relational-private-restore.ts';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex'),
@@ -1445,6 +1455,375 @@ test('现代原ArtifactPublished拥有creator/input，storage流没有member也�
     assert.deepEqual(await readFile(path.join(f.options.output, f.completedImage.file)), original);
   } finally {
     target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+// Reuse the actual converter's protected-input staging, not a second partial/normalization mapper.
+async function reconciliationFixture(t, parent = null) {
+  const cleanup = [],
+    f = await fixture({ after: (fn) => cleanup.push(fn) }, 'failed', parent),
+    staged = new Map(),
+    original = RelationalInputStore.prototype.stageOpeningInput,
+    capture = t.mock.method(RelationalInputStore.prototype, 'stageOpeningInput', function (input) {
+      staged.set(input.inputId, input);
+      return original.call(this, input);
+    });
+  let result;
+  try {
+    result = await migrateLegacyDatabase(f.options);
+  } finally {
+    capture.mock.restore();
+  }
+  const source = new Database(f.options.source, { readonly: true, fileMustExist: true }),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  source.pragma('query_only=ON');
+  t.after(async () => {
+    source.close();
+    target.close();
+    for (const run of cleanup) {
+      await run();
+    }
+  });
+  const refs = migrationReferences(f.options.sourceSha256),
+    requests = [];
+  const prepared = source.transaction(() => {
+    const members = mapLegacyMembers(source, refs),
+      accounts = mapLegacyAccounts(source, refs),
+      sharing = mapLegacySharing(source, refs),
+      groups = new Map();
+    for (const row of source
+      .prepare('SELECT id,request_id,order_value,data FROM jobs ORDER BY order_value DESC')
+      .all()) {
+      const value = JSON.parse(row.data),
+        requestId = row.request_id || `legacy-job-anchor:${row.id}`;
+      if (!groups.has(requestId)) {
+        groups.set(requestId, {
+          group: { requestId, originalRequestId: row.request_id, jobIds: [] },
+          jobs: [],
+        });
+      }
+      const group = groups.get(requestId);
+      group.group.jobIds.push(row.id);
+      group.jobs.push({ row, value });
+      refs.requestsByJob.set(row.id, requestId);
+      refs.jobIds.add(row.id);
+      if (value.generationAttempt?.id) {
+        refs.attemptIds.add(value.generationAttempt.id);
+      }
+    }
+    for (const plan of groups.values()) {
+      const first = plan.jobs[0],
+        originalRow = plan.group.originalRequestId
+          ? source
+              .prepare('SELECT * FROM generation_requests WHERE id=?')
+              .get(plan.group.originalRequestId)
+          : null,
+        protectedRow =
+          originalRow ??
+          source
+            .prepare('SELECT * FROM generation_requests WHERE id=?')
+            .get(first.value.legacyInputRef || `legacy-input:${first.row.id}`),
+        saved = protectedRow ? JSON.parse(protectedRow.payload) : null,
+        original = saved?.legacyInline === true ? saved.request : (saved ?? first.value.request),
+        memberId = first.value.memberId ?? protectedRow.member_id,
+        keyRows = source
+          .prepare('SELECT * FROM generation_idempotency WHERE request_id=?')
+          .all(plan.group.originalRequestId),
+        proofs = keyRows.map((mapping) => ({
+          mapping,
+          proof: proveLegacyGenerationIntent(
+            original,
+            JSON.parse(mapping.normalization_context),
+            mapping,
+          ),
+        })),
+        registered = source
+          .prepare(
+            "SELECT payload FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted'",
+          )
+          .get(`request:${plan.group.originalRequestId}`),
+        primary = registered ? JSON.parse(registered.payload).idempotency : null,
+        definition = primary
+          ? proofs.find((entry) => entry.mapping.key_hash === primary.keyHash)?.proof
+          : null,
+        inputId = plan.group.originalRequestId || `legacy-job-input:${first.row.id}`,
+        content = staged.get(inputId),
+        current = target
+          .prepare('SELECT operation,model,sample_count FROM generation_requests WHERE id=?')
+          .get(plan.group.requestId);
+      for (const { row } of plan.jobs) {
+        refs.inputsByJob.set(row.id, { inputId, memberId, operation: current.operation });
+      }
+      requests.push({
+        ...plan,
+        originalRow,
+        protectedRow,
+        original,
+        memberId,
+        inputId,
+        content,
+        proof: definition,
+        proofs,
+        operation: current.operation,
+        model: current.model,
+        count: current.sample_count,
+      });
+    }
+    return { members, accounts, sharing, requests };
+  })();
+  const audit = JSON.parse(await readFile(f.options.audit)),
+    archive = {
+      binding: {
+        format: 'legacy-export',
+        sourceSha256: f.options.sourceSha256,
+        finalCommitSeq: f.options.cut,
+        manifestSha256: f.options.auditSha256,
+      },
+      audit,
+      auditSha256: f.options.auditSha256,
+      inputs: (await readFile(path.join(path.dirname(f.options.artifacts), 'inputs.jsonl'), 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    };
+  return {
+    ...f,
+    source,
+    target,
+    proof: {
+      references: refs,
+      prepared,
+      artifacts: { facts: [], inputs: [] },
+      descriptors: [],
+      keyDecisions: result.keyDecisions,
+      archive,
+      privateResult: result.private,
+      proveGenerationIntent: proveLegacyGenerationIntent,
+    },
+  };
+}
+function assertReconciliationReadOnly(f, target = f.target) {
+  target.pragma('query_only=ON');
+  const before = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  let result;
+  try {
+    result = f.source.transaction(() =>
+      target.transaction(() => assertLegacyDatabaseProjection(f.source, target, f.proof))(),
+    )();
+  } finally {
+    assert.equal(databaseState(target), before);
+    assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+    assert.equal(f.source.prepare('SELECT total_changes() AS n').get().n, 0);
+  }
+  return result;
+}
+function publicShadow(t, target, omitLast = false) {
+  const shadow = new Database(':memory:');
+  t.after(() => shadow.close());
+  initializeRelationalStorage(
+    shadow,
+    target.prepare('SELECT history_id FROM projection_state').get().history_id,
+  );
+  const rows = target
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all(),
+    inputs = new RelationalInputStore(target);
+  for (const row of omitLast ? rows.slice(0, -1) : rows) {
+    shadow.transaction(() =>
+      new RelationalCommitReplayer(shadow).replayCommit(
+        readRelationalCommit(target, row.seq),
+        inputs,
+      ),
+    )();
+  }
+  return shadow;
+}
+test('Source完整集核对接受真实B转换与合法archive薄正文，query_only全表零写', async (t) => {
+  const f = await reconciliationFixture(t),
+    retained = assertReconciliationReadOnly(f);
+  assert.ok(retained.retained.some((row) => row.kind === 'request' && row.onlineIds.length === 1));
+  const shadow = publicShadow(t, f.target);
+  assert.equal(databaseState(shadow), databaseState(f.target));
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+test('target与自身shadow完全一致仍不能漏掉旧键或整份旧job', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'source coverage',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 128, height: 128, steps: 23, seed: 17 },
+      },
+      native,
+    );
+  const f = await reconciliationFixture(t, { native, request, running: true, alias: true });
+  assertReconciliationReadOnly(f);
+  const short = publicShadow(t, f.target, true),
+    shadow = publicShadow(t, short);
+  assert.equal(databaseState(shadow), databaseState(short));
+  assert.equal(
+    short.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n,
+    f.target.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n - 1,
+  );
+  assert.throws(
+    () => assertReconciliationReadOnly(f, short),
+    /OpeningIdempotencyRecorded|key_coverage/,
+  );
+  const g = await reconciliationFixture(t),
+    missing = publicShadow(t, g.target, true),
+    missingShadow = publicShadow(t, missing);
+  assert.equal(databaseState(missingShadow), databaseState(missing));
+  assert.equal(missing.prepare('SELECT COUNT(*) AS n FROM generation_jobs').get().n, 0);
+  assert.throws(
+    () => assertReconciliationReadOnly(g, missing),
+    /mismatch: request\.|OpeningJobRecorded/,
+  );
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+  assert.deepEqual(await readFile(g.options.source), g.sourceBytes);
+});
+
+test('真实入口拒绝self-consistent假完成时间、漏旧键或副本，outer事务连输入全回滚', async (t) => {
+  for (const mode of ['unknown-time', 'omitted-key', 'omitted-replica']) {
+    await t.test(mode, async (t) => {
+      const originalBytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+        native = nativeNormalizationContext(),
+        request = parseNativeImageRequest(
+          {
+            input: 'source coverage',
+            model: 'nai-diffusion-4-5-full',
+            parameters: { width: 128, height: 128, steps: 23, seed: 17 },
+          },
+          native,
+        ),
+        artifact = {
+          id: 'reconciliation-artifact',
+          memberId: 'member',
+          operation: 'generate',
+          file: 'images/reconciliation-artifact.webp',
+          mimeType: 'image/webp',
+          byteLength: originalBytes.length,
+          sha256: hash(originalBytes),
+        },
+        f = await fixture(
+          t,
+          'failed',
+          mode === 'omitted-key' ? { native, request, running: true, alias: true } : null,
+          mode === 'omitted-replica' ? artifact : null,
+        ),
+        append = RelationalCommitReplayer.prototype.appendCommit;
+      let reached = false,
+        shadowEqual = false;
+      const hook = t.mock.method(
+        RelationalCommitReplayer.prototype,
+        'appendCommit',
+        function (command, inputs) {
+          const omitted =
+            (mode === 'omitted-key' &&
+              command.events.some(
+                (e) =>
+                  e.eventType === 'OpeningIdempotencyRecorded' &&
+                  e.payload.keyHash === generationIdempotencyKeyHash('synthetic-alias-key'),
+              )) ||
+            (mode === 'omitted-replica' &&
+              command.events.some((e) => e.eventType === 'OpeningReplicaRecorded'));
+          if (omitted) {
+            reached = true;
+            const shadow = publicShadow(t, this.sqlite);
+            shadowEqual = databaseState(shadow) === databaseState(this.sqlite);
+            return; // Deliberately simulate the converter forgetting one independent whole commit.
+          }
+          if (mode === 'unknown-time') {
+            for (const event of command.events) {
+              if (event.eventType === 'OpeningJobRecorded') {
+                assert.equal(event.payload.completedAt, null);
+                event.payload.completedAt = 0;
+                reached = true;
+              }
+            }
+          }
+          const result = append.call(this, command, inputs);
+          if (mode === 'unknown-time' && reached) {
+            const shadow = publicShadow(t, this.sqlite);
+            shadowEqual = databaseState(shadow) === databaseState(this.sqlite);
+          }
+          return result;
+        },
+      );
+      let expected = /artifact_decision/;
+      if (mode === 'unknown-time') {
+        expected = /job_source_fields/;
+      }
+      if (mode === 'omitted-key') {
+        expected = /OpeningIdempotencyRecorded/;
+      }
+      try {
+        await assert.rejects(migrateLegacyDatabase(f.options), expected);
+      } finally {
+        hook.mock.restore();
+      }
+      assert.equal(reached, true);
+      assert.equal(shadowEqual, true, 'bad imported target is itself completely replayable');
+      const failed = new Database(path.join(f.options.output, 'library.sqlite'));
+      try {
+        for (const table of [
+          'commits',
+          'domain_events',
+          'generation_inputs',
+          'generation_jobs',
+          'idempotency_keys',
+          'wallets',
+          'artifacts',
+          'artifact_replicas',
+        ]) {
+          assert.equal(failed.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+        }
+      } finally {
+        failed.close();
+      }
+      assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+    });
+  }
+});
+
+test('正常B入口核对产物原locator/编码与退休承诺，不把未核Local字节当Ready', async (t) => {
+  const bytes = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    artifact = {
+      id: 'reconciliation-artifact',
+      memberId: 'member',
+      operation: 'generate',
+      file: 'images/reconciliation-artifact.webp',
+      mimeType: 'image/webp',
+      byteLength: bytes.length,
+      sha256: hash(bytes),
+    },
+    f = await fixture(t, 'failed', null, artifact),
+    report = await migrateLegacyDatabase(f.options),
+    db = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    assert.equal(report.sourceReconciliation.status, 'complete');
+    assert.equal(report.readyInstalled, false);
+    assert.ok(report.findings.some((row) => row.code === 'LOCAL_BYTES_NOT_VERIFIED'));
+    assert.deepEqual(
+      db
+        .prepare(
+          'SELECT object_key,encoding,uploaded_at,verified_at,deleted_at FROM artifact_replicas',
+        )
+        .get(),
+      {
+        object_key: 'reconciliation-artifact.webp',
+        encoding: 'identity',
+        uploaded_at: null,
+        verified_at: null,
+        deleted_at: null,
+      },
+    );
+    const shadow = publicShadow(t, db);
+    assert.equal(databaseState(shadow), databaseState(db));
+  } finally {
+    db.close();
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
