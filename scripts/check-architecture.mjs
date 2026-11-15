@@ -180,12 +180,16 @@ export function checkSource(filename, text) {
     errors.push(`${filename}:${line + 1}: ${dependency}; use ${alternative}.`);
   };
   function dependency(node, specifier, names = []) {
-    const target = specifier.startsWith('.')
-      ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier))
-      : specifier;
+    // ESM query/fragment 改变模块实例身份，不改变依赖的物理路径。
+    const modulePath = specifier.split(/[?#]/, 1)[0];
+    const target = modulePath.startsWith('.')
+      ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), modulePath))
+      : modulePath;
     if (
       /^(?:server|web|executor)\//.test(filename) &&
-      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals)\.mjs$/.test(target)
+      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals)\.mjs$/.test(
+        target,
+      )
     ) {
       report(
         node,
