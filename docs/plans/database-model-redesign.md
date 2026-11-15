@@ -2784,6 +2784,22 @@ Pik 实际到达 DNS/TCP/TLS，响应头、first byte 和 EOF 均未到，应用
 
 六个 Node 实际入口的最小环境、禁 strip-types、入口前网络/native/TS 拒绝及原句柄退出均到场，denied 为零；所有九个相关进程身份关闭。源四文件 metadata/sidecar 和 127 pins 前后相同，只有原库两遍 owner hash 是本轮新的源摘要验证，另外三文件不冒称新 hash。私有 ACL 和原始 stdout/guard/wait 保留，最终 ACL 的枚举时点资格单列。证据 `H:/TEMP/novelai-selected-retained-147-20261115/action1/ACTUAL-HANDOFF.md`（SHA `855ae07f…847cbd`）、manifest `3483fb54…910f8`。coverage/dependencies 仍 unknown、releaseAllowed=false、hold retained、源 DELETE 零；未选择 A/B、namespace 或手装 ready，不因证明恢复成功允许来源释放。
 
+### 9.119 整合候选的实际 CI 与 Direct 断线阶段
+
+[Draft #72](https://github.com/Hime-Hina/novelai-shared-gateway/pull/72) 固定 head `4f02d759`、base `13723ac9`；实际 CI merge `1293f030` 的 tree 与 head 相同。[运行 43717736344](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43717736344) 为四项成功、两项失败。原完整后端 **2917 = 2909 pass / 5 fail / 0 cancelled / 3 skip**，322.265 秒；五 fail 包含 Native/Direct 的父汇总。实际入口为 Native/R2 原 500 与现 503，以及 Direct disconnect 的 `Missing expected rejection`。状态码仍待产品决定；独立 legacy Linux 工具步骤因前置失败被跳过，offline 是依赖汇总失败。原 Target1、sole queued/done 和冷 503 条历史本轮均通过，不从旧轮扣减推绿。完整日志与来源摘要见 `H:/TEMP/novelai-pr72-ci-4f02d75-20261115/REPORT.md`（SHA `07927188…fa13`）。
+
+Web job 实际完成默认 Nuxt 生命周期 16/16、三镜像、镜像 executor 与解包 normal 验证及发行物上传。消费 artifact `14163326884` 的 ZIP `cb3ac096…a857`、内 tar `5ee7ad1d…3a70`，RELEASE 为上述 1293；5008 文件、权限和 169 条包内链接已核。官方 Node22/ABI127 实际加载官方 SQLite binding `1ba30ab3…50bd3` 并通过 integrity_check。后继本地 executor 验证被外部 loader 拦住原夹具生成的临时 guard，未到业务；Web 未启动，该首失败保留于 `H:/TEMP/novelai-pr72-official-runtime-1293-20261115/FIRST-ACTUAL-RESULT.md`。这些结果不等于整体迁移或发布验收完成。
+
+Direct 原夹具在真实上游开始后还经 5ms 轮询和 SQL 才 abort；应用的 100ms HTTP 等待可以先完整返回，已 fulfilled 的 Promise 不能随后因 abort 拒绝。测试后继 `a4312831` 仅复用真实 upstream handler 通知，将 abort 放在通知后，SQL 查询移到原 timeout/disconnect 分支之后；原 100ms、advance101、AbortError、物理 Map、预扣/输入、零写同键原图及完整回放断言保持。
+
+一次同字节受控晚 poll 实验中，旧例精确命中原 652 红：完整 200 超时 body 在 abort 前；新例 **3/3、零 skip**，abort 时尚无 headers/body，随后 AbortError，全部后继断言完成。两例各实际延迟三个指定 5ms poll，应用 100ms 未修改；不是原 CI 唯一时序的重建，也未运行后继无 counter 完整 CI。报告 `H:/TEMP/novelai-direct-disconnect-diagnosis-4f02-20261115/phase-counter-20261115/PHASE-COUNTER-RESULT.md`（SHA `28a2b555…dd04`）；独立静态复审无确认问题，关键测试同步变化仍需维护者复核。Root 后继合入只改变测试，不改变产品 owner 或历史。
+
+### 9.120 实际 Pik 根清单与原声明配对
+
+在 9.116 的 GET 超时原件保持不变的前提下，另一次获准的根 Depth1 PROPFIND 实际 207、完整 EOF：7,241,232 B XML，7881 项含 self 与 7880 个直接文件，声明 stored 合计 12,346,320,402 B。原 cut16509 的 **6766 个明确 Pik locator 全部唯一匹配，未见 0**，当前声明 stored 10,648,766,516 B；原记录没有压缩 stored 长度，不能拿原 decoded logical 长度比较或宣称内容 SHA 已验。另 2646 个无 Pik 承诺对象中，1113 个当前同名候选不补旧承诺，1533 个未见不当作丢失；230 个 Local-only 不扩查。配额字段未返回，quota/free 仍未知。
+
+该动作没有 GET、R2、写入或删除；报告 `H:/TEMP/novelai-pik-depth1-inventory-20261115/ACTUAL-HANDOFF.md`（SHA `3f5e5436…23c`），纯文件配对 `H:/TEMP/novelai-pik-depth1-followup-20261115/REPORT.md`（SHA `37edfd04…5a26`）。静态核对还发现旧两个 GET 探针额外注入 Range，而原 owner 没有；两次均未取得响应头，不能据此认定超时原因。根清单不是原图实读、原始配额、原子盘点或全外存容量性能验收，源释放继续禁止。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

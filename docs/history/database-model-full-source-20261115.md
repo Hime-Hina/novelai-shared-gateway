@@ -101,3 +101,11 @@ sole 原 `DIRECT_GENERATE_TIMEOUT_MS=100` 未改。该次失败尚未进入 `:11
 | `FAILURES.md` | `82d0deb2afd144f7638d83fb1be6aa912062fc09a4d9013ba686c8c2f5bda9f3` |
 | `EVIDENCE-MANIFEST.json` | `54915352223704110604165a1b3d948f5a5f990823bc68b84ffda47997a34af3` |
 | `full.log` | `4c2502af8714f9dbe36d6528f1640e84b3c54aa15a7e4d238cb985928cc0b1e9` |
+
+## 整合 4f02d75 的真实 Linux CI
+
+[PR #72 的运行 43717736344](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43717736344) 实际 checkout merge `1293f0303592e971eeb3757c59b7a89c235a0cce`，parents 为 G `13723ac9` 与 head `4f02d759`，tree `826a2b63e9af77076c0c6ede780646d4366d10be` 与 head 相同。原完整后端实际 **2917 = 2909 pass / 5 fail / 0 cancelled / 3 skip**，322.265353 秒。失败为 Native Local 的 503≠500 子例与父汇总、R2 末尾 503≠500，以及 Direct disconnect 的 Missing expected rejection 与父汇总；不把父汇总计成独立业务原因。
+
+本轮 Target1 17.460177 秒、sole queued/done 13.990173 秒、冷 503 条历史 40.271584 秒通过。backend 后续 legacy Linux 工具步骤实际跳过，offline 因依赖结果失败；四个成功 job 为 Web/package、Node24、Caddy 和 classify。Web 默认生命周期 16/16 零 skip，三镜像、包内 executor、Linux tar 解包 normal 与上传均实际完成。这些成功不改变 backend 红或整体 NOTPASS。
+
+原 CI 证据封存在 `H:/TEMP/novelai-pr72-ci-4f02d75-20261115/`，REPORT SHA `079271880ec817126b9a3aafb939fa1dd1e8dba923cdde66115c0e0bf029fa13`，MANIFEST SHA `ccad7a1e2de5d5c784118886e939cbabf24fe82efaae0b2755f925f4bf2bda34`。Direct 测试后继的受控旧红/新绿及正式产物消费边界见[9.119](../plans/database-model-redesign.md#9119-整合候选的实际-ci-与-direct-断线阶段)，不追溯修改本轮结果。

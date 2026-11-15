@@ -26,9 +26,9 @@ B 建议承诺的在线范围：
 - **历史与领取**：成员历史列表、用量/热力图、错误/损耗薄索引、原 job/可证 parent 查询、结果归属、原回执和存储引用；缺失时间/金额/数量保留 NULL，已知 0 保留 0，未知覆盖不能显示成完整零历史。
 - **输入和归档**：已知输入/附件可读取、复制并编辑为新意图；缺首次定义的原任务不能派发。切点前完整原库、保护内容、原排序/审计来源、固定旧工具及对象访问恢复材料独立保留，脱离七份日常轮换，归档引用对象继续受保护。
 
-当前证据更新：[9.92](../plans/database-model-redesign.md#992-opening-原请求数量未知的独立表示) 已允许终态 Opening 数量 NULL，旧“必须猜正数”的阻塞已解决；历史 parent/source/operation/time 的 `dc320281` 候选仍在验证，尚未合入本基线。归档[9.95](../plans/database-model-redesign.md#995-旧-native-历史的精确归档承接证据) 的实际新 tar `c2a222a756db32670a3cb4a9c5d6e616b678aa9e8d46cb4aa0788ccdda1f5a1b` 已完成标准 26/26 与独审 4/4，旧 PNG 红例和首次 DLL 清理失败记录分别保留。
+后继证据更新：[9.92](../plans/database-model-redesign.md#992-opening-原请求数量未知的独立表示) 与[9.98](../plans/database-model-redesign.md#998-终态-opening-的未知元数据与原-parent-证据) 的 NULL 数量及未知 parent/source/operation/time 表示已整合进候选 `4f02d759`，旧“必须猜正数或补当前默认”的表示阻塞已解决；这不等于完整旧源已经转换。归档[9.95](../plans/database-model-redesign.md#995-旧-native-历史的精确归档承接证据) 的实际新 tar `c2a222a756db32670a3cb4a9c5d6e616b678aa9e8d46cb4aa0788ccdda1f5a1b` 已完成标准 26/26 与独审 4/4，旧 PNG 红例和首次 DLL 清理失败记录分别保留。
 
-外存[首轮结果](H:/TEMP/novelai-external-artifact-source-scope-20261115/RESULT-HANDOFF.md)整体 **NOT PASS**：R2 一对象长度/SHA 成功，仅证明所选后采候选 namespace 本次可读；PikPak 30 秒超时，另有一次 IO 门禁拒绝，原因仍未知（[静态对照](H:/TEMP/novelai-external-artifact-source-scope-20261115/DENIAL-STATIC-ADDENDUM.md)）。后采配置不充当原 cut 配置；9,412 个对象与原输入的逐项配对、全部外存闭包及容量仍待核对。
+外存[首轮结果](H:/TEMP/novelai-external-artifact-source-scope-20261115/RESULT-HANDOFF.md)整体 **NOT PASS**，原超时/门禁拒绝及其未知原因继续保留。后继[真实清单](../plans/database-model-redesign.md#9120-实际-pik-根清单与原声明配对)已匹配原 6766 个明确 Pik locator，未见 0；R2 当前清单匹配原 1576 个声明且长度无冲突。目录元数据不等于原图实读，Pik 旧声明缺压缩长度，后采配置不充当原 cut 配置；9,412 个外部对象的完整字节、外存闭包及容量仍待核对。四项产品选择保持待定。
 
 ## 选定后的单一路线与执行顺序
 
