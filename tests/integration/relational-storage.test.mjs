@@ -971,7 +971,7 @@ test('新活动键需要完整关系和原命令，事件顺序与子任务索�
     /UNIQUE/,
   );
   assert.throws(
-    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 1 })),
+    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 3 })),
     /UNIQUE/,
   );
   assert.throws(
