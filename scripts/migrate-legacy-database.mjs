@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile, open } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
@@ -10,6 +10,7 @@ import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';
 import { RelationalConfigurationStore } from '../server/storage/relational-configuration-store.ts';
 import { domainDigest, canonicalJson } from '../server/events/domain-events.ts';
 import { relationalFactStream } from '../server/events/relational-fact-contracts.ts';
+import { readableResultFile, readStoredResultContent } from '../server/storage/result-files.ts';
 import { RelationalInputStore } from '../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../server/storage/relational-replay.ts';
 import { initializeRelationalStorage } from '../server/storage/relational-storage.ts';
@@ -187,6 +188,7 @@ export function migrationReferences(sourceSha256) {
     requestProofs: new Map(),
     artifactAttemptById: new Map(),
     artifactHistoryById: new Map(),
+    boundLocalMaterializationProofs: new Map(),
   };
 }
 
@@ -349,7 +351,7 @@ export function mapLegacyAccounts(source, references) {
         accountId: row.id,
         displayName: typeof account.name === 'string' ? account.name : '',
         weight: typeof account.weight === 'number' ? account.weight : null,
-        enabled: account.enabled === true,
+        enabled: account.enabled !== false,
         credentialEpoch: 1,
         cooldownUntil: time(account.cooldownUntil),
         cooldownReason: typeof account.cooldownReason === 'string' ? account.cooldownReason : null,
@@ -448,7 +450,6 @@ export function mapLegacyMembers(source, references) {
     if (
       member.id !== row.id ||
       createdAt === null ||
-      typeof member.enabled !== 'boolean' ||
       (member.acceptingJobs !== undefined && typeof member.acceptingJobs !== 'boolean') ||
       (member.jobAdmissionVersion !== undefined &&
         (!Number.isSafeInteger(member.jobAdmissionVersion) || member.jobAdmissionVersion < 0))
@@ -464,7 +465,8 @@ export function mapLegacyMembers(source, references) {
       payload: {
         memberId: row.id,
         displayName: typeof member.name === 'string' ? member.name : '',
-        status: member.enabled ? 'active' : 'disabled',
+        // 公共资格沿原 Raw owner；密码/Cookie 的 strict-true 在私有 adapter 各自核对。
+        status: member.enabled !== false ? 'active' : 'disabled',
         // 旧 owner 的缺省接单/首代规则，不生成认证代次。
         acceptingJobs: member.acceptingJobs !== false,
         admissionEpoch: member.jobAdmissionVersion ?? 0,
@@ -571,7 +573,7 @@ function openingInput(original, proof) {
   return { body, assets, logicalBytes, completeness: 'partial' };
 }
 
-function sourceContextProof(original, mappings) {
+function sourceContextProof(source, requestId, original, mappings) {
   const proofs = mappings.map((mapping) => ({
       mapping,
       proof: proveLegacyGenerationIntent(
@@ -580,12 +582,29 @@ function sourceContextProof(original, mappings) {
         mapping,
       ),
     })),
-    proven = proofs.filter(({ proof }) => proof.prepared),
-    definitions = new Set(proven.map(({ proof }) => domainDigest(proof.context)));
-  if (definitions.size === 1 && proven.length) {
-    return { proof: proven[0].proof, proofs };
-  }
-  return { proof: null, proofs };
+    accepted = source
+      .prepare(
+        `SELECT payload FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted'
+      ORDER BY commit_seq,event_index LIMIT 2`,
+      )
+      .all(`request:${requestId}`),
+    first = accepted.length === 1 ? JSON.parse(accepted[0].payload).idempotency : null,
+    primary = first
+      ? proofs.find(
+          ({ mapping, proof }) =>
+            proof.prepared &&
+            first.memberId === mapping.member_id &&
+            first.operation === mapping.operation &&
+            first.keyHash === mapping.key_hash &&
+            first.fingerprint === mapping.fingerprint &&
+            first.jobId === mapping.job_id &&
+            first.requestId === mapping.request_id &&
+            first.normalizationContextHash ===
+              domainDigest(JSON.parse(mapping.normalization_context)),
+        )
+      : null;
+  // 之后 alias 的定义只证明该 alias 自身，不能借给原未保存定义的受理。
+  return { proof: primary?.proof ?? null, proofs };
 }
 
 // 每个真实 parent 的正文与 child 共用原来源；没有 parent 的 FK 容器不授予公开原请求身份。
@@ -632,7 +651,7 @@ function planLegacyRequests(source, references, findings) {
               'SELECT * FROM generation_idempotency WHERE job_id=? ORDER BY created_at,key_hash',
             )
             .all(first.row.id),
-      { proof, proofs } = sourceContextProof(original, mappings),
+      { proof, proofs } = sourceContextProof(source, group.originalRequestId, original, mappings),
       content = openingInput(original, proof),
       operation =
         originalRow?.operation ??
@@ -840,9 +859,30 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
 }
 
 // 原 artifact stream 的归属是旧 owner 已保存的 cut 事实；不从 cache visitor/当前 token 反推 creator。
-function planLegacyArtifacts(source, references, descriptors, cutConfiguration) {
+function planLegacyArtifacts(
+  source,
+  references,
+  descriptors,
+  cutConfiguration,
+  localMaterializationsByArtifact = new Map(),
+) {
   const inputs = [],
-    storageTargets = [{ kind: 'local', namespace: 'images', originalId: 'storage:local' }];
+    findings = [],
+    storageTargets = [{ kind: 'local', namespace: 'images', originalId: 'storage:local' }],
+    publications = new Map();
+  // 一次原事实扫描；不为每个产物重复 json_extract 全事件，也不持久化派生索引。
+  for (const row of source
+    .prepare(
+      "SELECT occurred_at,payload FROM domain_events WHERE event_type='ArtifactPublished' ORDER BY commit_seq,event_index",
+    )
+    .iterate()) {
+    const payload = JSON.parse(row.payload),
+      id = payload.artifact?.id;
+    if (typeof id !== 'string' || publications.has(id)) {
+      reject();
+    }
+    publications.set(id, { ...row, value: payload });
+  }
   if (
     cutConfiguration?.sourceNamespaces.r2AccountId &&
     cutConfiguration.sourceNamespaces.r2Bucket
@@ -872,14 +912,16 @@ function planLegacyArtifacts(source, references, descriptors, cutConfiguration) 
     if (descriptor.memberId !== null && descriptor.memberId !== original.memberId) {
       reject();
     }
-    const publicationRows = source
-        .prepare(
-          `SELECT event_type,occurred_at,payload FROM domain_events
-      WHERE event_type='ArtifactPublished' AND json_extract(payload,'$.artifact.id')=?
-      ORDER BY commit_seq,event_index LIMIT 2`,
-        )
-        .all(descriptor.id),
-      publication = publicationRows.length === 1 ? JSON.parse(publicationRows[0].payload) : null;
+    const savedPublication = publications.get(descriptor.id),
+      publication = savedPublication?.value ?? null;
+    if (
+      publication &&
+      (publication.memberId !== original.memberId ||
+        publication.artifact.sha256 !== descriptor.sha256 ||
+        publication.artifact.byteLength !== descriptor.byteLength)
+    ) {
+      reject();
+    }
     let input = null;
     if (
       publication &&
@@ -889,6 +931,12 @@ function planLegacyArtifacts(source, references, descriptors, cutConfiguration) 
     ) {
       input = references.inputsByJob.get(publication.jobId);
       const attemptId = publication.artifact.attemptId;
+      if (attemptId && !references.attemptIds.has(attemptId)) {
+        findings.push({ code: 'ARTIFACT_ORIGINAL_ATTEMPT_UNMAPPED', originalId: descriptor.id });
+      }
+      if (!input) {
+        findings.push({ code: 'ARTIFACT_ORIGINAL_INPUT_UNMAPPED', originalId: descriptor.id });
+      }
       if (input && attemptId !== null && references.attemptIds.has(attemptId)) {
         references.artifactAttemptById.set(descriptor.id, {
           attemptId,
@@ -904,7 +952,7 @@ function planLegacyArtifacts(source, references, descriptors, cutConfiguration) 
           memberId: input.memberId,
           sha256: descriptor.sha256,
           byteLength: descriptor.byteLength,
-          publishedAt: time(publicationRows[0].occurred_at),
+          publishedAt: time(savedPublication.occurred_at),
           retiredAt: time(original.retired?.at),
         });
       }
@@ -939,10 +987,12 @@ function planLegacyArtifacts(source, references, descriptors, cutConfiguration) 
     }
     references.inputsByArtifact.set(descriptor.id, input);
   }
-  return {
-    inputs,
-    ...mapLegacyArtifacts(source, references, { artifacts: descriptors, storageTargets }),
-  };
+  const mapped = mapLegacyArtifacts(source, references, {
+    artifacts: descriptors,
+    storageTargets,
+    localMaterializationsByArtifact,
+  });
+  return { ...mapped, inputs, findings: [...findings, ...mapped.findings] };
 }
 
 function appendLegacyArtifactInputs(target, references, at, artifacts) {
@@ -1045,6 +1095,9 @@ function appendLegacyKeys(source, target, references, at, findings) {
       createdAt,
       origin: references.origin(originalId),
     };
+    if (entry?.proof.prepared && !live) {
+      findings.push({ code: 'COMPLETE_KEY_TARGET_CLOSURE_UNPROVEN', originalId });
+    }
     if (entry?.proof.reason && JSON.parse(row.normalization_context).native) {
       findings.push({ code: entry.proof.reason, originalId });
     }
@@ -1060,6 +1113,110 @@ function appendLegacyKeys(source, target, references, at, findings) {
       ]),
     )();
   }
+}
+
+export async function materializeSelectedLocalOriginal(
+  configuration,
+  descriptors,
+  references,
+  output,
+) {
+  const proofs = new Map();
+  if (!configuration?.localOriginal) {
+    return proofs;
+  }
+  const directory = path.dirname(configuration.filename),
+    selected = configuration.localOriginal,
+    pointer = selected.sourceArtifactRowPointer,
+    rowFile = path.resolve(directory, pointer.file),
+    rowStat = await lstat(rowFile);
+  if (!rowStat.isFile() || rowStat.isSymbolicLink() || rowStat.size > 16777216) {
+    reject();
+  }
+  const rowBytes = await readFile(rowFile);
+  if (hash(rowBytes) !== pointer.fileSha256) {
+    reject();
+  }
+  const rowLines = new TextDecoder('utf-8', { fatal: true }).decode(rowBytes).split('\n'),
+    line = rowLines[pointer.line - 1];
+  if (typeof line !== 'string' || hash(Buffer.from(line)) !== pointer.lineSha256) {
+    reject();
+  }
+  const original = JSON.parse(line),
+    descriptor = descriptors.find((row) => row.id === original.id),
+    input = references.inputsByArtifact.get(original.id);
+  if (
+    !descriptor ||
+    !input ||
+    !references.memberIds.has(input.memberId) ||
+    original.sha256 !== descriptor.sha256 ||
+    original.byteLength !== descriptor.byteLength ||
+    selected.sha256 !== descriptor.sha256 ||
+    selected.byteLength !== descriptor.byteLength
+  ) {
+    reject();
+  }
+  const file = readableResultFile({
+      imageId: descriptor.id,
+      operation: descriptor.operation,
+      mimeType: descriptor.mimeType,
+    }),
+    selectedFile = path.resolve(directory, selected.file),
+    info = await lstat(selectedFile);
+  if (!info.isFile() || info.isSymbolicLink() || info.size !== selected.byteLength) {
+    reject();
+  }
+  const handle = await open(selectedFile, 'r');
+  let bytes;
+  try {
+    const before = await handle.stat({ bigint: true });
+    bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      bytes.length !== selected.byteLength ||
+      hash(bytes) !== selected.sha256
+    ) {
+      reject();
+    }
+  } finally {
+    await handle.close();
+  }
+  await mkdir(path.join(output, 'images'), { mode: 0o700 });
+  await writeFile(path.join(output, file), bytes, { flag: 'wx', mode: 0o600 });
+  await readStoredResultContent(output, {
+    imageId: descriptor.id,
+    operation: descriptor.operation,
+    mimeType: descriptor.mimeType,
+    byteLength: descriptor.byteLength,
+    sha256: descriptor.sha256,
+    file,
+  });
+  const tuple = {
+      artifactId: descriptor.id,
+      memberId: input.memberId,
+      inputId: input.inputId,
+      sha256: descriptor.sha256,
+      byteLength: descriptor.byteLength,
+      file,
+      verifiedAt: Date.now(),
+    },
+    proof = {
+      ...tuple,
+      proofRef: `local-materialization:${domainDigest({
+        sourceSha256: references.sourceSha256,
+        cutConfigurationSha256: configuration.selectedSha256,
+        ...tuple,
+      })}`,
+    };
+  proofs.set(descriptor.id, proof);
+  references.boundLocalMaterializationProofs.set(proof.proofRef, domainDigest(proof));
+  return proofs;
 }
 
 function appendLegacyConfiguration(source, target, references, at, findings) {
@@ -1206,6 +1363,39 @@ export async function migrateLegacyDatabase(options) {
     privateResult = null;
   try {
     source.pragma('query_only=ON');
+    const prepared = source.transaction(() => {
+        const members = mapLegacyMembers(source, references),
+          accounts = mapLegacyAccounts(source, references),
+          sharing = mapLegacySharing(source, references);
+        findings.push(...members.findings, ...accounts.findings, ...sharing.findings);
+        const requests = planLegacyRequests(source, references, findings);
+        // Build proven stable input references before the selected physical copy, with no target SQL or upload.
+        planLegacyArtifacts(source, references, descriptors, cutConfiguration);
+        return { members, accounts, sharing, requests };
+      })(),
+      localMaterializations = await materializeSelectedLocalOriginal(
+        cutConfiguration,
+        descriptors,
+        references,
+        output,
+      ),
+      inputManifest = {
+        format: 'legacy-B-inputs-v1',
+        converterSha256: hash(await readFile(new URL(import.meta.url))),
+        sourceSha256: options.sourceSha256,
+        cut: options.cut,
+        sourceCommit: options.sourceCommit,
+        auditSha256: options.auditSha256,
+        cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
+        effectiveAt: at,
+        localMaterializations: [...localMaterializations.values()],
+      },
+      manifestBytes = Buffer.from(canonicalJson(inputManifest)),
+      manifestSha256 = hash(manifestBytes);
+    await writeFile(path.join(output, 'migration-inputs.private.json'), manifestBytes, {
+      flag: 'wx',
+      mode: 0o600,
+    });
     target = new Database(path.join(output, 'library.sqlite'));
     initializeRelationalStorage(target, `B:${options.sourceSha256}:${options.cut}`);
     const cutoff = source
@@ -1227,29 +1417,31 @@ export async function migrateLegacyDatabase(options) {
               sourceCommit: options.sourceCommit,
               cutoffSeq: options.cut,
               cutoffAt,
-              manifestSha256: options.auditSha256,
+              manifestSha256,
               route: 'B',
             },
           },
         ]);
         appendLegacyConfiguration(source, target, references, at, findings);
-        const members = mapLegacyMembers(source, references);
-        findings.push(...members.findings);
+        const { members, accounts, sharing, requests } = prepared;
         if (members.facts.length) {
           append(target, references, at, 'members', members.facts);
         }
-        const accounts = mapLegacyAccounts(source, references);
-        findings.push(...accounts.findings);
+
         if (accounts.facts.length) {
           append(target, references, at, 'accounts', accounts.facts);
         }
-        const sharing = mapLegacySharing(source, references);
-        findings.push(...sharing.findings);
+
         if (sharing.facts.length) {
           append(target, references, at, 'sharing', sharing.facts);
         }
-        const requests = planLegacyRequests(source, references, findings);
-        const artifacts = planLegacyArtifacts(source, references, descriptors, cutConfiguration);
+        const artifacts = planLegacyArtifacts(
+          source,
+          references,
+          descriptors,
+          cutConfiguration,
+          localMaterializations,
+        );
         findings.push(...artifacts.findings);
         financial = mapLegacyFinance(source, references);
         findings.push(...financial.findings);
@@ -1308,6 +1500,7 @@ export async function migrateLegacyDatabase(options) {
       private: privateResult,
       effectiveAt: at,
       cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
+      inputManifestSha256: manifestSha256,
     };
     target.pragma('wal_checkpoint(TRUNCATE)');
     target.pragma('journal_mode=DELETE');

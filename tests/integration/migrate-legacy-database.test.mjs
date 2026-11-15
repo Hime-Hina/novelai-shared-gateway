@@ -38,7 +38,7 @@ import { relationalPrivateStateEmpty } from '../../server/storage/relational-pri
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex'),
   sourceCommit = '3caba3dfa0b5d9f582acabfc02e36e7db4af038f';
 
-async function fixture(t, status = 'failed', parent = null, artifact = null) {
+async function fixture(t, status = 'failed', parent = null, artifact = null, memberPatch = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
     store = new JsonStore(path.join(directory, 'old'));
   t.after(async () => {
@@ -49,7 +49,14 @@ async function fixture(t, status = 'failed', parent = null, artifact = null) {
   await store.write({
     ...store.db,
     users: [
-      { id: 'member', name: '', token: 'STA1N-synthetic-current-key', enabled: true, createdAt: 0 },
+      {
+        id: 'member',
+        name: '',
+        token: 'STA1N-synthetic-current-key',
+        enabled: true,
+        createdAt: 0,
+        ...memberPatch,
+      },
     ],
     images: artifact ? [artifact] : [],
     jobs: [
@@ -522,9 +529,8 @@ test('原已保存完整参数但首次定义缺失的旧键保留原job/receipt
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
 
-test('唯一选定cut-config核对源/cut及原证明文件；旧remote DATA_DIR不变成本地输出或current ENV', async (t) => {
-  const f = await fixture(t),
-    proofs = {};
+async function selectedCutConfiguration(f, localOriginal = null) {
+  const proofs = {};
   for (const name of ['sourceCapture', 'namespaceReceipt', 'identityReceipt']) {
     const file = path.join(f.directory, name + '.json'),
       bytes = Buffer.from(JSON.stringify({ syntheticProof: name }));
@@ -548,11 +554,17 @@ test('唯一选定cut-config核对源/cut及原证明文件；旧remote DATA_DIR
         pikpakUrl: null,
       },
       ...proofs,
-      localOriginal: null,
+      localOriginal,
     },
     file = path.join(f.directory, 'selected-cut-config.json'),
     bytes = Buffer.from(JSON.stringify(value));
   await writeFile(file, bytes);
+  return { captured, value, file, bytes, proofs };
+}
+
+test('唯一选定cut-config核对源/cut及原证明文件；旧remote DATA_DIR不变成本地输出或current ENV', async (t) => {
+  const f = await fixture(t),
+    { captured, file, bytes, proofs } = await selectedCutConfiguration(f);
   const selected = await readLegacyCutConfiguration(file, hash(bytes), f.options, captured + 1);
   assert.equal(selected.sourceNamespaces.dataDir, '/remote/original-data');
   assert.equal(selected.effectiveAt, captured + 1);
@@ -727,6 +739,156 @@ test('旧parentless done的独立产物沿原稳定归属/未知operation与publ
     assert.ok(result.findings.some((row) => row.code === 'LOCAL_BYTES_NOT_VERIFIED'));
     assert.equal(result.readyInstalled, false);
     assert.equal(relationalPrivateStateEmpty(target), true);
+  } finally {
+    target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('所选原图实复制到新owned target后才产生Local proof；manifest绑定原source/config/tuple且不改源', async (t) => {
+  const original = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    f = await fixture(t, 'done', null, {
+      id: 'materialized',
+      memberId: 'member',
+      token: 'STA1N-synthetic-current-key',
+      mimeType: 'image/webp',
+      byteLength: original.length,
+      sha256: hash(original),
+      file: 'images/materialized.webp',
+    }),
+    selectedFile = path.join(f.directory, 'selected-original.bin'),
+    rowBytes = await readFile(f.options.artifacts),
+    rowLine = rowBytes.toString('utf8').split('\n')[0];
+  await writeFile(selectedFile, original, { flag: 'wx' });
+  const localOriginal = {
+      file: selectedFile,
+      byteLength: original.length,
+      sha256: hash(original),
+      sourceArtifactRowPointer: {
+        file: f.options.artifacts,
+        fileSha256: hash(rowBytes),
+        line: 1,
+        lineSha256: hash(rowLine),
+      },
+    },
+    { file, bytes } = await selectedCutConfiguration(f, localOriginal),
+    result = await migrateLegacyDatabase({
+      ...f.options,
+      cutConfig: file,
+      cutConfigSha256: hash(bytes),
+    }),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    const manifestBytes = await readFile(
+        path.join(f.options.output, 'migration-inputs.private.json'),
+      ),
+      manifest = JSON.parse(manifestBytes),
+      proof = manifest.localMaterializations[0],
+      source = JSON.parse(
+        target
+          .prepare("SELECT payload FROM domain_events WHERE event_type='ImportSourceRegistered'")
+          .get().payload,
+      );
+    assert.equal(manifest.sourceSha256, f.options.sourceSha256);
+    assert.equal(manifest.cutConfigurationSha256, hash(bytes));
+    assert.equal(source.manifestSha256, hash(manifestBytes));
+    assert.equal(result.inputManifestSha256, hash(manifestBytes));
+    assert.equal(proof.artifactId, 'materialized');
+    assert.equal(proof.memberId, 'member');
+    assert.equal(proof.file, 'images/materialized.webp');
+    assert.equal(proof.sha256, hash(original));
+    assert.ok(proof.verifiedAt >= result.effectiveAt);
+    assert.deepEqual(await readFile(path.join(f.options.output, proof.file)), original);
+    const row = target
+      .prepare('SELECT uploaded_at,verified_at,deleted_at FROM artifact_replicas')
+      .get();
+    assert.deepEqual(row, { uploaded_at: null, verified_at: proof.verifiedAt, deleted_at: null });
+    assert.equal(target.prepare('SELECT published_at FROM artifacts').get().published_at, null);
+    assert.equal(result.readyInstalled, false);
+  } finally {
+    target.close();
+  }
+  assert.deepEqual(await readFile(selectedFile), original);
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('私有尾部真实SQL错外catch回滚整笔公共/正文/私有，阶段已在Opening之后且健康新目标可重试', async (t) => {
+  const f = await fixture(t),
+    { file, bytes } = await selectedCutConfiguration(f),
+    options = { ...f.options, cutConfig: file, cutConfigSha256: hash(bytes) },
+    original = Database.prototype.prepare;
+  let stage = null;
+  Database.prototype.prepare = function (sql, ...args) {
+    const statement = Reflect.apply(original, this, [sql, ...args]);
+    if (
+      this.name === path.join(f.options.output, 'library.sqlite') &&
+      /^INSERT INTO api_keys\(/.test(sql)
+    ) {
+      stage = {
+        transaction: this.inTransaction,
+        jobs: Reflect.apply(original, this, ['SELECT count(*) AS n FROM generation_jobs']).get().n,
+        commits: Reflect.apply(original, this, ['SELECT count(*) AS n FROM commits']).get().n,
+      };
+      this.exec(
+        "CREATE TEMP TRIGGER synthetic_private_tail BEFORE INSERT ON main.api_keys BEGIN SELECT RAISE(ABORT,'migration-private-tail'); END",
+      );
+    }
+    return statement;
+  };
+  try {
+    await assert.rejects(migrateLegacyDatabase(options), /migration-private-tail/);
+  } finally {
+    Database.prototype.prepare = original;
+  }
+  assert.equal(stage.transaction, true);
+  assert.equal(stage.jobs, 1);
+  assert.ok(stage.commits >= 4);
+  const target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    for (const table of [
+      'commits',
+      'domain_events',
+      'members',
+      'generation_inputs',
+      'generation_jobs',
+      'gateway_configuration',
+      'api_keys',
+    ]) {
+      assert.equal(target.prepare('SELECT count(*) AS n FROM ' + table).get().n, 0, table);
+    }
+    assert.equal(relationalPrivateStateEmpty(target), true);
+    assert.equal(target.prepare('SELECT status FROM projection_state').get().status, 'building');
+  } finally {
+    target.close();
+  }
+  await assert.rejects(readFile(path.join(f.options.output, 'report.private.json')), {
+    code: 'ENOENT',
+  });
+  const retried = await migrateLegacyDatabase({
+    ...options,
+    output: f.options.output + '-healthy',
+  });
+  assert.equal(retried.private.apiKeys, 1);
+  assert.equal(retried.readyInstalled, false);
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('旧enabled缺失Raw-only成员沿原Key资格开账，不借公共active激活密码或Cookie', async (t) => {
+  const f = await fixture(t, 'failed', null, null, { enabled: undefined }),
+    { file, bytes } = await selectedCutConfiguration(f),
+    result = await migrateLegacyDatabase({
+      ...f.options,
+      cutConfig: file,
+      cutConfigSha256: hash(bytes),
+    }),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    assert.equal(target.prepare('SELECT status FROM members').get().status, 'active');
+    assert.equal(result.private.apiKeys, 1);
+    assert.equal(result.private.credentials, 0);
+    assert.equal(result.private.sessions, 0);
+    assert.equal(target.prepare('SELECT count(*) AS n FROM password_credentials').get().n, 0);
+    assert.equal(target.prepare('SELECT count(*) AS n FROM member_sessions').get().n, 0);
   } finally {
     target.close();
   }
