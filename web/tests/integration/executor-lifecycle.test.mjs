@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { execFile, spawn } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import { crc32 } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
@@ -12,15 +11,18 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTestContext, loadFixture, buildFixture } from '@nuxt/test-utils/e2e';
 import {
+  addRetainedHistory,
+  bootstrapPackaged,
+} from '../../../executor/tests/integration/relational-fixture.mjs';
+import {
   readNativeEvents,
   readNativeSseEvents,
 } from '../../../tests/helpers/native-stream-client.mjs';
 
-const execFileAsync = promisify(execFile);
 const webRoot = fileURLToPath(new URL('../../', import.meta.url));
-const executorEntry = fileURLToPath(
-  new URL('../../../executor/.output/server/start.mjs', import.meta.url),
-);
+const executorEntry = process.env.EXECUTOR_TEST_ENTRY
+  ? path.resolve(process.env.EXECUTOR_TEST_ENTRY)
+  : fileURLToPath(new URL('../../../executor/.output/server/start.mjs', import.meta.url));
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64',
@@ -284,22 +286,34 @@ async function fixture(
     );
     return pathToFileURL(filename).href;
   };
-  const { JsonStore } = await import(packaged('server/storage/sqlite-store.js'));
-  const { syncFairQuota, quoteFairRequest } = await import(packaged('server/quota/fair-share.js'));
+  const load = (relative) => import(packaged(relative));
+  const { RelationalMemberStore } = await load('server/storage/relational-member-store.js');
+  const { RelationalRequestStore } = await load('server/storage/relational-request-store.js');
+  const { RelationalInputStore } = await load('server/storage/relational-input-store.js');
+  const { RelationalReplicaStore } = await load('server/storage/relational-replica-store.js');
+  const { RelationalQuotaStore } = await load('server/storage/relational-quota-store.js');
+  const { RelationalAccountStore } = await load('server/storage/relational-account-store.js');
+  const { RelationalGenerationStore } = await load('server/storage/relational-generation-store.js');
+  const { assertRelationalStorageReady } = await load('server/storage/relational-storage.js');
+  const { quoteFairRequest } = await import(packaged('server/quota/fair-share.js'));
   const { nativeImagesMsgpack } = await import(packaged('server/protocols/native-stream.js'));
   const { createMemberSession } = await import(packaged('server/members/authentication.js'));
-  const { recordDomainEvent } = await import(packaged('server/events/domain-events.js'));
   const Database = runtimeRequire('better-sqlite3');
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-nuxt-executor-'));
   const adminToken = 'synthetic-nuxt-executor-admin-token-only';
   const internalToken = 'synthetic-nuxt-executor-internal-token-only';
   const upstreamToken = 'pst-synthetic-nuxt-executor-upstream-only';
   // bootstrap 跨 await 设置 umask，放在独立进程内，避免并行场景互相覆盖。
-  await execFileAsync(process.execPath, [fileURLToPath(packaged('scripts/bootstrap.mjs'))], {
-    env: { ...envBase(), ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir },
-    windowsHide: true,
-    signal: t.signal,
-  });
+  await bootstrapPackaged(
+    fileURLToPath(packaged('scripts/bootstrap.mjs')),
+    {
+      ...envBase(),
+      ADMIN_TOKEN: adminToken,
+      NOVELAI_TOKEN: upstreamToken,
+      DATA_DIR: dataDir,
+    },
+    t.signal,
+  );
   const credentialPath = path.join(dataDir, 'bootstrap-credentials.json');
   if (process.platform !== 'win32') {
     assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
@@ -315,119 +329,71 @@ async function fixture(
       }
     : {};
   const sessions = [];
-  const seeded = new JsonStore(dataDir);
-  await seeded.init();
+  const filename = path.join(dataDir, 'library.sqlite'),
+    seeded = new Database(filename);
+  seeded.pragma('foreign_keys=ON');
   try {
-    await seeded.update(
-      (db) => {
-        const account = db.accounts[0],
-          observation = {
-            quotaTier: 3,
-            subscriptionActive: true,
-            subscriptionExpiresAt: Date.now() + 86400000,
-            quotaFixed: 10000,
-            quotaPurchased: 0,
-            v5UsagePercent: 100,
-            quotaCheckedAt: new Date().toISOString(),
-          };
-        Object.assign(account, observation);
-        recordDomainEvent(db, {
-          eventType: 'QuotaObserved',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          payload: { kind: 'official', accountId: account.id, observation },
-        });
-        syncFairQuota(db);
-        if (discord) {
-          db.users.forEach((user, index) => {
-            user.discord = {
-              id: String(222222222222222220n + BigInt(index)),
-              guildId: discordEnv.DISCORD_GUILD_ID,
-              member: true,
-              checkedAt: index ? Date.now() : 0,
-              expiresAt: index ? Date.now() + 3600000 : 0,
-              accessToken: `synthetic-discord-access-${index}-0`,
-              refreshToken: `synthetic-discord-refresh-${index}-0`,
-            };
-            recordDomainEvent(db, {
-              eventType: 'MemberEligibilityChanged',
-              streamId: 'sharing:default',
-              memberId: user.id,
-              payload: {
-                memberId: user.id,
-                discord: {
-                  id: user.discord.id,
-                  guildId: user.discord.guildId,
-                  member: true,
-                  checkedAt: user.discord.checkedAt,
-                },
-              },
-            });
-          });
-          db.jobs = [0, 1, 1].map((member, index) => ({
-            id: `synthetic-query-history-${index}`,
-            status: 'done',
-            source: 'novelai-native',
-            createdAt: new Date().toISOString(),
-            userToken: db.users[member].token,
-            generationAttempt: {
-              id: `synthetic-query-attempt-${index}`,
-              memberId: db.users[member].id,
-            },
-            request: {
-              operation: 'generate',
-              model: 'nai-diffusion-4-5-full',
-              prompt: 'synthetic-private-query-history',
-            },
-          }));
-          for (const job of db.jobs) {
-            const { userToken, request, ...facts } = job,
-              memberId = db.users.find((user) => user.token === userToken).id;
-            recordDomainEvent(db, {
-              eventType: 'OpeningStateRecorded',
-              streamId: `request:legacy-${job.id}`,
-              memberId,
-              payload: {
-                state: {
-                  request: { requestId: null, memberId },
-                  jobs: {
-                    [job.id]: {
-                      ...facts,
-                      memberId,
-                      request: { operation: request.operation, model: request.model },
-                    },
-                  },
-                  artifacts: {},
-                  aliases: [],
-                  freeUsage: {},
-                },
-              },
-            });
-          }
-        }
-      },
-      { immediate: true },
-    );
+    const memberStore = new RelationalMemberStore(seeded, discordEnv);
     if (discord) {
-      for (const user of seeded.db.users) {
-        sessions.push(await createMemberSession(seeded, user, discordEnv));
+      await memberStore.discordAuthenticationTransaction((transaction) => {
+        for (const [index, credentials] of members.entries()) {
+          const user = transaction.readMember(credentials.user_id);
+          user.discord = {
+            id: String(222222222222222220n + BigInt(index)),
+            guildId: discordEnv.DISCORD_GUILD_ID,
+            member: true,
+            checkedAt: index ? Date.now() : 0,
+            expiresAt: index ? Date.now() + 3600000 : 0,
+            accessToken: `synthetic-discord-access-${index}-0`,
+            refreshToken: `synthetic-discord-refresh-${index}-0`,
+          };
+          transaction.saveAuthentication(user, 'login');
+        }
+      });
+      for (const member of members) {
+        sessions.push(
+          await createMemberSession(
+            memberStore,
+            memberStore.authenticationMember(member.user_id),
+            discordEnv,
+          ),
+        );
       }
     }
   } finally {
-    await seeded.close();
+    seeded.close();
   }
+  if (discord)
+    await addRetainedHistory({
+      Database,
+      filename,
+      members,
+      load,
+      idPrefix: 'synthetic-query-history',
+      prompt: 'synthetic-private-query-history',
+      image: png,
+    });
 
   // After seeding, only the independently launched executor writes the business database.
   const audit = new Database(path.join(dataDir, 'library.sqlite'), {
     readonly: true,
     fileMustExist: true,
   });
-  const rows = (table) =>
-    audit
-      .prepare(`SELECT data FROM ${table}`)
-      .all()
-      .map((row) => JSON.parse(row.data));
-  const jobs = () => rows('jobs');
+  audit.pragma('foreign_keys=ON');
+  const requestStore = new RelationalRequestStore(audit),
+    inputStore = new RelationalInputStore(audit),
+    memberStore = new RelationalMemberStore(audit, discordEnv),
+    replicaStore = new RelationalReplicaStore(audit),
+    quotas = new RelationalQuotaStore(audit),
+    accounts = new RelationalAccountStore(audit, quotas, new Map()),
+    generationsStore = new RelationalGenerationStore(audit),
+    accountId = audit.prepare('SELECT bound_account_id id FROM sharing_policy WHERE id=1').get().id,
+    jobs = () =>
+      audit
+        .prepare('SELECT id FROM generation_jobs')
+        .all()
+        .map(({ id }) => requestStore.readApiJob(id));
+
   const releaseFirst = deferred();
   const heldGenerations = [];
   let nextGeneration;
@@ -487,7 +453,7 @@ async function fixture(
         discordState.membershipTokens.push(req.headers.authorization);
         const verification = { startedAt: performance.now(), respondedAt: null };
         discordState.membershipCalls.push(verification);
-        const user = rows('users').find((user) => user.id === members[0].user_id);
+        const user = memberStore.authenticationMember(members[0].user_id);
         discordState.persistedBeforeMembership =
           user.discord.refreshToken === 'synthetic-discord-refresh-0-1';
         if (discordState.gate) {
@@ -813,10 +779,22 @@ globalThis.fetch = (input, options) => {
         return false;
       }
     });
-  const startExecutor = () =>
-    executor.start((output) => output.includes('Nai2API listening'), {
+  const startExecutor = async () => {
+    const observation = () =>
+      audit
+        .prepare('SELECT observation_event_id AS id FROM account_quota_state WHERE account_id=?')
+        .get(accountId).id;
+    const previousObservation = observation();
+    await executor.start((output) => output.includes('Nai2API listening'), {
       RESULT_RECOVERY_TEST_STAGE: '',
     });
+    // 已启用账户每次真实启动都会查询官方额度；先等同笔观察落盘，再检查后续读取零写。
+    await until(
+      () => observation() !== previousObservation,
+      10000,
+      'restarted executor did not commit its initial quota observation',
+    );
+  };
   t.after(async () => {
     releaseFirst.resolve();
     for (const held of heldGenerations) {
@@ -839,6 +817,18 @@ globalThis.fetch = (input, options) => {
     }
   });
   await executor.start((output) => output.includes('Nai2API listening'));
+  const enabled = await call(executorBase, '/api/admin/accounts/' + accountId, {
+    method: 'PATCH',
+    body: { enabled: true },
+    headers: {
+      host: 'localhost:18082',
+      origin: 'http://localhost:18082',
+      'x-admin-token': adminToken,
+      'x-executor-token': internalToken,
+      'idempotency-key': 'nuxt-fixture-enable',
+    },
+  });
+  assert.equal(json(enabled).enabled, true);
   await startNuxt();
   const render = await call(nuxtBase, '/');
   assert.match(render.body.toString(), /__NUXT_DATA__/);
@@ -855,6 +845,7 @@ globalThis.fetch = (input, options) => {
     });
   const checkStorage = () => {
     assert.equal(audit.pragma('integrity_check', { simple: true }), 'ok');
+    audit.transaction(() => assertRelationalStorageReady(audit))();
     assert.equal(unexpectedUpstream, 0);
     assert.equal(leakedInternalHeader, false);
     assert.equal(wrongUpstreamAuth, false);
@@ -882,6 +873,22 @@ globalThis.fetch = (input, options) => {
     dataDir,
     audit,
     jobs,
+    input: (jobId) => inputStore.readJobInput(jobId),
+    artifact: (artifactId) => replicaStore.readArtifact(artifactId).descriptor,
+    member: (memberId) => memberStore.authenticationMember(memberId),
+    quotaConfiguration: () => quotas.readQuotaConfiguration(),
+    account: (id) => accounts.readAccountManagementProfile(id),
+    prepared: (id) =>
+      generationsStore.readPendingGenerationResultIds().includes(id)
+        ? generationsStore.readGenerationResultPreparation(id).descriptor
+        : undefined,
+    charge: (id) => {
+      const job = requestStore.readApiJob(id);
+      return requestStore
+        .readMemberRequest(job.requestId, job.memberId)
+        .jobs.find((j) => j.id === id).fairCharge;
+    },
+    accountId,
     members,
     observations,
     droppedReceipts,
@@ -1021,9 +1028,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       assert.equal(f.generations(), 2);
       assert.equal(f.executor.child().pid, executorPid);
       for (const job of f.jobs()) {
-        const image = JSON.parse(
-          f.audit.prepare('SELECT data FROM images WHERE id = ?').get(job.imageId).data,
-        );
+        const image = f.artifact(job.imageId);
         assert.deepEqual(await readFile(path.join(f.dataDir, image.file)), png);
       }
       await f.startNuxt();
@@ -1101,11 +1106,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       );
       assert.equal(f.generations(), 1);
       for (const table of [
-        'jobs',
-        'images',
+        'generation_jobs',
+        'artifacts',
         'generation_requests',
-        'generation_idempotency',
-        'fair_quota_settlements',
+        'idempotency_keys',
+        'charges',
       ]) {
         assert.equal(
           f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
@@ -1113,23 +1118,17 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
           table + ' must contain only the original operation',
         );
       }
-      const charge = JSON.parse(
-        f.audit
-          .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?')
-          .get(accepted.id).charge,
-      );
+      const charge = f.charge(accepted.id);
       assert.equal(charge.status, 'settled');
       assert.equal(charge.resource, 'anlas');
       assert.ok(charge.fixed > 0);
       assert.equal(charge.purchased, '0');
-      const ledger = f.audit
-        .prepare('SELECT data FROM ledger')
-        .all()
-        .map((row) => JSON.parse(row.data));
       assert.equal(
-        ledger.filter(
-          (entry) => entry.jobId === accepted.id && entry.type === 'generation_reserved',
-        ).length,
+        f.audit
+          .prepare(
+            "SELECT COUNT(*) n FROM domain_events WHERE event_type='QuotaReserved' AND json_extract(payload,'$.jobId')=?",
+          )
+          .get(accepted.id).n,
         1,
       );
       const before = f.observations.length;
@@ -1171,15 +1170,16 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       );
       await until(f.fileSynced, 10000, 'complete result did not reach the file_sync checkpoint');
       const original = f.jobs()[0],
-        imageId = original.resultPending?.imageId;
+        pendingResult = f.prepared(original.id),
+        imageId = pendingResult?.imageId;
       assert.ok(imageId);
       assert.equal(original.status, 'running');
       assert.equal(f.generations(), 1);
-      assert.deepEqual(
-        await readFile(path.join(f.dataDir, original.resultPending.file + '.part')),
-        png,
+      assert.deepEqual(await readFile(path.join(f.dataDir, pendingResult.file + '.part')), png);
+      assert.equal(
+        f.audit.prepare("SELECT COUNT(*) AS n FROM charges WHERE status!='reserved'").get().n,
+        0,
       );
-      assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, 0);
       const nuxtPid = f.nuxt.child().pid;
       await f.executor.stop();
       let settledState;
@@ -1196,24 +1196,25 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
           accepted.requestId,
         );
         const saved = f.jobs()[0];
-        assert.equal(saved.resultPending, undefined);
+        assert.equal(f.prepared(saved.id), undefined);
         assert.equal(saved.imageId, imageId);
-        const charge = JSON.parse(
-          f.audit
-            .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?')
-            .get(accepted.id).charge,
-        );
+        const charge = f.charge(accepted.id);
         assert.equal(charge.status, 'settled');
         assert.ok(charge.fixed > 0);
         const counts = [
-          'jobs',
-          'images',
+          'generation_jobs',
+          'artifacts',
           'generation_requests',
-          'generation_idempotency',
-          'fair_quota_settlements',
-          'ledger',
+          'idempotency_keys',
+          'charges',
         ].map((table) => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
-        const current = { counts, charge, imageId: saved.imageId };
+        // 启动观察属于系统事实；原成员的预扣、结算与产物事实必须逐字不再追加。
+        const events = f.audit
+          .prepare(
+            'SELECT event_id,event_type,payload FROM domain_events WHERE member_id=? ORDER BY commit_seq,event_index',
+          )
+          .all(saved.memberId);
+        const current = { counts, events, charge, imageId: saved.imageId };
         if (settledState) {
           assert.deepEqual(current, settledState);
         } else {
@@ -1233,12 +1234,14 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       const f = await fixture(sub, nuxtEntry, { discord: true });
       const memberCall = (route, member = 0, headers = {}) =>
         f.request(route, { member, headers: { cookie: f.cookie(member), ...headers } });
-      const ledger = () => f.audit.prepare('SELECT id, data FROM ledger ORDER BY id').all();
-      const user = () =>
-        JSON.parse(
-          f.audit.prepare('SELECT data FROM users WHERE id = ?').get(f.members[0].user_id).data,
-        );
-      const originalLedger = ledger(),
+      const financialFacts = () =>
+        f.audit
+          .prepare(
+            "SELECT event_id,event_type,payload FROM domain_events WHERE stream_kind IN ('account','sharing') ORDER BY commit_seq,event_index",
+          )
+          .all();
+      const user = () => f.member(f.members[0].user_id);
+      const originalFinancialFacts = financialFacts(),
         originalVersion = user().memberAuth.version;
       const originalSessions = f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n;
       const options = json(await f.request('/api/member/login-options'));
@@ -1280,11 +1283,12 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n,
         originalSessions,
       );
-      assert.deepEqual(ledger(), originalLedger);
+      assert.deepEqual(financialFacts(), originalFinancialFacts);
 
       const nuxtPid = f.nuxt.child().pid;
       await f.executor.stop();
       await f.startExecutor();
+      const restartedFinancialFacts = financialFacts();
       f.discordState.status = 200;
       f.discordState.gate = deferred();
       const successBatch = f.batchQueries(routes);
@@ -1320,7 +1324,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       assert.equal(history.jobs.length, 1);
       assert.ok(!JSON.stringify(history).includes(f.members[0].api_key));
       assert.equal((await f.request('/api/member/history')).status, 401);
-      assert.deepEqual(ledger(), originalLedger);
+      assert.deepEqual(financialFacts(), restartedFinancialFacts);
       assert.equal(
         (await f.request('/api/member/me')).status,
         401,
@@ -1391,7 +1395,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         (await memberCall('/api/member/me', 0, { origin: 'https://untrusted.example' })).status,
         403,
       );
-      assert.deepEqual(ledger(), originalLedger);
+      assert.deepEqual(financialFacts(), restartedFinancialFacts);
 
       const accepted = json(
         await f.request('/api/jobs', { body: jobBody('synthetic query ownership') }),
@@ -1460,7 +1464,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       const cookie = setCookie[0].split(';')[0],
         headers = { cookie };
       const saved = f.audit
-        .prepare('SELECT created_at, expires_at FROM member_sessions WHERE user_id = ?')
+        .prepare('SELECT created_at, expires_at FROM member_sessions WHERE member_id = ?')
         .get(f.members[0].user_id);
       assert.equal(saved.expires_at - saved.created_at, 7 * 86400000);
       assert.equal(login.expiresAt, saved.expires_at);
@@ -1581,7 +1585,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       assert.equal(me.username, f.members[1].username);
       const ownerSession = f.audit
         .prepare(
-          'SELECT created_at, expires_at FROM member_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+          'SELECT created_at, expires_at FROM member_sessions WHERE member_id = ? ORDER BY created_at DESC LIMIT 1',
         )
         .get(f.members[1].user_id);
       assert.equal(ownerSession.expires_at - ownerSession.created_at, 24 * 3600000);
@@ -1655,13 +1659,22 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       };
       const ownerPath = '/api/member/owner/member-management',
         adminPath = '/api/admin/member-management';
-      const fair = () =>
-        JSON.parse(
-          f.audit.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value,
-        ).fairQuota;
-      const ledger = () => f.audit.prepare('SELECT id, data FROM ledger ORDER BY id').all();
+      const fair = () => f.quotaConfiguration();
+      const policyHistory = () =>
+        f.audit
+          .prepare(
+            "SELECT event_id FROM domain_events WHERE event_type='FallbackPolicyChanged' ORDER BY commit_seq,event_index",
+          )
+          .all();
+      const financialFacts = () =>
+        f.audit
+          .prepare(
+            "SELECT event_id,event_type,payload FROM domain_events WHERE stream_kind IN ('account','sharing') ORDER BY commit_seq,event_index",
+          )
+          .all();
       const initialFair = fair(),
-        initialLedger = ledger();
+        initialFinancialFacts = financialFacts(),
+        policyHistoryBefore = policyHistory().length;
       const policy = { action: 'fallback-policy', enabled: true };
       assert.equal((await f.request(ownerPath, { body: policy })).status, 401);
       assert.equal(
@@ -1724,7 +1737,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         409,
       );
       assert.deepEqual(fair(), initialFair);
-      assert.deepEqual(ledger(), initialLedger);
+      assert.deepEqual(financialFacts(), initialFinancialFacts);
 
       const rawPolicy = '{\n  "action": "fallback-policy",\n  "enabled": true\n}\n';
       assert.equal(
@@ -1733,7 +1746,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         true,
       );
       assert.equal(fair().autoAnlasFallback, true);
-      assert.equal(fair().policyHistory.length, (initialFair.policyHistory?.length || 0) + 1);
+      assert.equal(policyHistory().length, policyHistoryBefore + 1);
       const policyObservation = f.observations.findLast((item) => item.path === ownerPath);
       assert.deepEqual(policyObservation.body, Buffer.from(rawPolicy));
       assert.equal(policyObservation.headers.cookie, ownerHeaders.cookie);
@@ -1742,7 +1755,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       const countBeforeLoss = f.observations.filter(
         (item) => item.path === adminPath && item.method === 'POST',
       ).length;
-      const policyCount = fair().policyHistory.length;
+      const policyCount = policyHistory().length;
       f.dropMutation(adminPath);
       const lost = await f.request(adminPath, {
         body: { action: 'fallback-policy', enabled: false },
@@ -1755,15 +1768,14 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         countBeforeLoss + 1,
       );
       assert.equal(fair().autoAnlasFallback, false);
-      assert.equal(fair().policyHistory.length, policyCount + 1);
+      assert.equal(policyHistory().length, policyCount + 1);
       assert.equal(
         json(await f.request(adminPath, { body: policy, headers: adminHeaders })).autoAnlasFallback,
         true,
       );
 
-      const accountId = initialFair.boundAccountId;
-      const account = () =>
-        JSON.parse(f.audit.prepare('SELECT data FROM accounts WHERE id = ?').get(accountId).data);
+      const accountId = f.accountId;
+      const account = () => f.account(accountId);
       const quotaCalls = f.quotaCalls();
       assert.equal(
         json(
@@ -1827,11 +1839,14 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       assert.equal(account().name, name);
       const configured = json(
         await f.request('/api/admin/fair-quota', {
-          body: { memberIds: initialFair.members },
+          body: { memberIds: initialFair.groups.flatMap((group) => group.members) },
           headers: adminHeaders,
         }),
       );
-      assert.deepEqual(configured.members, initialFair.members);
+      assert.deepEqual(
+        configured.members,
+        initialFair.groups.flatMap((group) => group.members),
+      );
       const disabledToken = 'pst-synthetic-disabled-management-account';
       f.forbiddenResponseSecrets.push(disabledToken);
       const added = json(
@@ -1843,7 +1858,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       );
       assert.equal(added.enabled, false);
       assert.notEqual(added.id, accountId);
-      assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM accounts').get().n, 2);
+      assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM upstream_accounts').get().n, 2);
       for (const observation of f.observations) {
         if (observation.response) {
           // This existing private admin response explicitly reveals PST; owner and public DTOs never do.
@@ -1920,11 +1935,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       };
       const counts = () =>
         [
-          'jobs',
+          'generation_jobs',
           'generation_requests',
-          'generation_idempotency',
-          'fair_quota_settlements',
-          'ledger',
+          'idempotency_keys',
+          'charges',
+          'domain_events',
         ].map((table) => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
       const beforeUnsupported = counts();
       for (const [route, body] of [
@@ -1993,7 +2008,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         seed = f.upstreamCalls[0].body.parameters.seed;
       assert.equal(f.upstreamCalls[0].body.parameters.image_format, 'webp');
       assert.ok(Number.isInteger(seed) && seed >= 0);
-      assert.equal(f.jobs()[0].request.seed, seed);
+      assert.equal(f.jobs()[0].seed, seed);
       for (const [accept, asJson] of [
         ['application/json', true],
         ['application/zip;q=0.2, application/json; charset=utf-8;q=0.9', true],
@@ -2391,7 +2406,8 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
     async (sub) => {
       const f = await fixture(sub, nuxtEntry, { discord: true }),
         headers = { cookie: f.cookie(2) },
-        base = '/api/member/generation';
+        base = '/api/member/generation',
+        initialRequests = f.audit.prepare('SELECT COUNT(*) n FROM generation_requests').get().n;
       const requestBody = { operation: 'generate', ...nativeBody('synthetic lost member receipt') };
       const padded = (value) =>
         Buffer.concat([Buffer.from(JSON.stringify(value)), Buffer.alloc(3 * 1024 * 1024, 32)]);
@@ -2450,7 +2466,10 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         assert.equal(observation.headers['idempotency-key'], 'member-lost-receipt');
       }
       assert.equal(f.generations(), 1);
-      assert.equal(f.audit.prepare('SELECT COUNT(*) n FROM generation_requests').get().n, 1);
+      assert.equal(
+        f.audit.prepare('SELECT COUNT(*) n FROM generation_requests').get().n,
+        initialRequests + 1,
+      );
       assert.equal(
         f.audit
           .prepare("SELECT COUNT(*) n FROM domain_events WHERE event_type = 'RequestAccepted'")
@@ -2637,10 +2656,10 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
       }
       await until(
         () => {
-          const account = JSON.parse(
-            f.audit.prepare('SELECT data FROM accounts LIMIT 1').get().data,
-          );
-          return !account.cooldownUntil || Date.parse(account.cooldownUntil) <= Date.now();
+          const account = f.audit
+            .prepare('SELECT cooldown_until AS cooldownUntil FROM upstream_accounts WHERE id=?')
+            .get(f.accountId);
+          return !account.cooldownUntil || account.cooldownUntil <= Date.now();
         },
         15000,
         'successful-generation cooldown did not elapse before the direct success sample',
@@ -2729,15 +2748,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
           assert.equal(frames[0].samp_ix, 0);
           assert.deepEqual(Buffer.from(frames[0].image, 'base64'), png);
           assert.equal(
-            f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n,
+            f.audit.prepare("SELECT COUNT(*) AS n FROM charges WHERE status!='reserved'").get().n,
             index,
             'preview cannot settle the held generation',
           );
-          const payload = JSON.parse(
-            f.audit
-              .prepare('SELECT payload FROM generation_requests WHERE id = ?')
-              .get(accepted.requestId).payload,
-          );
+          const payload = f.input(accepted.id);
           assert.equal(Object.hasOwn(payload.nativeParameters, 'stream'), false);
         } else {
           assert.equal(received, undefined);
@@ -2759,18 +2774,14 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
           await f.startNuxt();
         }
         const beforeReplay = [
-          'jobs',
-          'images',
-          'generation_idempotency',
-          'fair_quota_settlements',
-          'ledger',
+          'generation_jobs',
+          'artifacts',
+          'idempotency_keys',
+          'charges',
+          'domain_events',
         ].map((table) => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
         if (streaming) {
-          const charge = JSON.parse(
-            f.audit
-              .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?')
-              .get(accepted.id).charge,
-          );
+          const charge = f.charge(accepted.id);
           assert.equal(charge.resource, 'anlas');
           assert.equal(charge.status, 'settled');
           assert.ok(charge.fixed > 0);
@@ -2798,11 +2809,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifec
         assert.equal(f.generations(), index + 1);
         assert.equal(f.jobs().length, index + 1);
         assert.equal(
-          f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n,
+          f.audit.prepare("SELECT COUNT(*) AS n FROM charges WHERE status!='reserved'").get().n,
           index + 1,
         );
         assert.deepEqual(
-          ['jobs', 'images', 'generation_idempotency', 'fair_quota_settlements', 'ledger'].map(
+          ['generation_jobs', 'artifacts', 'idempotency_keys', 'charges', 'domain_events'].map(
             (table) => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
           ),
           beforeReplay,
