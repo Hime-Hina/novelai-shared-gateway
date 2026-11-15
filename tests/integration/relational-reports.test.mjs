@@ -19,7 +19,10 @@ import { RelationalInputStore } from '../../server/storage/relational-input-stor
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { summarizeOwnerUsage } from '../../server/members/owner-operations.ts';
 import { readActivityHeatmap } from '../../server/reports/activity-heatmap.ts';
-import { publicGenerationRequest } from '../../server/generation/request-queries.ts';
+import {
+  publicGenerationRequest,
+  publicRelationalJob,
+} from '../../server/generation/request-queries.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
@@ -791,7 +794,7 @@ test('OpeningJob原始displayCost保留0和正数且不借收费，未知仍NULL
   assert.equal(dto(requests, inputs, 'display-zero-0').cost, 0);
   assert.equal(dto(requests, inputs, 'display-positive-0').cost, 3.5);
   const originalPrepare = f.db.prepare.bind(f.db);
-  t.mock.method(f.db, 'prepare', (sql) => {
+  const thinPrepare = t.mock.method(f.db, 'prepare', (sql) => {
     assert.doesNotMatch(
       sql,
       /\bFROM\s+(?:generation_inputs|input_assets)\b/i,
@@ -805,7 +808,7 @@ test('OpeningJob原始displayCost保留0和正数且不借收费，未知仍NULL
   assert.equal(known.generationStats1m.total, 1);
   assert.equal(bucket.done, 1);
   assert.equal(bucket.credits, 3.5);
-  f.db.prepare = originalPrepare;
+  thinPrepare.mock.restore();
   openingJob(f, 'display-unknown', { status: 'done', completedAt: NOW + 3 });
   assert.equal(dto(requests, inputs, 'display-unknown-0').cost, null);
   const before = databaseState(f.db),
