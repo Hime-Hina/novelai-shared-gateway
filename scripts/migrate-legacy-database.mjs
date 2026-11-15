@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { lstat, mkdir, readFile, writeFile, open } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -1274,12 +1275,23 @@ export async function materializeSelectedLocalOriginal(
   if (hash(rowBytes) !== pointer.fileSha256) {
     reject();
   }
-  const rowLines = new TextDecoder('utf-8', { fatal: true }).decode(rowBytes).split('\n'),
-    line = rowLines[pointer.line - 1];
-  if (typeof line !== 'string' || hash(Buffer.from(line)) !== pointer.lineSha256) {
+  let start = 0,
+    end = -1;
+  for (let index = 1; index <= pointer.line; index++) {
+    end = rowBytes.indexOf(10, start);
+    if (end < 0) {
+      reject();
+    }
+    if (index !== pointer.line) {
+      start = end + 1;
+    }
+  }
+  // 选定 pointer 绑定原行完整 bytes（含其终止 LF）；不 trim、重编码或改用另一摘要。
+  const line = rowBytes.subarray(start, end + 1);
+  if (hash(line) !== pointer.lineSha256) {
     reject();
   }
-  const original = JSON.parse(line),
+  const original = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line)),
     descriptor = descriptors.find((row) => row.id === original.id),
     input = references.inputsByArtifact.get(original.id);
   if (
@@ -1416,92 +1428,98 @@ function selectedPrivateRows(source, configuration, effectiveAt) {
 }
 
 export async function migrateLegacyDatabase(options) {
-  const at = Date.now();
-  if (
-    !options ||
-    !/^[a-f0-9]{64}$/.test(options.sourceSha256 ?? '') ||
-    !/^[a-f0-9]{64}$/.test(options.auditSha256 ?? '') ||
-    !/^[1-9][0-9]*$/.test(options.cut ?? '')
-  ) {
-    reject();
-  }
-  const inventory = inventoryLegacyDatabase(options.source, options.sourceCommit);
-  if (
-    inventory.source.databaseSha256 !== options.sourceSha256 ||
-    inventory.cut.lastCommitSeq !== options.cut ||
-    !inventory.integrity ||
-    inventory.foreignKeyViolations ||
-    !inventory.cut.openingComplete ||
-    Object.entries(inventory.events).some(
-      ([key, value]) => key !== 'byType' && typeof value === 'number' && value !== 0,
-    ) ||
-    Object.values(inventory.inputs).some((value) => value !== 0)
-  ) {
-    reject();
-  }
-  const binding = await readRetainedArchiveBinding(
-    options.source,
-    options.audit,
-    options.artifacts,
-    options.auditSha256,
-  );
-  if (binding.format !== 'legacy-export' || binding.finalCommitSeq !== options.cut) {
-    reject();
-  }
-  const audit = JSON.parse(await readFile(options.audit, 'utf8'));
-  if (
-    audit.sourceCommit !== options.sourceCommit ||
-    audit.openingSha256 !== inventory.cut.openingSha256 ||
-    audit.protectedInputs !== inventory.tables.generation_requests.rows ||
-    audit.protectedInputBytes !== inventory.tables.generation_requests.logicalContentBytes ||
-    audit.contexts !== inventory.tables.generation_contexts.rows ||
-    audit.artifactInputs !== inventory.tables.artifact_inputs.rows ||
-    audit.diagnostics !== inventory.tables.generation_diagnostics.rows ||
-    audit.artifacts !== inventory.tables.images.rows ||
-    audit.commits !== inventory.tables.event_commits.rows
-  ) {
-    reject();
-  }
-  const inputBytes = await readFile(path.join(path.dirname(options.artifacts), 'inputs.jsonl')),
-    tuple = audit.exports.inputs,
-    inputLines = new TextDecoder('utf-8', { fatal: true }).decode(inputBytes).split('\n');
-  if (inputLines.at(-1) !== '') {
-    reject();
-  }
-  inputLines.pop();
-  if (
-    tuple.basename !== 'inputs.jsonl' ||
-    tuple.byteLength !== inputBytes.length ||
-    tuple.rowCount !== inputLines.length ||
-    tuple.sha256 !== hash(inputBytes)
-  ) {
-    reject();
-  }
-  for (const line of inputLines) {
-    JSON.parse(line);
-  }
-  const descriptors = (await readFile(options.artifacts, 'utf8'))
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
-  const cutConfiguration = options.cutConfig
-    ? await readLegacyCutConfiguration(options.cutConfig, options.cutConfigSha256, options, at)
-    : null;
-  const output = path.resolve(options.output);
-  await mkdir(output, { mode: 0o700 });
-  const source = new Database(path.resolve(options.source), {
-      readonly: true,
-      fileMustExist: true,
-    }),
-    references = migrationReferences(options.sourceSha256),
-    findings = [];
-  let target,
-    financial,
-    privateResult = null,
-    keyDecisions = [];
+  let phase = 'arguments';
   try {
-    source.pragma('query_only=ON');
-    const prepared = source.transaction(() => {
+    const at = Date.now();
+    if (
+      !options ||
+      !/^[a-f0-9]{64}$/.test(options.sourceSha256 ?? '') ||
+      !/^[a-f0-9]{64}$/.test(options.auditSha256 ?? '') ||
+      !/^[1-9][0-9]*$/.test(options.cut ?? '')
+    ) {
+      reject();
+    }
+    phase = 'source-inventory';
+    const inventory = inventoryLegacyDatabase(options.source, options.sourceCommit);
+    if (
+      inventory.source.databaseSha256 !== options.sourceSha256 ||
+      inventory.cut.lastCommitSeq !== options.cut ||
+      !inventory.integrity ||
+      inventory.foreignKeyViolations ||
+      !inventory.cut.openingComplete ||
+      Object.entries(inventory.events).some(
+        ([key, value]) => key !== 'byType' && typeof value === 'number' && value !== 0,
+      ) ||
+      Object.values(inventory.inputs).some((value) => value !== 0)
+    ) {
+      reject();
+    }
+    phase = 'archive-proof';
+    const binding = await readRetainedArchiveBinding(
+      options.source,
+      options.audit,
+      options.artifacts,
+      options.auditSha256,
+    );
+    if (binding.format !== 'legacy-export' || binding.finalCommitSeq !== options.cut) {
+      reject();
+    }
+    const audit = JSON.parse(await readFile(options.audit, 'utf8'));
+    if (
+      audit.sourceCommit !== options.sourceCommit ||
+      audit.openingSha256 !== inventory.cut.openingSha256 ||
+      audit.protectedInputs !== inventory.tables.generation_requests.rows ||
+      audit.protectedInputBytes !== inventory.tables.generation_requests.logicalContentBytes ||
+      audit.contexts !== inventory.tables.generation_contexts.rows ||
+      audit.artifactInputs !== inventory.tables.artifact_inputs.rows ||
+      audit.diagnostics !== inventory.tables.generation_diagnostics.rows ||
+      audit.artifacts !== inventory.tables.images.rows ||
+      audit.commits !== inventory.tables.event_commits.rows
+    ) {
+      reject();
+    }
+    const inputBytes = await readFile(path.join(path.dirname(options.artifacts), 'inputs.jsonl')),
+      tuple = audit.exports.inputs,
+      inputLines = new TextDecoder('utf-8', { fatal: true }).decode(inputBytes).split('\n');
+    if (inputLines.at(-1) !== '') {
+      reject();
+    }
+    inputLines.pop();
+    if (
+      tuple.basename !== 'inputs.jsonl' ||
+      tuple.byteLength !== inputBytes.length ||
+      tuple.rowCount !== inputLines.length ||
+      tuple.sha256 !== hash(inputBytes)
+    ) {
+      reject();
+    }
+    for (const line of inputLines) {
+      JSON.parse(line);
+    }
+    const descriptors = (await readFile(options.artifacts, 'utf8'))
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    phase = 'cut-configuration';
+    const cutConfiguration = options.cutConfig
+      ? await readLegacyCutConfiguration(options.cutConfig, options.cutConfigSha256, options, at)
+      : null;
+    const output = path.resolve(options.output);
+    await mkdir(output, { mode: 0o700 });
+    const source = new Database(path.resolve(options.source), {
+        readonly: true,
+        fileMustExist: true,
+      }),
+      references = migrationReferences(options.sourceSha256),
+      findings = [];
+    let target,
+      financial,
+      privateResult = null,
+      keyDecisions = [];
+    try {
+      source.pragma('query_only=ON');
+      phase = 'public-source-plan';
+      const prepared = source.transaction(() => {
         const members = mapLegacyMembers(source, references),
           accounts = mapLegacyAccounts(source, references),
           sharing = mapLegacySharing(source, references);
@@ -1510,153 +1528,166 @@ export async function migrateLegacyDatabase(options) {
         // Build proven stable input references before the selected physical copy, with no target SQL or upload.
         planLegacyArtifacts(source, references, descriptors, cutConfiguration);
         return { members, accounts, sharing, requests };
-      })(),
-      localMaterializations = await materializeSelectedLocalOriginal(
-        cutConfiguration,
-        descriptors,
-        references,
-        output,
-      ),
-      inputManifest = {
-        format: 'legacy-B-inputs-v1',
-        converterSha256: hash(await readFile(new URL(import.meta.url))),
-        sourceSha256: options.sourceSha256,
-        cut: options.cut,
-        sourceCommit: options.sourceCommit,
-        auditSha256: options.auditSha256,
-        cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
-        effectiveAt: at,
-        localMaterializations: [...localMaterializations.values()],
-      },
-      manifestBytes = Buffer.from(canonicalJson(inputManifest)),
-      manifestSha256 = hash(manifestBytes);
-    await writeFile(path.join(output, 'migration-inputs.private.json'), manifestBytes, {
-      flag: 'wx',
-      mode: 0o600,
-    });
-    target = new Database(path.join(output, 'library.sqlite'));
-    initializeRelationalStorage(target, `B:${options.sourceSha256}:${options.cut}`);
-    const cutoff = source
-        .prepare('SELECT recorded_at FROM event_commits WHERE commit_seq=?')
-        .get(BigInt(options.cut)),
-      cutoffAt = time(cutoff?.recorded_at);
-    if (cutoffAt === null) {
-      reject();
-    }
-    source.transaction(() =>
-      target.transaction(() => {
-        append(target, references, at, 'source', [
-          {
-            eventId: references.eventId('ImportSourceRegistered', references.sourceId),
-            eventType: 'ImportSourceRegistered',
-            payload: {
-              sourceId: references.sourceId,
-              sourceSha256: options.sourceSha256,
-              sourceCommit: options.sourceCommit,
-              cutoffSeq: options.cut,
-              cutoffAt,
-              manifestSha256,
-              route: 'B',
-            },
-          },
-        ]);
-        appendLegacyConfiguration(source, target, references, at, findings);
-        const { members, accounts, sharing, requests } = prepared;
-        if (members.facts.length) {
-          append(target, references, at, 'members', members.facts);
-        }
-
-        if (accounts.facts.length) {
-          append(target, references, at, 'accounts', accounts.facts);
-        }
-
-        if (sharing.facts.length) {
-          append(target, references, at, 'sharing', sharing.facts);
-        }
-        const artifacts = planLegacyArtifacts(
-          source,
-          references,
-          descriptors,
+      })();
+      phase = 'local-materialization';
+      const localMaterializations = await materializeSelectedLocalOriginal(
           cutConfiguration,
-          localMaterializations,
-        );
-        findings.push(...artifacts.findings);
-        financial = mapLegacyFinance(source, references);
-        findings.push(...financial.findings);
-        const baseline = financial.facts.filter(
-          (fact) =>
-            fact.eventType !== 'OpeningAttemptRecorded' &&
-            !(fact.eventType === 'OpeningChargeRecorded' && fact.payload.jobId !== null),
-        );
-        if (baseline.length) {
-          append(target, references, at, 'financial', baseline);
-        }
-        appendLegacyArtifactInputs(target, references, at, artifacts);
-        const artifactBaseline = artifacts.facts.filter(
-          (fact) =>
-            fact.eventType === 'OpeningStorageTargetRecorded' ||
-            (fact.eventType === 'OpeningArtifactRecorded' &&
-              fact.payload.originalAttemptId === null),
-        );
-        if (artifactBaseline.length) {
-          append(target, references, at, 'artifacts', artifactBaseline);
-        }
-        for (const request of requests) {
-          appendLegacyRequest(target, references, at, request, financial, artifacts);
-        }
-        const replicas = artifacts.facts.filter(
-          (fact) => fact.eventType === 'OpeningReplicaRecorded',
-        );
-        if (replicas.length) {
-          append(target, references, at, 'replicas', replicas);
-        }
-        assertLegacyFinanceProjection(target, financial.expected);
-        keyDecisions = appendLegacyKeys(source, target, references, at, findings);
-        if (cutConfiguration) {
-          privateResult = migrateLegacyPrivate(
-            target,
-            selectedPrivateRows(source, cutConfiguration, at),
+          descriptors,
+          references,
+          output,
+        ),
+        inputManifest = {
+          format: 'legacy-B-inputs-v1',
+          converterSha256: hash(await readFile(new URL(import.meta.url))),
+          sourceSha256: options.sourceSha256,
+          cut: options.cut,
+          sourceCommit: options.sourceCommit,
+          auditSha256: options.auditSha256,
+          cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
+          effectiveAt: at,
+          localMaterializations: [...localMaterializations.values()],
+        },
+        manifestBytes = Buffer.from(canonicalJson(inputManifest)),
+        manifestSha256 = hash(manifestBytes);
+      await writeFile(path.join(output, 'migration-inputs.private.json'), manifestBytes, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      phase = 'public-opening';
+      target = new Database(path.join(output, 'library.sqlite'));
+      initializeRelationalStorage(target, `B:${options.sourceSha256}:${options.cut}`);
+      const cutoff = source
+          .prepare('SELECT recorded_at FROM event_commits WHERE commit_seq=?')
+          .get(BigInt(options.cut)),
+        cutoffAt = time(cutoff?.recorded_at);
+      if (cutoffAt === null) {
+        reject();
+      }
+      source.transaction(() =>
+        target.transaction(() => {
+          append(target, references, at, 'source', [
+            {
+              eventId: references.eventId('ImportSourceRegistered', references.sourceId),
+              eventType: 'ImportSourceRegistered',
+              payload: {
+                sourceId: references.sourceId,
+                sourceSha256: options.sourceSha256,
+                sourceCommit: options.sourceCommit,
+                cutoffSeq: options.cut,
+                cutoffAt,
+                manifestSha256,
+                route: 'B',
+              },
+            },
+          ]);
+          appendLegacyConfiguration(source, target, references, at, findings);
+          const { members, accounts, sharing, requests } = prepared;
+          if (members.facts.length) {
+            append(target, references, at, 'members', members.facts);
+          }
+
+          if (accounts.facts.length) {
+            append(target, references, at, 'accounts', accounts.facts);
+          }
+
+          if (sharing.facts.length) {
+            append(target, references, at, 'sharing', sharing.facts);
+          }
+          const artifacts = planLegacyArtifacts(
+            source,
             references,
+            descriptors,
+            cutConfiguration,
+            localMaterializations,
           );
-        }
-      })(),
-    )();
-    if (!cutConfiguration) {
-      findings.push({ code: 'SELECTED_PRIVATE_CONFIGURATION_REQUIRED' });
+          findings.push(...artifacts.findings);
+          financial = mapLegacyFinance(source, references);
+          findings.push(...financial.findings);
+          const baseline = financial.facts.filter(
+            (fact) =>
+              fact.eventType !== 'OpeningAttemptRecorded' &&
+              !(fact.eventType === 'OpeningChargeRecorded' && fact.payload.jobId !== null),
+          );
+          if (baseline.length) {
+            append(target, references, at, 'financial', baseline);
+          }
+          appendLegacyArtifactInputs(target, references, at, artifacts);
+          const artifactBaseline = artifacts.facts.filter(
+            (fact) =>
+              fact.eventType === 'OpeningStorageTargetRecorded' ||
+              (fact.eventType === 'OpeningArtifactRecorded' &&
+                fact.payload.originalAttemptId === null),
+          );
+          if (artifactBaseline.length) {
+            append(target, references, at, 'artifacts', artifactBaseline);
+          }
+          for (const request of requests) {
+            appendLegacyRequest(target, references, at, request, financial, artifacts);
+          }
+          const replicas = artifacts.facts.filter(
+            (fact) => fact.eventType === 'OpeningReplicaRecorded',
+          );
+          if (replicas.length) {
+            append(target, references, at, 'replicas', replicas);
+          }
+          assertLegacyFinanceProjection(target, financial.expected);
+          keyDecisions = appendLegacyKeys(source, target, references, at, findings);
+          if (cutConfiguration) {
+            phase = 'private-opening';
+            privateResult = migrateLegacyPrivate(
+              target,
+              selectedPrivateRows(source, cutConfiguration, at),
+              references,
+            );
+          }
+        })(),
+      )();
+      if (!cutConfiguration) {
+        findings.push({ code: 'SELECTED_PRIVATE_CONFIGURATION_REQUIRED' });
+      }
+      findings.push({ code: 'REMAINING_PUBLIC_RECONCILIATION_AND_READY_PENDING' });
+      const report = {
+        status: 'building',
+        sourceSha256: options.sourceSha256,
+        sourceCommit: options.sourceCommit,
+        sourceCut: options.cut,
+        route: 'B',
+        findings,
+        imported: { members: references.memberIds.size, jobs: references.jobIds.size },
+        readyInstalled: false,
+        financial: financial.expected,
+        private: privateResult,
+        keyDecisions,
+        effectiveAt: at,
+        cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
+        inputManifestSha256: manifestSha256,
+      };
+      target.pragma('wal_checkpoint(TRUNCATE)');
+      target.pragma('journal_mode=DELETE');
+      phase = 'source-final-hash';
+      const sidecars = ['-wal', '-shm', '-journal'];
+      if (
+        sidecars.some((suffix) => existsSync(options.source + suffix)) ||
+        (await retainedFileSha256(options.source)) !== options.sourceSha256 ||
+        sidecars.some((suffix) => existsSync(options.source + suffix))
+      ) {
+        reject();
+      }
+      phase = 'report';
+      await writeFile(path.join(output, 'report.private.json'), JSON.stringify(report, null, 2), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      return report;
+    } finally {
+      target?.close();
+      source.close();
     }
-    findings.push({ code: 'REMAINING_PUBLIC_RECONCILIATION_AND_READY_PENDING' });
-    const report = {
-      status: 'building',
-      sourceSha256: options.sourceSha256,
-      sourceCommit: options.sourceCommit,
-      sourceCut: options.cut,
-      route: 'B',
-      findings,
-      imported: { members: references.memberIds.size, jobs: references.jobIds.size },
-      readyInstalled: false,
-      financial: financial.expected,
-      private: privateResult,
-      keyDecisions,
-      effectiveAt: at,
-      cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
-      inputManifestSha256: manifestSha256,
-    };
-    target.pragma('wal_checkpoint(TRUNCATE)');
-    target.pragma('journal_mode=DELETE');
-    if (
-      inventoryLegacyDatabase(options.source, options.sourceCommit).source.databaseSha256 !==
-      options.sourceSha256
-    ) {
-      reject();
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      Object.defineProperty(error, 'migrationPhase', { value: phase, configurable: true });
     }
-    await writeFile(path.join(output, 'report.private.json'), JSON.stringify(report, null, 2), {
-      flag: 'wx',
-      mode: 0o600,
-    });
-    return report;
-  } finally {
-    target?.close();
-    source.close();
+    throw error;
   }
 }
 
@@ -1695,10 +1726,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
       }),
     );
     process.exitCode = result.readyInstalled ? 0 : 2;
-  } catch {
-    console.error(
-      'Legacy migration failed; source is unchanged and no ready target was installed.',
-    );
+  } catch (error) {
+    const phase = typeof error?.migrationPhase === 'string' ? error.migrationPhase : 'arguments';
+    console.error(`Legacy migration failed at ${phase}; no ready target was installed.`);
     process.exitCode = 1;
   }
 }

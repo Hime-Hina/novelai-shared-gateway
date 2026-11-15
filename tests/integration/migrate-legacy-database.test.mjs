@@ -806,7 +806,7 @@ test('所选原图实复制到新owned target后才产生Local proof；manifest�
         file: f.options.artifacts,
         fileSha256: hash(rowBytes),
         line: 1,
-        lineSha256: hash(rowLine),
+        lineSha256: hash(rowLine + '\n'),
       },
     },
     { file, bytes } = await selectedCutConfiguration(f, localOriginal),
@@ -846,6 +846,23 @@ test('所选原图实复制到新owned target后才产生Local proof；manifest�
   } finally {
     target.close();
   }
+  const bad = JSON.parse(bytes);
+  bad.localOriginal.sourceArtifactRowPointer.lineSha256 = hash(rowLine);
+  const badFile = path.join(f.directory, 'wrong-nonterminated-line-config.json'),
+    badBytes = Buffer.from(JSON.stringify(bad));
+  await writeFile(badFile, badBytes, { flag: 'wx' });
+  await assert.rejects(
+    migrateLegacyDatabase({
+      ...f.options,
+      output: f.options.output + '-bad-line',
+      cutConfig: badFile,
+      cutConfigSha256: hash(badBytes),
+    }),
+    (error) => error.migrationPhase === 'local-materialization',
+  );
+  await assert.rejects(readFile(path.join(f.options.output + '-bad-line', 'library.sqlite')), {
+    code: 'ENOENT',
+  });
   assert.deepEqual(await readFile(selectedFile), original);
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
