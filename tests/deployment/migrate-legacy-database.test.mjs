@@ -16,7 +16,11 @@ import {
 } from '../../server/protocols/native-image.ts';
 import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
-import { createGenerationAdmission, generationIntent } from '../../server/generation/admission.ts';
+import {
+  createGenerationAdmission,
+  generationIntent,
+  generationIdempotencyKeyHash,
+} from '../../server/generation/admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
 import { cancelGenerationRequestCommand } from '../../server/generation/execution.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
@@ -105,7 +109,7 @@ async function fixture(t, status = 'failed', parent = null) {
         operation: 'generate',
         randomSeed: false,
         noCache: true,
-        context: () => ({ native: parent.native }),
+        context: () => parent.context ?? { native: parent.native },
       }),
     });
     await cancelGenerationRequestCommand(store, originalReceipt.requestId, 'member', {
@@ -393,6 +397,56 @@ test('真实旧parent的两个child沿原定义导入唯一complete输入/contex
         },
       ],
     );
+    assert.equal(relationalPrivateStateEmpty(target), true);
+    const opening = inputs.readOpeningGenerationIdempotency(
+      'member',
+      'generate',
+      generationIdempotencyKeyHash('synthetic-original-key'),
+    );
+    assert.equal(opening.mapping.resolution, 'live');
+    assert.equal(opening.event.payload.originalRequestId, f.originalReceipt.requestId);
+    assert.equal(typeof opening.event.payload.originalCommandId, 'string');
+    assert.deepEqual(opening.receipt, {
+      requestId: f.originalReceipt.requestId,
+      jobIds: f.originalReceipt.jobIds,
+    });
+  } finally {
+    target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('原已保存完整参数但首次定义缺失的旧键保留原job/receipt来源，明确archived而不变live', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'old unproven intent',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 1024, height: 1024, steps: 23, seed: 73, n_samples: 2 },
+      },
+      native,
+    ),
+    f = await fixture(t, 'failed', { request, native, context: {} }),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    const inputs = new RelationalInputStore(target),
+      key = inputs.readOpeningGenerationIdempotency(
+        'member',
+        'generate',
+        generationIdempotencyKeyHash('synthetic-original-key'),
+      );
+    assert.equal(key.mapping.resolution, 'archived');
+    assert.equal(key.event.payload.originalJobId, f.originalReceipt.jobIds[0]);
+    assert.equal(key.event.payload.originalRequestId, f.originalReceipt.requestId);
+    assert.equal(key.mapping.contextId, null);
+    assert.equal(key.event.payload.seedMode, null);
+    assert.equal(key.event.payload.noCache, null);
+    assert.equal(
+      target.prepare('SELECT completeness FROM generation_inputs').get().completeness,
+      'partial',
+    );
+    assert.equal(result.readyInstalled, false);
     assert.equal(relationalPrivateStateEmpty(target), true);
   } finally {
     target.close();

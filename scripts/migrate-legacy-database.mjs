@@ -633,6 +633,104 @@ function appendLegacyRequests(source, target, references, at, findings) {
   }
 }
 
+function appendLegacyKeys(source, target, references, at, findings) {
+  const registration = source.prepare(`SELECT e.event_id,e.actor_id,e.actor_kind,e.payload,
+      c.command_id,c.receipt FROM domain_events e JOIN event_commits c USING(commit_seq)
+    WHERE e.event_type IN ('RequestAccepted','RequestAliasRegistered')
+      AND json_extract(e.payload,'$.idempotency.memberId')=?
+      AND json_extract(e.payload,'$.idempotency.operation')=?
+      AND json_extract(e.payload,'$.idempotency.keyHash')=? ORDER BY e.commit_seq,e.event_index LIMIT 2`);
+  for (const row of source
+    .prepare('SELECT * FROM generation_idempotency ORDER BY member_id,operation,key_hash')
+    .iterate()) {
+    const originalId = canonicalJson([row.member_id, row.operation, row.key_hash]),
+      registered = registration.all(row.member_id, row.operation, row.key_hash),
+      record = registered.length === 1 ? registered[0] : null,
+      saved = record ? JSON.parse(record.payload).idempotency : null,
+      actual =
+        record &&
+        record.actor_kind === 'member' &&
+        record.actor_id === row.member_id &&
+        saved.fingerprint === row.fingerprint &&
+        saved.jobId === row.job_id &&
+        (saved.requestId ?? null) === row.request_id
+          ? record
+          : null,
+      group = row.request_id === null ? null : references.requestProofs.get(row.request_id),
+      entry = group?.proofs.find(
+        ({ mapping }) =>
+          mapping.member_id === row.member_id &&
+          mapping.operation === row.operation &&
+          mapping.key_hash === row.key_hash,
+      ),
+      receipt = actual ? JSON.parse(actual.receipt) : null,
+      createdAt = time(row.created_at);
+    if (
+      createdAt === null ||
+      !/^[a-f0-9]{64}$/.test(row.key_hash) ||
+      !/^[a-f0-9]{64}$/.test(row.fingerprint)
+    ) {
+      findings.push({ code: 'KEY_SOURCE_FIELDS_UNSUPPORTED', originalId });
+      continue;
+    }
+    let live = Boolean(
+      actual &&
+      group?.contextId &&
+      entry?.proof.prepared &&
+      receipt?.requestId === row.request_id &&
+      Array.isArray(receipt.jobIds) &&
+      receipt.jobIds.length === entry.proof.prepared.sampleCount &&
+      receipt.jobIds[0] === row.job_id &&
+      receipt.jobIds.every((id) => references.jobIds.has(id)),
+    );
+    const jobs = group
+      ? target
+          .prepare('SELECT id FROM generation_jobs WHERE request_id=? ORDER BY sample_index')
+          .all(row.request_id)
+      : [];
+    live &&= canonicalJson(jobs.map(({ id }) => id)) === canonicalJson(receipt.jobIds);
+    const payload = {
+      originalMemberId: row.member_id,
+      operation: row.operation,
+      keyHash: row.key_hash,
+      intentFingerprint: row.fingerprint,
+      originalRequestId: row.request_id,
+      originalJobId: row.job_id,
+      originalCommandId: actual?.command_id ?? null,
+      noCache: entry?.proof.prepared ? entry.proof.noCache : null,
+      seedMode: entry?.proof.prepared ? entry.proof.seedMode : null,
+      requestId: group ? row.request_id : null,
+      commitSeq: null,
+      contextId: live ? group.contextId : null,
+      resolution: live ? 'live' : actual ? 'archived' : 'unavailable',
+      originRef: actual?.event_id ?? originalId,
+      archivedReceipt: live
+        ? {
+            requestId: row.request_id,
+            jobIds: receipt.jobIds,
+            ...(receipt.cacheHit === true ? { cacheHit: true } : {}),
+          }
+        : null,
+      createdAt,
+      origin: references.origin(originalId),
+    };
+    if (entry?.proof.reason && JSON.parse(row.normalization_context).native) {
+      findings.push({ code: entry.proof.reason, originalId });
+    }
+    target.transaction(() =>
+      append(target, references, at, `key:${originalId}`, [
+        {
+          eventId: references.eventId('OpeningIdempotencyRecorded', originalId),
+          eventType: 'OpeningIdempotencyRecorded',
+          streamId: `idempotency:${row.member_id}:${row.operation}:${row.key_hash}`,
+          memberId: row.member_id,
+          payload,
+        },
+      ]),
+    )();
+  }
+}
+
 export async function migrateLegacyDatabase(options) {
   if (
     !options ||
@@ -751,6 +849,7 @@ export async function migrateLegacyDatabase(options) {
       }
     })();
     appendLegacyRequests(source, target, references, at, findings);
+    appendLegacyKeys(source, target, references, at, findings);
     findings.push({ code: 'FINANCIAL_PRIVATE_AND_REMAINING_PUBLIC_MAPPING_PENDING' });
     const report = {
       status: 'building',
