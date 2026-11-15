@@ -1,4 +1,5 @@
 import { readStreamProjection } from '../server/events/event-store.ts';
+import { accountQuotaEventTypes } from '../server/events/quota-projections.ts';
 import { parseRelationalFact } from '../server/events/relational-events.ts';
 import { canonicalJson } from '../server/events/domain-events.ts';
 import {
@@ -11,6 +12,7 @@ import { fairQuotaSnapshot } from '../server/quota/fair-share.ts';
 import { quotaNumber, quotaTimestamp } from '../server/quota/eligibility.ts';
 import {
   financialObservedV5,
+  initialAccountQuota,
   RelationalQuotaStore,
 } from '../server/storage/relational-quota-store.ts';
 import { readRelationalOpeningAttempt } from '../server/storage/relational-generation-sources.ts';
@@ -131,6 +133,101 @@ export function mapLegacyFinance(source, references) {
     charges.set(jobId, charge);
   };
 
+  const officialOpening = (accountId, projection) => {
+    const observedAt = time(projection.quotaCheckedAt),
+      official = fairQuotaSnapshot(projection),
+      latest = {
+        accountId,
+        credentialEpoch: null,
+        sequence: null,
+        observedAt,
+        v5UsagePercent: quotaNumber(projection.v5UsagePercent),
+        v5UsageIsNegative:
+          typeof projection.v5UsageIsNegative === 'boolean' ? projection.v5UsageIsNegative : null,
+        v5: financialObservedV5(projection, official),
+        anlasFixed: official.anlasFixed,
+        anlasPurchased: official.anlasPurchased,
+        secondsPerPercent: official.seconds,
+      },
+      hasLatest =
+        observedAt !== null ||
+        ['v5UsagePercent', 'quotaFixed', 'quotaPurchased'].some(
+          (field) => projection[field] != null,
+        );
+    let observationEventId = null;
+    if (hasLatest) {
+      observationEventId = emit(
+        'OpeningQuotaObservationRecorded',
+        canonicalJson([accountId, 'latest-observation']),
+        latest,
+        null,
+        accountId,
+        accountId,
+      ).eventId;
+      expected.observations.push({ eventId: observationEventId, ...latest });
+    }
+    return {
+      latest,
+      fields: {
+        observationEventId,
+        observedAt,
+        observedCredentialEpoch: null,
+        observedSequence: null,
+        quotaTier: quotaNumber(projection.quotaTier),
+        subscriptionActive: projection.subscriptionActive ?? null,
+        subscriptionExpiresAt: quotaTimestamp(projection.subscriptionExpiresAt),
+        quotaErrorCode: projection.quotaError || null,
+        v5UsagePercent: latest.v5UsagePercent,
+        v5UsageIsNegative: latest.v5UsageIsNegative,
+        observedV5: latest.v5,
+        observedAnlasFixed: latest.anlasFixed,
+        observedAnlasPurchased: latest.anlasPurchased,
+        secondsPerPercent: latest.secondsPerPercent,
+      },
+    };
+  };
+  // A missing cache field is not proof of a never-opened financial account.
+  // Only IDs are retained transiently; original monetary/history facts are not replayed here.
+  const financialAccounts = new Set(),
+    quotaTypes = new Set(accountQuotaEventTypes);
+  for (const row of source
+    .prepare(
+      `SELECT DISTINCT stream_id,account_id,event_type,
+      json_extract(payload,'$.kind') AS kind,json_type(payload,'$.state.quota') AS openingQuota
+      FROM domain_events WHERE stream_kind='account'`,
+    )
+    .iterate()) {
+    if (
+      (quotaTypes.has(row.event_type) &&
+        !(row.event_type === 'QuotaObserved' && row.kind === 'official') &&
+        !(row.event_type === 'AvailabilityChanged' && row.kind !== 'quota')) ||
+      (row.event_type === 'OpeningStateRecorded' && row.openingQuota !== null)
+    ) {
+      financialAccounts.add(row.stream_id.slice('account:'.length));
+      if (row.account_id !== null) financialAccounts.add(row.account_id);
+    }
+  }
+  const linkedAccounts = [
+    `SELECT DISTINCT account_id AS accountId,json_extract(data,'$.accountId') AS originalAccountId,
+       json_extract(data,'$.fairCharge.accountId') AS chargeAccountId,
+       json_extract(data,'$.generationAttempt.accountId') AS attemptAccountId FROM jobs`,
+    `SELECT DISTINCT json_extract(charge,'$.accountId') AS accountId FROM fair_quota_settlements`,
+    `SELECT DISTINCT account_id AS accountId,json_extract(data,'$.accountId') AS originalAccountId FROM ledger`,
+    `SELECT DISTINCT json_extract(payload,'$.state.charge.accountId') AS accountId FROM domain_events
+       WHERE event_type='OpeningStateRecorded' AND stream_kind='settlement'
+     UNION SELECT DISTINCT json_extract(payload,'$.record.accountId') AS accountId FROM domain_events
+       WHERE event_type='LegacyFactRecorded' AND stream_kind='legacy-ledger'`,
+  ];
+  for (const sql of linkedAccounts) {
+    for (const row of source.prepare(sql).iterate()) {
+      for (const id of Object.values(row)) {
+        if (typeof id === 'string' && id) financialAccounts.add(id);
+      }
+    }
+  }
+  const boundAccountId = readStreamProjection(source, 'sharing:default')?.projection
+    ?.boundAccountId;
+  if (typeof boundAccountId === 'string') financialAccounts.add(boundAccountId);
   for (const row of source
     .prepare(
       `SELECT id,account_id,source,data FROM ledger WHERE source IN (
@@ -217,16 +314,25 @@ export function mapLegacyFinance(source, references) {
     .prepare("SELECT stream_id FROM event_streams WHERE stream_kind='account' ORDER BY stream_id")
     .iterate()) {
     collect('invalid_account_finance', () => {
-      const projection = readStreamProjection(source, row.stream_id)?.projection;
-      if (!projection?.quota) {
-        block('account_financial_state_requires_initial_opening');
-        return;
-      }
-      const accountId = projection.id ?? row.stream_id.slice('account:'.length),
-        state = object(projection.quota);
+      const projection = object(readStreamProjection(source, row.stream_id)?.projection),
+        accountId = projection.id ?? row.stream_id.slice('account:'.length);
       if (row.stream_id !== `account:${accountId}` || !accountIds.has(accountId)) {
         throw new Error('Financial account lacks its original public account.');
       }
+      if (projection.quota == null) {
+        if (financialAccounts.has(accountId)) {
+          block('account_financial_state_requires_initial_opening');
+          return;
+        }
+        collect('invalid_initial_quota_source', () => {
+          const { fields } = officialOpening(accountId, projection),
+            payload = { ...initialAccountQuota(accountId), ...fields };
+          emit('OpeningQuotaRecorded', accountId, payload, null, accountId);
+          expected.quotas.push(payload);
+        });
+        return;
+      }
+      const state = object(projection.quota);
       for (const [memberId, balance] of Object.entries(object(state.balances))) {
         collect('invalid_wallet_source', () => {
           if (!memberIds.has(memberId)) {
@@ -266,42 +372,8 @@ export function mapLegacyFinance(source, references) {
       }
       collect('invalid_quota_source', () => {
         const snapshot = state.snapshot === null ? null : object(state.snapshot),
-          observedAt = time(projection.quotaCheckedAt),
-          official = fairQuotaSnapshot(projection),
-          latest = {
-            accountId,
-            credentialEpoch: null,
-            sequence: null,
-            observedAt,
-            v5UsagePercent: quotaNumber(projection.v5UsagePercent),
-            v5UsageIsNegative:
-              typeof projection.v5UsageIsNegative === 'boolean'
-                ? projection.v5UsageIsNegative
-                : null,
-            v5: financialObservedV5(projection, official),
-            anlasFixed: official.anlasFixed,
-            anlasPurchased: official.anlasPurchased,
-            secondsPerPercent: official.seconds,
-          },
-          hasLatest =
-            observedAt !== null ||
-            ['v5UsagePercent', 'quotaFixed', 'quotaPurchased'].some(
-              (field) => projection[field] != null,
-            ),
-          latestKey = canonicalJson([accountId, 'latest-observation']);
-        let observationEventId = null,
-          baselineEventId = null;
-        if (hasLatest) {
-          observationEventId = emit(
-            'OpeningQuotaObservationRecorded',
-            latestKey,
-            latest,
-            null,
-            accountId,
-            accountId,
-          ).eventId;
-          expected.observations.push({ eventId: observationEventId, ...latest });
-        }
+          { latest, fields } = officialOpening(accountId, projection);
+        let baselineEventId = null;
         if (snapshot !== null) {
           const baseline = {
             accountId,
@@ -329,8 +401,11 @@ export function mapLegacyFinance(source, references) {
               v5UsageIsNegative: _latestNegative,
               ...latestValues
             } = latest;
-          if (hasLatest && canonicalJson(baselineValues) === canonicalJson(latestValues)) {
-            baselineEventId = observationEventId;
+          if (
+            fields.observationEventId !== null &&
+            canonicalJson(baselineValues) === canonicalJson(latestValues)
+          ) {
+            baselineEventId = fields.observationEventId;
           } else {
             baselineEventId = emit(
               'OpeningQuotaObservationRecorded',
@@ -346,21 +421,7 @@ export function mapLegacyFinance(source, references) {
         const payload = {
           accountId,
           status: state.status,
-          observationEventId,
-          observedAt,
-          // A newly installed current credential epoch is not a historical observation epoch.
-          observedCredentialEpoch: null,
-          observedSequence: null,
-          quotaTier: quotaNumber(projection.quotaTier),
-          subscriptionActive: projection.subscriptionActive ?? null,
-          subscriptionExpiresAt: quotaTimestamp(projection.subscriptionExpiresAt),
-          quotaErrorCode: projection.quotaError || null,
-          v5UsagePercent: latest.v5UsagePercent,
-          v5UsageIsNegative: latest.v5UsageIsNegative,
-          observedV5: latest.v5,
-          observedAnlasFixed: latest.anlasFixed,
-          observedAnlasPurchased: latest.anlasPurchased,
-          secondsPerPercent: latest.secondsPerPercent,
+          ...fields,
           baselineEventId,
           refillCursorAt: time(state.lastRefillAt),
           settlementCursorAt: time(state.lastSettlementAt),

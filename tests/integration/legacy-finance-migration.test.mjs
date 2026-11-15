@@ -16,6 +16,7 @@ import {
   manageFairMember,
   manageOperatingFunding,
 } from '../../server/quota/fair-share.ts';
+import { splitQuotaState } from '../../server/events/quota-projections.ts';
 import { recordAnlasGap } from '../../server/quota/operating-accounting.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
 import { appendDomainCommit, readStreamProjection } from '../../server/events/event-store.ts';
@@ -62,6 +63,8 @@ async function sourceFixture(
     knownFundingResult = false,
     latestMatchesBaseline = false,
     unopenedAccount = false,
+    unopenedObservedAt = NOW,
+    unopenedSourceEdit = null,
   } = {},
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-finance-map-')),
@@ -100,7 +103,7 @@ async function sourceFixture(
       quotaFixed: 17,
       quotaPurchased: 2,
       v5UsagePercent: 9,
-      quotaCheckedAt: NOW,
+      quotaCheckedAt: unopenedObservedAt === null ? undefined : unopenedObservedAt,
     });
   configureFairQuota(db, members);
   syncFairQuota(db, NOW);
@@ -270,6 +273,7 @@ async function sourceFixture(
       },
     );
   }
+  if (unopenedSourceEdit) unopenedSourceEdit(store.sqlite, db);
   const original = structuredClone(store.db.settings.fairQuota);
   await store.close();
   const filename = path.join(directory, 'library.sqlite'),
@@ -317,7 +321,7 @@ function event(fact) {
   };
 }
 
-function command(finance) {
+function command(finance, accounts = ['a', 'b']) {
   const publicFacts = [
     {
       eventType: 'ImportSourceRegistered',
@@ -356,7 +360,7 @@ function command(finance) {
         origin: origin(memberId),
       },
     })),
-    ...['a', 'b'].map((accountId) => ({
+    ...accounts.map((accountId) => ({
       eventType: 'OpeningAccountRecorded',
       accountId,
       payload: {
@@ -415,6 +419,8 @@ function command(finance) {
         jobId: 'failed-review',
         requestId: 'retained-failed-request',
         createdAt: NOW,
+        sourceOrder: null,
+        displayCost: null,
         sampleIndex: null,
         actualSeed: null,
         status: 'failed',
@@ -451,9 +457,9 @@ function command(finance) {
   };
 }
 
-function initializeTarget(db, finance, accountEnabled = false) {
+function initializeTarget(db, finance, accountEnabled = false, accounts = ['a', 'b']) {
   initializeRelationalStorage(db, 'finance-history');
-  const c = command(finance),
+  const c = command(finance, accounts),
     genesisTypes = new Set([
       'ImportSourceRegistered',
       'OpeningMemberRecorded',
@@ -819,8 +825,8 @@ test('old-to-new reconciliation is query-only and rejects wrong pool, debt, dead
   }
 });
 
-function applyFinanceFixture(db, mapped, accountEnabled = false) {
-  const c = initializeTarget(db, mapped, accountEnabled),
+function applyFinanceFixture(db, mapped, accountEnabled = false, accounts = ['a', 'b']) {
+  const c = initializeTarget(db, mapped, accountEnabled, accounts),
     inputs = new RelationalInputStore(db);
   db.transaction(() => {
     inputs.stageOpeningInput({
@@ -1406,27 +1412,348 @@ test('pending source without original audit keeps unknown original amount and ar
   );
 });
 
-test('official-only account without a financial opening is explicit building blocker rather than silently guessed zero', async (t) => {
-  const f = await sourceFixture(t, { unopenedAccount: true }),
-    before = await readFile(f.filename);
-  f.source.transaction(() => {
-    const original = readStreamProjection(f.source, 'account:c').projection,
-      mapped = mapLegacyFinance(f.source, f.references);
-    assert.equal(original.quota, undefined);
-    assert.equal(original.quotaFixed, 17);
-    assert.equal(original.quotaPurchased, 2);
-    assert.equal(original.quotaCheckedAt, NOW);
-    assert.deepEqual(mapped.findings, [
-      { code: 'account_financial_state_requires_initial_opening', count: 1, blocking: true },
-    ]);
-    assert.equal(
-      mapped.expected.quotas.some((value) => value.accountId === 'c'),
-      false,
-    );
-    assert.equal(
-      mapped.expected.wallets.some((value) => value.accountId === 'c'),
-      false,
-    );
-  })();
-  assert.deepEqual(await readFile(f.filename), before);
+test('authoritative financial absence creates only initial quota state while preserving known official values and unknown/zero observation time', async (t) => {
+  for (const observedAt of [NOW, null, 0]) {
+    await t.test(`original observation ${observedAt}`, async (t) => {
+      const f = await sourceFixture(t, { unopenedAccount: true, unopenedObservedAt: observedAt }),
+        sourceBefore = await readFile(f.filename),
+        mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+      assert.deepEqual(mapped.findings, []);
+      const q = mapped.expected.quotas.find((value) => value.accountId === 'c');
+      assert.equal(q.status, 'inactive_opus');
+      assert.equal(q.observedAnlasFixed, '17');
+      assert.equal(q.observedAnlasPurchased, '2');
+      assert.equal(q.v5UsagePercent, 9);
+      assert.equal(q.observedAt, observedAt);
+      assert.equal(q.baselineEventId, null);
+      assert.equal(q.observedCredentialEpoch, null);
+      assert.equal(q.observedSequence, null);
+      assert.equal(q.refillCursorAt, null);
+      assert.equal(q.settlementCursorAt, null);
+      assert.equal(q.unallocatedV5, '0');
+      assert.equal(q.sharedV5Debt, '0');
+      assert.equal(
+        mapped.expected.wallets.some((value) => value.accountId === 'c'),
+        false,
+      );
+      assert.equal(
+        mapped.expected.operating.some((value) => value.accountId === 'c'),
+        false,
+      );
+      assert.equal(
+        mapped.expected.observations.find((value) => value.eventId === q.observationEventId)
+          .observedAt,
+        observedAt,
+      );
+      const db = new Database(':memory:'),
+        replay = new Database(':memory:');
+      t.after(() => {
+        db.close();
+        replay.close();
+      });
+      const { inputs } = applyFinanceFixture(db, mapped, false, [...f.references.accountIds]);
+      db.transaction(() => {
+        db.pragma('query_only=ON');
+        const changes = db.prepare('SELECT total_changes() AS n').get().n;
+        try {
+          assertLegacyFinanceProjection(db, mapped.expected);
+        } finally {
+          assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+          db.pragma('query_only=OFF');
+        }
+      })();
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wallets WHERE account_id='c'").get().n, 0);
+      assert.equal(
+        db.prepare("SELECT COUNT(*) AS n FROM operating_state WHERE account_id='c'").get().n,
+        0,
+      );
+      const beforeReady = databaseState(db);
+      initializeRelationalStorage(replay, 'finance-history');
+      for (const row of db
+        .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+        .all()) {
+        replay.transaction(() =>
+          new RelationalCommitReplayer(replay).replayCommit(
+            readRelationalCommit(db, row.seq),
+            inputs,
+          ),
+        )();
+      }
+      assert.equal(databaseState(replay), beforeReady);
+      assert.equal(relationalPrivateStateEmpty(replay), true);
+      const dir = await mkdtemp(path.join(tmpdir(), 'nai-first-finance-ready-'));
+      t.after(() => rm(dir, { recursive: true, force: true }));
+      await installReady({ db, dir });
+      assertRelationalStorageReady(db);
+      assert.equal(new RelationalQuotaStore(db).readAccountQuota('c').baselineEventId, null);
+      assert.deepEqual(await readFile(f.filename), sourceBefore);
+    });
+  }
+});
+
+function originalCFinance(db) {
+  const world = {
+    users: db.users,
+    accounts: [
+      {
+        ...db.accounts.find((value) => value.id === 'c'),
+        enabled: true,
+        quotaFixed: 10000,
+        quotaPurchased: 400,
+        v5UsagePercent: 40,
+        quotaCheckedAt: NOW - 100,
+      },
+    ],
+    settings: {},
+    jobs: [],
+    ledger: [],
+  };
+  beginDomainCommand(world, {
+    commandId: 'known-original-c-finance',
+    fingerprint: 'known-original-c-finance',
+  });
+  configureFairQuota(world, members);
+  syncFairQuota(world, NOW - 100);
+  const captured = finishDomainCommand(world).events.filter(
+    (value) => value.streamId === 'account:c',
+  );
+  assert.ok(captured.some((value) => value.eventType === 'QuotaAccountOpened'));
+  return { world, captured };
+}
+function appendOriginalC(sqlite, events) {
+  events = events.map((value, index) => ({
+    ...value,
+    eventId: value.eventId ?? domainDigest(['known-original-c-source', index, value]),
+  }));
+  sqlite.transaction(() =>
+    appendDomainCommit(sqlite, {
+      commandId: 'known-original-c-source',
+      fingerprint: domainDigest(events),
+      recordedAt: new Date(NOW + 8).toISOString(),
+      actorKind: 'system',
+      actorId: null,
+      correlationId: null,
+      causationId: null,
+      receipt: null,
+      expectedVersions: Object.fromEntries(
+        events.map((value) => [
+          value.streamId,
+          sqlite
+            .prepare(
+              'SELECT CAST(stream_version AS TEXT) AS v FROM event_streams WHERE stream_id=?',
+            )
+            .get(value.streamId)?.v ?? '0',
+        ]),
+      ),
+      events,
+    }),
+  )();
+}
+function replaceCProjection(sqlite, change) {
+  const original = readStreamProjection(sqlite, 'account:c').projection;
+  change(original);
+  sqlite
+    .prepare('UPDATE event_streams SET projection=?,projection_sha256=? WHERE stream_id=?')
+    .run(JSON.stringify(original), domainDigest(original), 'account:c');
+}
+
+test('missing financial projection never overrides original financial facts, hot/cold charges, gap, pending receipt or bound responsibility', async (t) => {
+  for (const kind of [
+    'quota-opened',
+    'embedded-financial-opening',
+    'hot-charge',
+    'cold-charge',
+    'gap-audit',
+    'pending-receipt-audit',
+    'current-binding',
+    'invalid-financial-value',
+  ]) {
+    await t.test(kind, async (t) => {
+      let reached = false;
+      const f = await sourceFixture(t, {
+          unopenedAccount: true,
+          unopenedSourceEdit(sqlite, originalDb) {
+            const { world, captured } = originalCFinance(originalDb);
+            if (kind === 'quota-opened') {
+              appendOriginalC(sqlite, captured);
+              assert.ok(readStreamProjection(sqlite, 'account:c').projection.quota);
+              replaceCProjection(sqlite, (value) => delete value.quota);
+            } else if (kind === 'embedded-financial-opening') {
+              const row = sqlite
+                  .prepare(
+                    "SELECT event_id,payload FROM domain_events WHERE stream_id='account:c' AND event_type='OpeningStateRecorded'",
+                  )
+                  .get(),
+                payload = JSON.parse(row.payload);
+              payload.state.quota = splitQuotaState(world.settings.fairQuota).quota;
+              sqlite
+                .prepare('UPDATE domain_events SET payload=? WHERE event_id=?')
+                .run(JSON.stringify(payload), row.event_id);
+              assert.equal(
+                sqlite
+                  .prepare(
+                    "SELECT json_type(payload,'$.state.quota') AS kind FROM domain_events WHERE event_id=?",
+                  )
+                  .get(row.event_id).kind,
+                'object',
+              );
+            } else if (kind === 'hot-charge' || kind === 'cold-charge') {
+              const job = {
+                id: 'known-original-c-charge',
+                memberId: 'm1',
+                userToken: world.users[0].token,
+                status: 'running',
+                createdAt: new Date(NOW - 98).toISOString(),
+                request: { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 },
+              };
+              reserveFairQuota(world, world.users[0], job, world.accounts[0], NOW - 98);
+              assert.equal(job.fairCharge.accountId, 'c');
+              assert.ok(parseAmount(job.fairCharge.amount) > 0n);
+              if (kind === 'cold-charge') {
+                settleFairQuota(world, job, true, NOW - 97);
+                sqlite
+                  .prepare('INSERT INTO fair_quota_settlements(job_id,charge) VALUES(?,?)')
+                  .run(job.id, JSON.stringify(job.fairCharge));
+              } else {
+                sqlite
+                  .prepare(
+                    'INSERT INTO jobs(id,order_value,data,status,account_id) VALUES(?,?,?,?,?)',
+                  )
+                  .run(job.id, 1, JSON.stringify(job), 'running', null);
+              }
+            } else if (kind === 'gap-audit' || kind === 'pending-receipt-audit') {
+              if (kind === 'gap-audit') {
+                const before = world.settings.fairQuota.snapshot,
+                  after = { ...before, at: NOW - 90, anlasFixed: '9998', anlas: '10398' };
+                recordAnlasGap(world, 'anlasFixed', parseAmount('2'), before, after, NOW - 90);
+              } else {
+                manageOperatingFunding(
+                  world,
+                  {
+                    action: 'operating-register-funding',
+                    resource: 'anlasFixed',
+                    amount: 3,
+                    receipt: 'c_pending_receipt',
+                  },
+                  {
+                    actorId: 'm1',
+                    findEvent: (id) => world.ledger.find((value) => value.id === id),
+                    coveredAmount: () => '0',
+                  },
+                  NOW - 90,
+                );
+              }
+              const audit = world.ledger[0];
+              assert.equal(audit.accountId, 'c');
+              appendOriginalC(sqlite, [
+                {
+                  eventType: 'LegacyFactRecorded',
+                  streamId: `legacy-ledger:${audit.id}`,
+                  payload: { record: audit, order: 0, source: 'legacy-ledger' },
+                  occurredAt: NOW - 90,
+                },
+              ]);
+              // The original complete commit survives even without its wide ledger projection.
+              assert.equal(
+                readStreamProjection(sqlite, `legacy-ledger:${audit.id}`).projection.record
+                  .accountId,
+                'c',
+              );
+              assert.equal(
+                sqlite.prepare('SELECT COUNT(*) AS n FROM ledger WHERE id=?').get(audit.id).n,
+                0,
+              );
+            } else if (kind === 'current-binding') {
+              const value = readStreamProjection(sqlite, 'sharing:default').projection;
+              value.boundAccountId = 'c';
+              sqlite
+                .prepare(
+                  'UPDATE event_streams SET projection=?,projection_sha256=? WHERE stream_id=?',
+                )
+                .run(JSON.stringify(value), domainDigest(value), 'sharing:default');
+            } else {
+              replaceCProjection(sqlite, (value) => (value.quota = 0));
+            }
+            assert.equal(
+              readStreamProjection(sqlite, 'account:c').projection.quota,
+              kind === 'invalid-financial-value' ? 0 : undefined,
+            );
+            reached = true;
+          },
+        }),
+        before = await readFile(f.filename),
+        mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+      assert.equal(reached, true);
+      const code =
+        kind === 'invalid-financial-value'
+          ? 'invalid_account_finance'
+          : 'account_financial_state_requires_initial_opening';
+      assert.ok(
+        mapped.findings.some((value) => value.code === code && value.blocking && value.count === 1),
+        JSON.stringify(mapped.findings),
+      );
+      assert.equal(
+        mapped.expected.quotas.some((value) => value.accountId === 'c'),
+        false,
+      );
+      assert.equal(
+        mapped.expected.wallets.some((value) => value.accountId === 'c'),
+        false,
+      );
+      assert.equal(
+        mapped.expected.operating.some((value) => value.accountId === 'c'),
+        false,
+      );
+      assert.deepEqual(await readFile(f.filename), before);
+    });
+  }
+});
+
+test('real official observation and non-quota availability history do not fabricate a financial opening or credential generation', async (t) => {
+  const f = await sourceFixture(t, {
+      unopenedAccount: true,
+      unopenedSourceEdit(sqlite) {
+        appendOriginalC(sqlite, [
+          {
+            eventType: 'QuotaObserved',
+            streamId: 'account:c',
+            accountId: 'c',
+            occurredAt: NOW,
+            payload: {
+              kind: 'official',
+              accountId: 'c',
+              observation: {
+                quotaTier: 3,
+                subscriptionActive: true,
+                quotaFixed: 17,
+                quotaPurchased: 2,
+                v5UsagePercent: 9,
+                quotaCheckedAt: NOW,
+              },
+              at: NOW,
+            },
+          },
+          {
+            eventType: 'AvailabilityChanged',
+            streamId: 'account:c',
+            accountId: 'c',
+            occurredAt: NOW + 1,
+            payload: {
+              accountId: 'c',
+              enabled: false,
+              updatedAt: new Date(NOW + 1).toISOString(),
+              reason: 'administrator',
+            },
+          },
+        ]);
+      },
+    }),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+  assert.deepEqual(mapped.findings, []);
+  const q = mapped.expected.quotas.find((value) => value.accountId === 'c');
+  assert.equal(q.observedAnlasFixed, '17');
+  assert.equal(q.observedAt, NOW);
+  assert.equal(q.observedCredentialEpoch, null);
+  assert.equal(q.observedSequence, null);
+  assert.equal(q.baselineEventId, null);
 });

@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import Negotiator from 'negotiator';
 import { NATIVE_MAX_BODY_BYTES } from './native-image.ts';
 import { readNativeBody } from './native-body.ts';
-import { type GenerationMetadata, type GenerationPayloadClaim } from '../generation/admission.ts';
+import type { GenerationMetadata, GenerationPayloadClaim } from '../generation/admission.ts';
 import type { NativeAdmissionOptions } from '../generation/native-admission.ts';
 import type { GenerationDeliveryResult } from '../generation/delivery.ts';
 import type { JobPreviews } from '../generation/job-previews.ts';

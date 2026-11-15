@@ -256,7 +256,9 @@ erDiagram
 
 `OpeningFundingReceiptRecorded` 与待到账 `OpeningFundingRecorded` 分离：前者保存原 `operating-receipt:<token>` 业务身份、稳定账户、原类型、可证原时间/数量、闭合规范请求及安全原回执；后者只保存原剩余待到账责任。仅该 Receipt 的统一 event-ID resolver 保留原业务 ID，其他实体继续同源 digest。每个 pending opening 必须有同笔先行、同账户/来源/token/资源/登记时点的原 Receipt，已知原数量不得小于剩余数量，已知原请求的归属必须一致。只有 pending 状态而原 audit 不在时，原登记角色/时点可以证明，原数量/请求/结果明确 NULL，不能以 current remaining 或当前钱包冒充原结果。已完成的 Receipt 不要求 pending；缺原规范意图的业务 ID 明确 410 归档拒绝，不冲突重算或重新入账。正常命令仍先复核当前 owner/epoch，再领取当前 command 回执或辨识原业务重复；私有 PST 未恢复时允许原同步 owner 的安全 unavailable 状态决定，不能把它与资金重复消费混为一谈。
 
-当前 mapper 对仍无原 `.quota` 金融开账、但已有官方字段的 account 流明确返回 `account_financial_state_requires_initial_opening`，保持 building；不能默默遗漏官方来源或把缺省解释为三池全零。这类账户的合法首次金融基线仍须在后继依据原事实补足，不以当前角色专项通过宣称完整 B converter 已完成。
+`.quota` 投影缺失不等于历史金融来源不存在。首次金融初始化仅接受已审计封存源中可证明从未开账的账户：无 `QuotaAccountOpened`/其他原金融 account facts、无 `OpeningStateRecorded.state.quota` 原金融切点、无本账户冷热预扣/任务尝试、资金/差额 audit（包括仅剩不可变 LegacyFact/settlement 的来源），且不是当前共享绑定账户。该检查按原 reducer 排除纯官方观察与非 quota 的可用性 metadata；只读汇集原身份，不重演金额。任何来源存在、投影为非法值或不能证明初始性，仍明确 blocking 并保持 building，不能因缓存/ledger 查询行缺失而默认全零。
+
+证明成立时，mapper 复用当前 `initialAccountQuota()` 的同一纯初态，建立新的未启用金融状态；这些零是本次合法初始化的值，不冒充旧源余额。原官方标量及其不可变观察仍按既有 owner 保留，已知 0/未知 NULL 区分；金融 baseline/refill/settlement cursor、原凭据 epoch/sequence 保持 NULL，不造钱包或 Operating 零行，不从 header 时间补观察时点，也不授予查询/启用/同步/派发权限。一般来源关联校验与唯一 ready installer 不放宽；mapper 的局部 absence 证明不替代主 converter 的原完整事件/投影及 cold facts 审计。
 
 ### 3.4 命令、事件与幂等
 

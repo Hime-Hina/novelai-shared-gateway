@@ -247,11 +247,12 @@ export function checkSource(filename, text) {
         bindings && ts.isNamedImports(bindings)
           ? bindings.elements.filter((item) => !item.isTypeOnly)
           : null;
-      if (!clause?.isTypeOnly && !(named?.length === 0 && !clause?.name)) {
+      if (!clause?.isTypeOnly) {
+        // verbatimModuleSyntax 保留空绑定和 inline type-only 的模块加载。
         dependency(
           node,
           node.moduleSpecifier.text,
-          named ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
+          named?.length ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
         );
       }
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && !node.isTypeOnly) {
@@ -259,13 +260,11 @@ export function checkSource(filename, text) {
         node.exportClause && ts.isNamedExports(node.exportClause)
           ? node.exportClause.elements.filter((item) => !item.isTypeOnly)
           : null;
-      if (!named || named.length) {
-        dependency(
-          node,
-          node.moduleSpecifier.text,
-          named ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
-        );
-      }
+      dependency(
+        node,
+        node.moduleSpecifier.text,
+        named?.length ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
+      );
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
       let name = '';
