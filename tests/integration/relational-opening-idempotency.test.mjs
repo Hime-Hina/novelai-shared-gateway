@@ -544,27 +544,32 @@ test('NULL只属于不可领取旧键，原在线Key闭包和SQL live约束保�
   append(f, [unknownPost.event], 'unknown-post-import');
   const archived = databaseState(f.db),
     archivedChanges = f.db.prepare('SELECT total_changes() AS n').get().n;
-  assert.throws(
-    () =>
-      f.db.transaction(() =>
-        f.generations.reuseGeneration(
-          {
-            ...meta('current-reuse-not-original-post', NOW, 'm1'),
-            fingerprint: unknownPost.payload.intentFingerprint,
-          },
-          {
-            memberId: 'm1',
-            request: normal.request,
-            context: normal.context,
-            seedMode: 'fixed',
-            noCache: false,
-            idempotency: { keyHash: unknownPost.payload.keyHash, noCache: false },
-            sourceJobId: input.jobs[0].jobId,
-          },
-        ),
-      )(),
-    (error) => error.statusCode === 410,
-  );
+  for (const fingerprint of [
+    unknownPost.payload.intentFingerprint,
+    domainDigest('changed-incoming'),
+  ]) {
+    assert.throws(
+      () =>
+        f.db.transaction(() =>
+          f.generations.reuseGeneration(
+            {
+              ...meta('current-reuse-not-original-post', NOW, 'm1'),
+              fingerprint,
+            },
+            {
+              memberId: 'm1',
+              request: normal.request,
+              context: normal.context,
+              seedMode: 'fixed',
+              noCache: false,
+              idempotency: { keyHash: unknownPost.payload.keyHash, noCache: false },
+              sourceJobId: input.jobs[0].jobId,
+            },
+          ),
+        )(),
+      (error) => error.statusCode === 410,
+    );
+  }
   assert.equal(databaseState(f.db), archived);
   assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, archivedChanges);
   const target = rebuild(t, f.db);
