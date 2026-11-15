@@ -23,7 +23,7 @@
 
 ## 证据与运行资格
 
-源码的 615 项 Git/raw 绑定、Node、pnpm、共享 native 及批准 preload 的 hash/mtime 前后相同。外部只读网络守卫在真实 Node 编排、worker、server 和 CLI 的入口前安装；四项独立校准核对同步子进程、原 promisify、fork/IPC、原 mock 顺序和非 loopback 的 IO 前拒绝。完整测试及已记录的实际子进程均已退出；重复 PID 按进程身份区分，没有终止无关进程。
+源码的 615 项 Git/raw 绑定、Node、pnpm、共享 native 及批准 preload 的 hash/mtime 前后相同。真实测试 worker、server 和 CLI 的入口前网络守卫有自记录；纯测试主编排有实际 argv 和 OS 退出证据，不冒称它执行了项目 preload。四项独立校准核对同步子进程、原 promisify、fork/IPC、原 mock 顺序和非 loopback 的 IO 前拒绝。完整测试及已记录的实际子进程均已退出；重复 PID 按进程身份区分，没有终止无关进程。
 
 **严格环境白名单未获实际 Node 环境块证据。** 原 runner 执行了 .NET 清理环境变量，但未保存 Node 内实际变量名集合；不能将脚本意图写成已经证明没有 ambient 配置，也不能由此推断发生凭据泄漏。该限制已在独立追加记录说明；原日志、报告和 manifest 未覆写。后继验证改为显式新进程环境块，并在实际 Node 内核对变量名；这不追溯升级本轮资格。
 
