@@ -1,8 +1,8 @@
 # 独立旧归档的精确查询
 
-本入口属于 [固定旧工具包](../plans/database-model-redesign.md#918-t7-前置固定旧格式的独立只读工具包)，只解释该包固定 `3caba3d` owner 支持的旧 v4 封存源。正常网关不调用它，不启动 HTTP、调度或网络，不选择 A/B 路线，不转换新模型或安装 ready。原始 SQLite 继续保留有效权益、未决责任、旧键依据和审计来源；可查询不代表可删源。
+本入口属于 [固定旧工具包](../history/database-model-execution-records.md#918-t7-前置固定旧格式的独立只读工具包)，只解释该包固定 `3caba3d` owner 支持的旧 v4 封存源。正常网关不调用它，不启动 HTTP、调度或网络，不选择 A/B 路线，不转换新模型或安装 ready。原始 SQLite 继续保留有效权益、未决责任、旧键依据和审计来源；可查询不代表可删源。
 
-先核发布 tar 的外部 SHA-256，再解包并运行 `--verify-package`。运行平台、Node 22.23.4、ABI 和逐文件摘要必须匹配；包内原 server、SQL/journal 和 lock 来自固定 Git 对象。使用 [既有封存要求](../plans/database-model-redesign.md#918-t7-前置固定旧格式的独立只读工具包)：只接受无 WAL/SHM/journal 的 DELETE 模式一致性单文件，不对原源调用初始化、迁移、checkpoint 或升级。需要整理 WAL 时另建工作副本，保留原备份。
+先核发布 tar 的外部 SHA-256，再解包并运行 `--verify-package`。运行平台、Node 22.23.4、ABI 和逐文件摘要必须匹配；包内原 server、SQL/journal 和 lock 来自固定 Git 对象。使用 [既有封存要求](../history/database-model-execution-records.md#918-t7-前置固定旧格式的独立只读工具包)：只接受无 WAL/SHM/journal 的 DELETE 模式一致性单文件，不对原源调用初始化、迁移、checkpoint 或升级。需要整理 WAL 时另建工作副本，保留原备份。
 
 每次精确查询都复用完整的 schema、连续提交、clock/core 切点、影子行和保护摘要审计。`--source-sha256` 是此前已选封存来源的完整文件摘要，精确查询必须提供；匹配的 ID 不能代替匹配的历史。查询中及关闭后仍核源摘要和无 sidecar。整库审计本身的耗时仍在，不把本入口视为在线分页服务。
 

@@ -196,6 +196,20 @@ child.userToken 一致，不能只因父请求属于本人就签发任意关联�
 等待原因与截止不逐秒重复输出，不加入提示词、成员 Key 或请求正文。
 这些打点用于后续定位长尾，不能倒推 P01 历史约 138 秒额外等待的根因。
 
+## 关系格式的接单与缓存
+
+`members.accepting_jobs/admission_epoch` 是接单权威：仅接单中→停止增加一次安全整数 epoch，重复停止和恢复保留原代次。同毫秒停止再恢复也不批准旧准入。当前 owner Key/Cookie/epoch 或本地管理员授权先于原回执；新决定先 `AdmissionChanged`，再完整取消该成员 queued/pending，保留 running、原预扣与物理槽。等待意图出现 charge/attempt 属于不一致，整笔拒绝，不补退款。共同 member/Gen owner 核原成员、最新前置暂停、原原因/409/时间、有序完整取消集合、代次与安全回执；错流、重复、遗漏、逆序或分叉回执均拒绝。恢复接单不恢复已取消 child、私有凭据或撤销认证，尾错被外层捕获仍全表回滚。
+
+显式缓存继续由原 `requestCacheKey()` / `request-fingerprint.ts` 决定，以稳定 memberId 限定候选；输入摘要、生成指纹与缓存键各有角色。严格保留原 DTO 字段顺序、size 标签、可选 cost hint 的省略/零/null、购买授权字段存在性，以及必要的原 sampler 选择；`cacheSelection` 仅保存出站无法还原的这部分选择，不存整 DTO/第二份提示词或当前报价。新增 context/action/operation 控制元数据及 requestedSteps 不改变旧缓存等价。每个已存非空 cache key 须由原保护正文、原选择和 seed 意图重算，hash 字符串相等不足以自证来源。
+
+Native 始终 noCache=true；OpenAI 默认 true、显式允许才复用；direct 无键只找完成缓存，有键和旧 POST jobs 才允许原活动合并。来访规范 DTO 先计算严格旧 cache key，再与合法 source 匹配；SQL 外检查引用资格，提交时重核当前成员/接单 epoch、共享 readiness、原发布/input/attempt/cache key/未退休状态及 IO 后 source ticket。旧合法回执先于新准入，不能因上游暂不可用而重执行旧键。
+
+活动 alias 只增加必要的首次 context 和 `RequestAliasRegistered`，返回原 request/job，不建 input/job/attempt/charge/免费成功。每键的 context、seedMode、command、receipt 和 sourceEvent 独立；重领用该键自己的定义，不硬绑目标 first context、不从 actualSeed 猜 fixed/random。alias-only 与原受理证明分别校验，回放核保存的角色/来源、原保护输入、缓存键、回执和首次定义；未保存的来访 size/cost 不伪称能反推，无键复用不伪造操作键。
+
+完成缓存新建小 parent/job 引用原 artifact，完全相同输入复用原 input，已知 display/requestedSteps 不同仍保留来访内容。原 artifact input/attempt/摘要/副本不改，新 job 不占 queueSeq、attempt、charge 或免费次数；`JobAccepted(status=done)` 与恰一同 job/request/member 的 `CachedResultLinked` 同提交，缺/换/重/乱序均拒绝。SQL 中间 pending 仅满足立即约束，最后安装真实 done。
+
+引用资格与实际领取分开：Local 经原文件 owner 安全定位和真实非空文件检查，领取再核长度/SHA/MIME；已 verified R2 或 uploaded PikPak 的持久来源即使临时缺配置仍可引用，资格检查不 GET 或提升 verified。仅 Local 真缺且无其他持久来源的新键可 miss；旧键保留原身份/回执，缺失 410 与暂不可读 503 由领取 owner 分类，不变成新生成机会。退休生产 job 不抹掉尚未退休 artifact 的引用资格。Input/context 每次注册仍核本次唯一原 event、schema/SHA/bytes，受理、alias、内容与投影共用同一保存点。
+
 ## 验证边界
 
 已有测试覆盖父/子/账本写失败回滚、临时/持久字节交接、活动索引 EXPLAIN、

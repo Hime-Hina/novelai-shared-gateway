@@ -801,9 +801,9 @@ WebDAV 使用[Connected Apps 传输额度](https://mypikpak.com/en-US/help-cente
 替换为新构建；当时尚未获准切换。后续 2026-10-19 的定时授权见本文开头，实际切换
 及线上验收结果须在执行后另行记录，不能把准备记录当作已经上线。
 
-## 保留源登记工具（9.93首片，未部署）
+## 保留源登记工具
 
-此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放仍关闭，不能用一个新空registry推断旧保留物不存在。完整契约归[数据库计划9.93](../plans/database-model-redesign.md#993-保留源登记与捕获保护首片未开放源删除)。
+此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放仍关闭，不能用一个新空registry推断旧保留物不存在。下文维护登记、保护、恢复和释放边界；原首片执行证据见[历史 9.93](../history/database-model-execution-records.md#993-保留源登记与捕获保护首片未开放源删除)。
 
 正常发布包新增 `scripts/retained-sources.mjs`。`backup-production.py`默认选择备份目录的同级`<备份目录名>-retained-sources`，所以生产路径对应`/var/backups/novelai-shared-gateway-retained-sources`，不进入`daily-*`轮换。该目录必须先由部署者显式init且保留私有权限；丢失/损坏时备份捕获在SQLite前拒绝，不自动重建。此首片并未执行该生产init。
 

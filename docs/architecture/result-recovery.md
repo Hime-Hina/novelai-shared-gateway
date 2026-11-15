@@ -12,7 +12,7 @@
 
 随后原结果 owner 恢复 prepared 文件，原执行器准备中断任务；只有实际 listen 成功并再次确认当前 ready，才激活原队列和唯一账户观察循环。端口占用、恢复故障和监听期间 ready 失效都不派发新任务。新受理在正文/缓存/认证 IO 后的原事务内核同一 queue 当前 phase，旧合法回执先于该新决定门禁。关闭停止调度并等待真实生成控制与 quota 原网络 Promise；drained 仅唤醒，领取 owner 先冷读终态，再从当前 stopped phase 结束非终态等待，晚注册同样适用。最后等 HTTP handler 和真实 response finish/close，清理 idle keep-alive 并等 server close，再关数据库，不能以强退 exit0 代替。关闭不会取消 queued 业务或伪造退款，重启仍按原事实执行。限时签名采用单进程密钥，重启失效。
 
-新格式已有 `ArtifactPrepared` 时，完整 final/part 由 `relational-result-recovery.ts` 完成原尝试；缺失、半写或损坏则保留原准备、预扣与未决责任，由 `relational-queue-runtime.ts` 拒绝监听，不能从缺少本地字节推断上游失败并退款。没有 prepared 的中断尝试才继续原 interrupted 处理。原 owner 的可运行反例见 `tests/integration/relational-result-recovery.test.mjs` 中缺失及损坏字节用例；本轮真实 HTTP 故障夹具的来源迁移见[计划 9.96](../plans/database-model-redesign.md#996-结果恢复-http-child-的关系夹具)。
+新格式已有 `ArtifactPrepared` 时，完整 final/part 由 `relational-result-recovery.ts` 完成原尝试；缺失、半写或损坏则保留原准备、预扣与未决责任，由 `relational-queue-runtime.ts` 拒绝监听，不能从缺少本地字节推断上游失败并退款。没有 prepared 的中断尝试才继续原 interrupted 处理。原 owner 的可运行反例见 `tests/integration/relational-result-recovery.test.mjs` 中缺失及损坏字节用例；本轮真实 HTTP 故障夹具的来源迁移见[计划 9.96](../history/database-model-execution-records.md#996-结果恢复-http-child-的关系夹具)。
 
 下文 `event_commits`、`JsonStore`、旧开账/inline 升级及 writer4 的说明属于旧格式的独立解释工具和历史 F10，不能据此启动新入口自动转换。新格式的完整提交、保护内容、选定私有快照与唯一 ready installer 见[离线恢复](../operations/relational-recovery.md)，同候选发布物与切换验收仍未完成。
 
@@ -59,7 +59,35 @@ PikPak 上传确认并持久记录后才删除 R2 原件；上传后不立即回
 
 同键回执和缓存复用依据已确认的持久产物来源。缺少存储配置或归档目录不匹配时，实际读取返回 503，仍可领取原任务回执并复用原图引用。
 
+## 关系副本与保留依赖
+
+关系 artifact、storage target 和 replica 分别保存内容身份、固定 Local/R2/PikPak namespace 与对象位置；认证配置引用不代替原 namespace。冷读必须有登记的原来源并实核原字节/长度/SHA/MIME，IO 后重核原 ticket、配置和 source。未删除副本的 uploadedAt 或 verifiedAt 任一已知是原存在承诺，0 不等于 NULL；历史上传未知不触发新的 PUT，普通 reserved 的首次 verified 仍须真实上传前态。未知 operation 的 readable descriptor 只授予冷读/归档能力，正常 publisher、prepared getter、complete 与 ready 保留严格执行条件。
+
+自动复制沿原政策：PNG/JPEG/WebP Local 超过 24h，R2 原 verifiedAt 超过 7d 或当前本站 R2 水位 `8,550,000,000 B`，失败 1h 重试。首轮/无候选/错误等 60s，真实目的 sourceEventId 变化才视为进展并 1s 后再试；R2 uploaded 未 verified 走原 verify，Pik uploaded 不重复 PUT。水位仅算当前 target 的未 deleted identity 登记/预留，按物理 objectKey 去重及原字节长度计，不充当全云容量或压缩对象实占量。未知 publishedAt 不取得年龄资格，未知错误时刻不借 import header 补 1h；Opening 不从文件 MIME 补原 operation、mock标记或规范路径。
+
+复制/核验复用原 IO owner，不删除 Local/R2/PikPak 源。每轮复核当前 ready、queue phase、真实 controls 和 queued/pending/running/未发布 prepared 责任；文件/云 IO 在 SQL 外。关闭先清 timer、阻止新复制，再等待真正 inflight promise 后结束 HTTP 和关库，不能以逻辑终态、清 Map 或 fake cancel 代替物理结束。错误仅输出安全类别。来源释放仍须[保留源权威](../operations/production-release.md#保留源登记工具)覆盖归档、备份引用与恢复责任。
+
+失败 Opening 可以保存未知 parent/operation/不可执行输入的原 prepared 描述符。`readGenerationResultDependency()` 仅为 retained describe 声明真实 final/part 位置和原摘要，不读验文件、不执行/扣退/写账，不授予发布或 ready。它与严格 getter 共用唯一准备事实/完整 commit，Opening 核先行来源和 request/member/account/attempt 角色，已知保护输入与 seed 不降 NULL 绕过。未知操作只过 readable descriptor，file/MIME/hash/len 与投影逐字段一致；普通 ArtifactPrepared、结果恢复和唯一 installer 仍走严格完成条件。
+
 ## 历史退休和旧 writer
+
+### 关系格式的人工退休
+
+人工退休只撤下在线展示/领取，字节继续受保护，不新增 D8 期限或自动清理。JobHistoryRetired 与 ArtifactHistoryRetired 仍分别由原 Gen/Replica owner 维护：
+
+| 约束         | 来源、允许变化与验收                                                                                                                                                                                                                                                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 事实与权威   | JobHistoryRetired 归 generation owner，ArtifactHistoryRetired 归 Replica owner；当前薄行 retired_at 表达在线退休。原 request/job/attempt/charge、输入/附件、幂等键、免费成功及审计来源保持，不照搬旧物理删行。                                                                                                                           |
+| 人工授权     | 两命令只接受当前 owner 的 Key/Cookie 已认证事务，或既有本地管理员边界；复用 assertCurrentOwnerCommand 复查当前成员/owner 配置及认证 epoch，先鉴权再重领回执，不由 metadata.actorId 自证。                                                                                                                                                |
+| 可退休状态   | 复用原 canRetireJobHistory 的终态、无 resultPending、无 pending review 规则；新关系 resultPending 只映射“attempt 有准备且 job 无已发布 artifact”，成功后保留的准备字段不是未决责任。所涉 request 任一 active sibling、仍有未发布准备/核对或 runningControls.has(jobId) 均保护，不能用 SQL terminal 或上游结束时间替代物理 promise 收尾。 |
+| 最小变化     | 人工 job 退休按显式有界选择，按 request 原归属分组产生事实；全 request 的 child 均退休后才标 request 退休。artifact 退休只标产物，保留 job 的原 artifact/late 证据与所有副本引用，展示/领取诚实返回不可用。                                                                                                                              |
+| 幂等与范围   | 选择是 1–200 个规范 ID 的集合，owner 从完整选择和固定人工操作计算意图摘要；同键同选择返回原回执，不同选择冲突。提交中的完整退休集合、分组、归属、reason、回执和指纹一起核对，不能少一项、跨 request 归组或重排后冒充同一命令。                                                                                                           |
+| 原子性与回放 | 追加原事实、回执、流头及所有退休投影属于同一保存点，外层捕获也全表回滚。共同完整提交回放按原序调用真实 owner；不重做当前认证、不生成私有 epoch、不执行 IO，原 actor/回执保持。未决工作与退休后结果不得被后续事实复活。                                                                                                                   |
+| 查询与防重   | 历史分页/详情/结果领取排除退休行；部分 child 退休保留其他在线 child，原请求/旧键仍不能重执行。输入正文保留在唯一 owner，成员读取随请求退休拒绝，内部审计/重放仍可核验，不回填 DTO。                                                                                                                                                      |
+
+物理释放按[产物与留存](../plans/database-model-redesign.md#5-产物存储与留存)及保留源闭包另行授权；历史执行证据见[原 9.32](../history/database-model-execution-records.md#932-人工历史退休薄标记保护和完整回放)。
+
+### 旧格式退休与 writer
 
 清理终态任务通过 `retireJobHistory()` 按不超过 200 条的批次提交 `JobHistoryRetired`。活动任务、带 resultPending 或尚未结案 generationReview 的任务不能退休；重放会保留退休事实并删除相应 jobs 投影，不会重新出现旧任务。已完成 child 可在其他 child 仍活动时退休，但原 parent、完整 child 集合、输入和冷结算保留，后续派发仍把已退休 child 的费用计入原批次上限。事件、冷结算和幂等防重记录仍保留，旧键找不到原目标时返回 410，不能再生成一次。当前不会随退休自动删除受保护输入、产物输入或诊断；图片字节仍按独立产物保存规则处理，不能把日志退休当作完整数据删除。
 
@@ -111,7 +139,7 @@ SIGTERM/SIGINT 先停止接收新请求和新派发，等待已开始的派发�
 依赖退出回调。systemd 的停止超时须留出应用宽限及退出余量；F11/D01 实际
 拆服务和部署时再核验。不能靠启多个调度进程来实现共享账本的滚动重启。
 
-新格式离线 ready 安装要求受保护字节闭包已恢复：待恢复的准备结果由生成 owner 核验原描述、归属和输入，再只读核验存在的最终文件及 `.part`。至少一份完整且不存在原文件 owner 认定的冲突，才能安装；两者皆缺、半写或损坏时拒绝，保留原准备与责任，不自动发布、退款或把后续启动恢复当作本次成功。完整 final/part 可通过核对，但仍保留原运行中或未决状态，之后才由原恢复命令提交完成。该安装规则与实际验证见[数据库计划 9.23](../plans/database-model-redesign.md#923-50-离线完整核对与-ready-安装契约)。
+新格式离线 ready 安装要求受保护字节闭包已恢复：待恢复的准备结果由生成 owner 核验原描述、归属和输入，再只读核验存在的最终文件及 `.part`。至少一份完整且不存在原文件 owner 认定的冲突，才能安装；两者皆缺、半写或损坏时拒绝，保留原准备与责任，不自动发布、退款或把后续启动恢复当作本次成功。完整 final/part 可通过核对，但仍保留原运行中或未决状态，之后才由原恢复命令提交完成。完整安装规则见[离线恢复](../operations/relational-recovery.md#格式完整提交与私有恢复)，原实际验证见[历史 9.23](../history/database-model-execution-records.md#923-50-离线完整核对与-ready-安装契约)。
 
 ## 同步、性能与保证边界
 

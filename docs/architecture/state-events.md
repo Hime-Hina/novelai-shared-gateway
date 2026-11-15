@@ -75,9 +75,8 @@ IO 仍在 SQL 外。通知适配器只读取本次成功提交前后瞬时 cut �
 会话比较只识别原会话撤销/变权，新增签发不算撤销；签发清理使用成员 owner 原 SQL
 的时间、成员和凭据代次条件，不借当前时间或整个会话集合不相等来猜。执行器装配共享同一个通知对象与
 原 EventEmitter，stateEventsFor 也使用这个长期对象，不能每请求重新包装。提交后
-适配或监听器失败不改变已提交结果。关系通知边界及反例见数据库计划 9.52；新的
-shared-status/shared-events 由数据库计划 9.55 的新薄适配接入；sole 装配仍另行验收，
-本文不把旧 R01/N01 证据当作新格式 HTTP/SSE 验收。
+适配或监听器失败不改变已提交结果。原通知反例与薄适配接合分别见[历史 9.52](../history/database-model-execution-records.md#952-新格式最外层提交后状态通知)、[历史 9.55](../history/database-model-execution-records.md#955-共享状态薄来源与既有成员-sse-接合)；
+新格式 HTTP/SSE 与实际发布物按[当前验收](../plans/database-model-redesign.md#74-剩余交付与验收)核对。
 
 原成员 SSE transport 只提取一次供旧入口和新关系入口共用，连接计数、hub 合并、
 resync、背压、心跳、关闭和错误语义不另写一套。关系入口的工厂保留同库、同

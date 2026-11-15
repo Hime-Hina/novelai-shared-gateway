@@ -15,7 +15,7 @@
 ## 计划
 
 - [架构重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源与成员生成接口目标、工作包及分阶段验收记录。
-- [数据库与数据模型重构](plans/database-model-redesign.md)：数据模型、owner、迁移与归档选择、当前实现及剩余验收的统一记录；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。离线恢复与合法 ready 安装见[关系恢复指南](operations/relational-recovery.md)，实际部署和生产切换以[正式发布记录](operations/production-release.md)为准。
+- [数据库与数据模型重构](plans/database-model-redesign.md)：数据模型、owner、已确认迁移选择和剩余验收；进行中状态统一见 [#32 顶部状态](https://github.com/Hime-Hina/novelai-shared-gateway/issues/32)；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。离线恢复与合法 ready 安装见[关系恢复指南](operations/relational-recovery.md)，实际部署和生产切换以[正式发布记录](operations/production-release.md)为准。
 - [后续扩展计划](plans/scaling-follow-up-plan.md)：多执行器、多账号/车队及数据库迁移，未纳入当前实施范围。
 
 ## 接口契约
@@ -51,9 +51,10 @@
 - [队列基线](history/queue-baseline.md)：排队数据与采样限制。
 - [浏览器基线](history/browser-baseline.md)：首屏、缓存和浏览器验收证据。
 - [事件重构性能验证](history/refactor-performance-evidence.md)：对照方法、正式运行口径、容量和重放证据；小样本与正式结果分别标识。
+- [数据模型实施与验证记录](history/database-model-execution-records.md)：固定 6279450 原第 9 章全文，保留各候选的失败、独审、执行边界与原锚点；现行规则回到所属契约。
 - [数据模型迁移前置盘点](history/database-model-preflight.md)：固定线上副本的聚合盘点、终态开账类别试验、实际回放覆盖及待决定的恢复范围；不代表正式迁移或切换验收。
 - [真实旧归档恢复验证](history/database-model-archive-recovery-20261114.md)：固定旧包的真实源审计、从零事件重建、资源测量及历史查询/审计来源缺口；不代表完整归档或新格式 ready。
-- [数据模型迁移选择](history/database-model-migration-decision.md)：A/B 与旧键、会话、缺图状态的四项待选材料、保留范围及选定后的执行顺序。
+- [数据模型迁移选择](history/database-model-migration-decision.md)：已确认的 B、旧键、会话、缺图四项选择、保留范围及执行顺序。
 - [数据模型完整源码验证](history/database-model-full-source-20261115.md)：固定 df0、b9、0094243 与 147aabd 四轮完整后端的实际失败阶段、封存证据与各轮环境资格；不是最终验收。
 - [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 
