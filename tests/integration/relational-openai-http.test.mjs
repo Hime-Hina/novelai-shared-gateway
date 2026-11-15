@@ -12,6 +12,8 @@ import {
   replicateMockR2,
 } from '../helpers/relational-api-http.mjs';
 import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
+import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
+import { createRelationalDirectHttp } from '../../server/generation/relational-direct-http.ts';
 import { openAiGenerationError } from '../../server/protocols/openai-http.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
@@ -924,6 +926,267 @@ test('共同API实际读取原文件后撤下ready，不交付Native原bytes或O
       assert.notDeepEqual(response.buffer, image);
       assert.equal(databaseState(f.db), before);
       assert.equal(f.upstream.calls.length, 1);
+    });
+  }
+});
+
+test('三协议在首次Discord IO后仍绑定原成员和认证epoch，不能把同字面Key的新主人或新代次当原调用者', async (t) => {
+  for (const protocol of ['Native', 'OpenAI', 'Direct']) {
+    for (const change of ['key-owner', 'auth-epoch']) {
+      await t.test(`${protocol}/${change}`, async (t) => {
+        let enter, release, observed;
+        const entered = new Promise((resolve) => {
+            enter = resolve;
+          }),
+          gate = new Promise((resolve) => {
+            release = resolve;
+          }),
+          env = {
+            DISCORD_CLIENT_ID: '123456789012345678',
+            DISCORD_CLIENT_SECRET: 'synthetic-private-secret',
+            DISCORD_GUILD_ID: '1134557553011998840',
+            PUBLIC_BASE_URL: 'https://synthetic.example',
+          },
+          f = await setup(t, {
+            env,
+            createHttp:
+              protocol === 'Native'
+                ? createRelationalNativeHttp
+                : protocol === 'OpenAI'
+                  ? createRelationalOpenAiHttp
+                  : createRelationalDirectHttp,
+            httpDependencies: {
+              readNormalizationDefaults: () => ({
+                defaultModel: 'nai-diffusion-4-5-full',
+                defaultNegative: '',
+                defaults: {},
+              }),
+              imageUrl: (_request, id) => `/api/images/${id}/content`,
+              validImageSignature: () => false,
+              isAdminRead: () => false,
+              sendJson(res, status, value) {
+                res.writeHead(status, { 'content-type': 'application/json' });
+                res.end(JSON.stringify(value));
+              },
+              sendStreamHeaders: () => assert.fail('not a stream request'),
+              async discordFetch(url) {
+                assert.equal(f.db.inTransaction, false);
+                assert.match(String(url), /users\/@me\/guilds\/.+\/member$/);
+                enter();
+                await gate;
+                return Response.json({ user: { id: '123456789012345679' } });
+              },
+            },
+          });
+        t.after(() => release());
+        await f.members.discordAuthenticationTransaction((tx) => {
+          for (const [id, discordId] of [
+            ['m1', '123456789012345679'],
+            ['m2', '123456789012345680'],
+          ]) {
+            const member = tx.readMember(id);
+            member.discord = {
+              id: discordId,
+              guildId: env.DISCORD_GUILD_ID,
+              accessToken: `synthetic-${id}-access`,
+              refreshToken: `synthetic-${id}-refresh`,
+              expiresAt: Date.now() + 86400000,
+              checkedAt: id === 'm1' ? 0 : Date.now(),
+              member: true,
+            };
+            tx.saveAuthentication(member);
+          }
+        });
+        const originalTransaction =
+          RelationalMemberStore.prototype.discordAuthenticationTransaction;
+        t.mock.method(
+          RelationalMemberStore.prototype,
+          'discordAuthenticationTransaction',
+          async function (mutate) {
+            const result = await originalTransaction.call(this, mutate);
+            observed = databaseState(f.db);
+            return result;
+          },
+        );
+        const original = f.members.readMember('m1'),
+          authEpoch = f.db
+            .prepare("SELECT auth_epoch AS epoch FROM members WHERE id='m1'")
+            .get().epoch;
+        const pending =
+          protocol === 'Direct'
+            ? fetch(
+                f.origin +
+                  '/generate?' +
+                  new URLSearchParams({
+                    token: keys.m1,
+                    tag: 'synthetic identity prompt',
+                    model: 'nai-diffusion-4-5-full',
+                    width: '128',
+                    height: '128',
+                    seed: '7',
+                    nocache: '1',
+                  }),
+              ).then(async (response) => ({
+                status: response.status,
+                headers: response.headers,
+                buffer: Buffer.from(await response.arrayBuffer()),
+              }))
+            : f.call(protocol === 'Native' ? nativeInput() : input(), {
+                endpoint: protocol === 'Native' ? '/ai/generate-image' : '/v1/chat/completions',
+                key: 'identity-' + change,
+              });
+        await entered;
+        if (change === 'key-owner')
+          f.db.transaction(() => {
+            f.members.replaceMemberApiKey('m1', 'STA1N-identity-current');
+            f.members.replaceMemberApiKey('m2', keys.m1);
+          })();
+        else
+          f.db.transaction(() => {
+            f.members.setMemberStatus(
+              { ...meta('identity-disable', f.clock), actorKind: 'admin', actorId: null },
+              'm1',
+              'disabled',
+            );
+            f.members.setMemberStatus(
+              { ...meta('identity-enable', f.clock), actorKind: 'admin', actorId: null },
+              'm1',
+              'active',
+            );
+          })();
+        assert.equal(
+          f.members.readMember(change === 'key-owner' ? 'm2' : 'm1').admissionEpoch,
+          original.admissionEpoch,
+        );
+        if (change === 'auth-epoch')
+          assert.notEqual(
+            f.db.prepare("SELECT auth_epoch AS epoch FROM members WHERE id='m1'").get().epoch,
+            authEpoch,
+          );
+        release();
+        const response = await pending;
+        if (protocol === 'Direct') {
+          // 原 GET 契约以200错误SVG表达凭据拒绝；不能将它与生成成功的200 WebP混同。
+          assert.equal(response.status, 200);
+          assert.equal(response.headers.get('x-error'), '1');
+          assert.match(response.headers.get('content-type'), /image\/svg\+xml/);
+          assert.match(response.buffer.toString(), /密钥无效或已被禁用/);
+        } else {
+          assert.equal(response.status, 401, response.buffer.toString());
+        }
+        assert.ok(
+          observed,
+          'real Discord observation transaction completed before original-identity rejection',
+        );
+        assert.equal(
+          databaseState(f.db),
+          observed,
+          'no writes after the actual authorization observation',
+        );
+        assert.equal(f.upstream.calls.length, 0);
+        assert.equal(f.budget.activeBytes(), 0);
+        // A subsequent call is a new authorization, including the valid new owner of the literal key.
+        const healthy =
+          protocol === 'Direct'
+            ? await fetch(
+                f.origin +
+                  '/generate?' +
+                  new URLSearchParams({
+                    token: keys.m1,
+                    tag: 'synthetic identity prompt',
+                    model: 'nai-diffusion-4-5-full',
+                    width: '128',
+                    height: '128',
+                    seed: '7',
+                    nocache: '1',
+                  }),
+              )
+            : await f.call(protocol === 'Native' ? nativeInput() : input(), {
+                endpoint: protocol === 'Native' ? '/ai/generate-image' : '/v1/chat/completions',
+                key: 'identity-healthy',
+              });
+        assert.equal(healthy.status, 200);
+        if (protocol === 'Direct') await healthy.arrayBuffer();
+        assert.equal(f.upstream.calls.length, 1);
+        const accepted = f.db
+          .prepare(
+            'SELECT member_id AS memberId FROM generation_requests ORDER BY rowid DESC LIMIT 1',
+          )
+          .get();
+        assert.equal(accepted.memberId, change === 'key-owner' ? 'm2' : 'm1');
+      });
+    }
+  }
+});
+
+test('共同API原认证epoch跨正文、缓存资格和原图IO保持，旧回执也不能绕过且新调用可合法重领', async (t) => {
+  for (const phase of ['body', 'cache', 'content']) {
+    await t.test(phase, async (t) => {
+      let f, changed;
+      const rotate = () => {
+        const original = f.members.readMember('m1').admissionEpoch;
+        f.db.transaction(() => {
+          f.members.setMemberStatus(
+            { ...meta(`io-${phase}-disable`, f.clock), actorKind: 'admin', actorId: null },
+            'm1',
+            'disabled',
+          );
+          f.members.setMemberStatus(
+            { ...meta(`io-${phase}-enable`, f.clock), actorKind: 'admin', actorId: null },
+            'm1',
+            'active',
+          );
+        })();
+        assert.equal(f.members.readMember('m1').admissionEpoch, original);
+        changed = databaseState(f.db);
+      };
+      f = await fixture(t, {
+        onBodyChunk:
+          phase === 'body'
+            ? () => {
+                if (!changed) rotate();
+              }
+            : undefined,
+      });
+      const body = input({}, { nocache: phase === 'cache' ? '0' : '1' }),
+        key = phase === 'body' ? 'body-new' : 'source';
+      if (phase !== 'body') {
+        assert.equal((await f.call(body, { key })).status, 200);
+        f.advance();
+        const original = phase === 'cache' ? fs.lstat : fs.open;
+        const method = phase === 'cache' ? 'lstat' : 'open';
+        const mocked = t.mock.method(fs, method, async (...args) => {
+          const result = await original(...args);
+          if (path.dirname(String(args[0])) === path.join(f.dir, 'images')) {
+            if (phase === 'cache') {
+              if (!changed) rotate();
+            } else {
+              const read = result.readFile.bind(result);
+              result.readFile = async (...values) => {
+                const bytes = await read(...values);
+                if (!changed) rotate();
+                return bytes;
+              };
+            }
+          }
+          return result;
+        });
+        syncBuiltinESMExports();
+        t.after(() => {
+          mocked.mock.restore();
+          syncBuiltinESMExports();
+        });
+      }
+      const denied = await f.call(body, { key: phase === 'cache' ? 'cache-new' : key });
+      assert.ok(changed, 'actual ' + phase + ' IO reached before epoch rotation');
+      assert.equal(denied.status, 401, denied.buffer.toString());
+      assert.equal(databaseState(f.db), changed);
+      assert.equal(f.budget.activeBytes(), 0);
+      assert.equal(f.upstream.calls.length, phase === 'body' ? 0 : 1);
+      const healthy = await f.call(body, { key: phase === 'cache' ? 'cache-new' : key });
+      assert.equal(healthy.status, 200, healthy.buffer.toString());
+      assert.equal(f.upstream.calls.length, 1);
+      assertFullReplay(t, f);
     });
   }
 });

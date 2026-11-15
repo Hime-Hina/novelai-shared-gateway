@@ -2,12 +2,9 @@ import { relationalStateNotificationsFor } from '../events/relational-state-noti
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
-import {
-  authenticateMemberApiKey,
-  withAuthenticatedMemberApiKey,
-} from '../members/authentication.ts';
+import { authorizeRelationalMemberApiKey } from '../members/relational-api-key-access.ts';
 import { gatewayKeyFrom } from '../members/http-request.ts';
-import { requireDiscordMembership, type DiscordDependencies } from '../members/discord-auth.ts';
+import type { DiscordDependencies } from '../members/discord-auth.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
 import { RelationalInputStore } from '../storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
@@ -98,35 +95,20 @@ export function createRelationalOpenAiHttp(deps: {
       if (generation) {
         req.generationIdempotencyKey = readGenerationIdempotencyKey(req);
       }
-      const member = await authenticateMemberApiKey(members, token);
-      if (!member) {
-        fail(401, 'invalid token.');
-      }
-      await requireDiscordMembership(member, {
-        store: members,
+      const current = await authorizeRelationalMemberApiKey({
+        sqlite,
+        members,
+        token,
         env,
         discordFetch: deps.discordFetch,
       });
-      const current = await withAuthenticatedMemberApiKey(
-        members,
-        token,
-        (authorized) => {
-          // Discord IO 后目录读取与生成都重核原 Key 和当前 ready，不能只检查成员仍 active。
-          assertRelationalStorageReady(sqlite);
-          return members.readMember(authorized.id);
-        },
-        env,
+      const admissionVersion = await current(
+        (memberId) => members.readMember(memberId)!.admissionEpoch,
       );
-      if (!current) {
-        fail(401, 'invalid token.');
-      }
-      const admissionVersion = current.admissionEpoch;
       const delivery = createRelationalApiDelivery({
         sqlite,
-        members,
         requests,
-        token,
-        env,
+        authorize: current,
         replicas: deps.replicas,
         events: deps.events,
         runtime: deps.runtime,
@@ -137,37 +119,40 @@ export function createRelationalOpenAiHttp(deps: {
           accept: async (request) => {
             const body = (await deps.readJson(request, 2 * 1024 * 1024)) as Record<string, unknown>;
             let model!: string;
-            const accepted = await admit({
-              token,
-              key: request.generationIdempotencyKey,
-              admissionVersion,
-              operation: 'generate',
-              source: 'openai',
-              seedMode: 'random',
-              noCache: isNoCache(
-                (body.nai as Record<string, unknown> | undefined)?.nocache ?? body.nocache ?? '1',
-              ),
-              claim,
-              context: () => ({
-                kind: 'direct',
-                native: nativeNormalizationContext(),
-                defaults: requestNormalizationDefaults(deps.readNormalizationDefaults()),
-              }),
-              normalize: (context) => {
-                if (context.kind !== 'direct') {
-                  fail(409, '操作键已用于另一种生成意图。');
-                }
-                const parsed = parseOpenAiImageRequest(body, context.defaults);
-                model = parsed.model;
-                return {
-                  ...normalizeNovelAiRequest(parsed.request, context.defaults, {
-                    maxSteps: DIRECT_URL_MAX_STEPS,
-                  }),
-                  allowPurchasedAnlas: parsed.request.allowPurchasedAnlas === true,
-                  normalizationContext: { native: context.native },
-                };
+            const accepted = await admit(
+              {
+                token,
+                key: request.generationIdempotencyKey,
+                admissionVersion,
+                operation: 'generate',
+                source: 'openai',
+                seedMode: 'random',
+                noCache: isNoCache(
+                  (body.nai as Record<string, unknown> | undefined)?.nocache ?? body.nocache ?? '1',
+                ),
+                claim,
+                context: () => ({
+                  kind: 'direct',
+                  native: nativeNormalizationContext(),
+                  defaults: requestNormalizationDefaults(deps.readNormalizationDefaults()),
+                }),
+                normalize: (context) => {
+                  if (context.kind !== 'direct') {
+                    fail(409, '操作键已用于另一种生成意图。');
+                  }
+                  const parsed = parseOpenAiImageRequest(body, context.defaults);
+                  model = parsed.model;
+                  return {
+                    ...normalizeNovelAiRequest(parsed.request, context.defaults, {
+                      maxSteps: DIRECT_URL_MAX_STEPS,
+                    }),
+                    allowPurchasedAnlas: parsed.request.allowPurchasedAnlas === true,
+                    normalizationContext: { native: context.native },
+                  };
+                },
               },
-            });
+              current,
+            );
             if (accepted.replayed) {
               await delivery.validateReplay(accepted.jobIds);
             }
