@@ -2566,6 +2566,14 @@ registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现�
 
 固定 `df0ac66c353af7c0142ed3f33b83545f7b60f665` 一次原并发 4 的 `pnpm test`：2,883 节点为 2,838 pass、40 fail、5 原 skip、0 cancel，318.3372094 秒；29 个顶层失败与 11 个子级失败不重复计数。原来源/守卫/native 绑定和实际进程退出已封存，严格实际 Node 环境白名单未取证。逐范围首次失败、证据摘要及资格说明统一见[完整源码验证记录](../history/database-model-full-source-20261115.md)；后继须保原反例修复并按固定候选复验，未将早期夹具拒绝或局部通过写成整体验收。
 
+### 9.101 原查询、输入与凭据反例的来源修正
+
+原 df0 完整回归中两项 Opening 查询夹具遗漏必传的 nullable `originalRequestId`，后继 `80f8e3fc0484c3d68469b3d77d3af8699d4990b7` 仅补明确 NULL 与原 parent-view 断言，保全部未知时间/金额、已知 0、成员隔离、退休和最近 30 条断言。原两项实际 2/2、零 skip，4.0485259 秒；该轮实际 Node 环境块未取证，资格说明单列，不从父 PowerShell 的清理意图推断严格隔离。
+
+输入/凭据后继固定 `d086a2e81f703b07f1dfbd7a41c83550169664e3`，只改两份原测试。活动 parent 经实际受理；同 input 跨 parent 再由先行来源登记、完整 Opening 与共同 replayer 建立，保原四 child、不同 input 的同 hash 控制、4096 终态规模和覆盖索引；partial 补先行来源但不补 seed/default/context；401/403 按当前 owner 的精确 `quota_sync_error`/503 拒绝并核全表不变。原三项 7/7、零 skip，1.2661899 秒；Python 显式新环境块、两个实际 worker 的 11 个变量名均仅允许项，源码/native 前后不变。首个不同 input 的修正虽 7/7，但独审发现会漏按 input 去重的错误，故没有据此交付。
+
+非作者在私有固定导出仅替换一条 SQL、误按 input 去重，前述不同 input/原 EQP 与合法 Opening 均通过后，准确在新增同 input 阶段断言 `4800 != 9600`；恢复原 SQL 后原预算 1/1、零 skip。两次 TAP 0.6001842/0.5497111 秒分列，原测试、EQP、guard 未改；首轮启动器环境 setup 红单列。正式独审 `INDEPENDENT-REVIEW.md` SHA256 `55092398fb9a8bdecf803883c3157a7082b899e90ca2b10ac0fc596ce0212b25`，目录 `H:/TEMP/novelai-input-fixtures-independent-d086-20261115/`；作者最终源码日志 SHA256 `5626d104b6916548f5a2bc7eabc68c496c37b666c88257ce545d1418c459215a`。本片不改变业务 owner、DDL/历史 SQL/journal、格式或状态机；关键断言增量仍列维护者复核，不把窄通过扣减成新一轮 full 通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
