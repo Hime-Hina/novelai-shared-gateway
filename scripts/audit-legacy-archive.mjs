@@ -483,13 +483,18 @@ function lookup(db, values, owners, assertPublicDomainFact) {
   }
   return null;
 }
-function readLocalArtifact(dataDir, artifact, describeStoredResult) {
+function readLocalArtifact(dataDir, artifact, describeStoredResult, validateImageBytes) {
+  const maxBytes = 64 * 1024 * 1024;
+  // 未知操作分支也保留固定 3caba 发布 owner 已有的 imageId 资格边界。
   if (
+    typeof artifact.id !== 'string' ||
+    !/^[A-Za-z0-9_-]{1,128}$/.test(artifact.id) ||
+    /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(artifact.id) ||
     typeof artifact.file !== 'string' ||
     !artifact.file ||
     !Number.isSafeInteger(artifact.byteLength) ||
     artifact.byteLength < 1 ||
-    artifact.byteLength > 64 * 1024 * 1024 ||
+    artifact.byteLength > maxBytes ||
     typeof artifact.sha256 !== 'string' ||
     !/^[a-f0-9]{64}$/.test(artifact.sha256)
   ) {
@@ -536,11 +541,28 @@ function readLocalArtifact(dataDir, artifact, describeStoredResult) {
       fail();
     }
     const bytes = readFileSync(handle),
-      after = fstatSync(handle, { bigint: true }),
+      after = fstatSync(handle, { bigint: true });
+    let observed;
+    if (
+      artifact.operation === null &&
+      ['image/png', 'image/jpeg', 'image/webp'].includes(artifact.mimeType)
+    ) {
+      // 原操作未知时只核原图，不以虚构的 generate 构造发布描述符。
+      const image = validateImageBytes(bytes, {
+        maxBytes,
+        maxDimension: 16384,
+        label: 'stored result',
+      });
+      if (image.mimeType !== artifact.mimeType) {
+        fail();
+      }
+      observed = { sha256: sha256(bytes), byteLength: bytes.length };
+    } else {
       observed = describeStoredResult(artifact.id, artifact.operation, {
         mimeType: artifact.mimeType,
         buffer: bytes,
       });
+    }
     const finalName = lstatSync(file, { bigint: true });
     assertLocation();
     if (
@@ -631,12 +653,14 @@ try {
       { canonicalJson, domainDigest, assertDomainEvent, assertPublicDomainFact },
       { verifyEventProjections },
       { describeStoredResult },
+      { validateImageBytes },
     ] = await Promise.all([
       import('../server/storage/sqlite-migrations.ts'),
       import('../server/events/event-store.ts'),
       import('../server/events/domain-events.ts'),
       import('../server/storage/sqlite-store.ts'),
       import('../server/storage/result-files.ts'),
+      import('../server/protocols/native-image.ts'),
     ]);
     const db = new Database(source, { readonly: true, fileMustExist: true });
     const handles = [];
@@ -934,7 +958,12 @@ try {
       }
     }
     if (values['data-dir']) {
-      selected.bytes = readLocalArtifact(values['data-dir'], selected.report, describeStoredResult);
+      selected.bytes = readLocalArtifact(
+        values['data-dir'],
+        selected.report,
+        describeStoredResult,
+        validateImageBytes,
+      );
       selected.report.localContentVerified = true;
     }
     if ((await digest(source)) !== originalHash) {

@@ -2444,6 +2444,28 @@ PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/pl
 
 根在 `c653bf2` 上整合整个76 lineage，十一非plan路径逐字等于独审固定源；仅新增Replica只读分页、一个实际CLI及普通包seed，原9.87–9.92/当前DDL/账户/会话/Native/汇总源保持。当前格式下两个完整Node文件 **14/14、零跳过，15.631秒**，包括原R2六例、source五例、两个R2保护例和新的共同校验矩阵；类型、architecture、默认与可信main88迁移、203文件语法、两Python模块AST及变更格式通过。证据 `H:/TEMP/novelai-retained-checkpoint-root-preservation.json` 和 root-* 日志。作者13/原Python8+新3实际管道和独审原反例分列复用，未无故重跑250秒。当前仍只保存来源和保护信息；所有产物源保留，archive依赖列表原导出绑定与checkpoint之后来源需后续核对，coverage始终unknown。新正常发布包/compiled/Node24、LinuxNode22正向恢复与成功轮换、掉电/实云/同规模容量性能/生产切换尚未验，不借source检查冒充。
 
+### 9.95 旧 Native 历史的精确归档承接证据
+
+本片基于 `a87f9279`，首片改 `tests/helpers/legacy-inline-archive.mjs`、`tests/deployment/legacy-tools.test.mjs` 与对应 API/本节；真实红到场后另获准 `scripts/audit-legacy-archive.mjs` 的唯一窄读取修复。旧 server、包/CI、guard、新模型及冻结 076 原件不改。旧包仍固定 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f`，原 helper 的 direct/openai 和原 deployment 主源/防写反例保留。新窄 `verifyLegacyNativeArchive()` 同时由标准打包测试与 cached-bundle 新夹具预检调用；包验证、私有进程 env 与原 15 秒 CLI runner 只提取为两 caller 共用，不添加查询框架或在线兼容入口。
+
+来源是 `a87f9279` 原 `native-http.test.mjs`，Git blob `eb781db5810a2e1339e5eff44bf59675538a3549`、原文件 SHA `35d0f9e209c3b19a3c64f2b2553d8d8fa1ad5086dcaecab9d0df9159e3f4fb7d`。web902 保留原完整 tag/prompt/artist/negative/model、steps 28、seed 902、cfg 0 等字段及 279 B JSON/SHA `6a103a29b15b35c4b9014d70e7e7f18a9ab4b921c7ba6960635436d7eaa84787`，按原旧 owner 产生实际 queueSeq，再与原 Opening 交叉核对；保存的物理排序 `-1000` 按 SQLite 原文本读取。没有补 901 父、count 或 normalization context，未把单条归档核对称为逆物理顺序重启已完成。
+
+同一新合成旧源保留原 `job-legacy-private-error` 的 `novelai-native` 来源、Native 原 body/parse 与 noCache 指纹、字面 legacyKey、normalization_context 精确 `{}`、parentless 关系及原 ENOENT/errorDetail。成员和账户 ID、时间与 queueSeq 均来自该次真实旧源，最小账户不补 Opus/余额；诊断对照原保护正文/SHA/长度及批量导出元数据，缺原 diagnosticId 不伪造。原 `job-access-owner`/`img-access-owner` 的独立 68 B PNG/SHA `63ef318d96b5d0d0ceba6e04a4e622b1158335cdc67c49e27839132c6f655058` 保持原缺失 source/request/requestId/jobId 和图片 operation/时间；显式本地实读前后分别核 false/true、原字节不变，云端仍未实读。
+
+验收沿同一已验证 076 bundle 的 `--job/--request/--command/--artifact` 与批量摘要；输入/诊断/原图不进入 stdout，原 `{}`、未知字段与合法已知 0 分开核对，源 DB SHA/目录及原 PNG 全程不变。Native command 只核实际 Opening 原提交/回执摘要，不造生成 count 或新 receipt。新夹具先用已核旧 bundle 作短预检，最终仍须当前源码标准打包/解包；前者不代替 CI 接线。原 lookup/package 期限不延长。上述合成证据不决定迁移 A/B、生产历史在线处置、真实旧外部图闭包、容量或切换验收。
+
+原 cached 076 新夹具短预检已真实到场，30.937 秒，原每次 15 秒期限不变。web902 输入、失败输入、原 `{}`/键绑定/诊断摘要、真实 Opening command 和 done/图片 NULL 元数据均通过，唯一业务失败为 NULL operation PNG 的 `--artifact --data-dir` 实读；Node 把该子例及父项计为 2 fail，不能当两个独立问题。日志 `H:/TEMP/novelai-native-archive-20261115/cached-before.log`、原源码/argv `cached-before-source.json` 与 helper/入口原件保留。原封源 SHA `578487aecac79d617353fdb747bf260086ccc5057812b856e7c48af53aeb7e01`，每个 CLI 调用后先核 DB 字节、目录和原图不变，再核退出状态；失败 stdout 为空。旧工具文件 SHA 仍为 `fb6ef6ad8afe52189bc8e4e6955a0cf34a0ed10456fca9a2ee0f4ed368f8ddb2`。
+
+根因是 076 `readLocalArtifact()` 把原未知 operation 传给固定旧 `describeStoredResult()`，后者是发布 descriptor owner，要求 generate/upscale/encode-vibe 枚举，该原形状不能靠补 generate 获得通过。最小修复仅使 operation 为 NULL 且已保存 png/jpeg/webp MIME 的原图沿固定 `validateImageBytes()`、实际 MIME、原 SHA/长度验证；known operation 沿原 describe，unknown binary 仍拒，输出 operation 不猜补。保留原身份/路径/fd/namespace/摘要防护，并把固定旧 descriptor 已有的三项 imageId 条件提到共同读资格检查；不改旧 server、新模型、包/CI 或 076 原件。新增自洽坏图、unknown binary 及同一路径合法原图/非法 imageId 的最小反例，各先核原源 metadata 审计成功再检查实读拒绝；不会手改旧 manifest 让缓存包冒充新候选。
+
+固定 `169929e` 的首次正式新包/解包整轮 **26 项、25 通过、1 清理钩子失败，236.644 秒**。新 Native 完整来源、原图 NULL operation 实读和三项拒绝反例通过；原 21 个业务子项全部通过（旧标准 22 节点包含顶层）。唯一失败是新夹具在父进程加载了解包目录的 SQLite DLL，Windows 仍持有它而不能执行原 `rm`；这不能记为整个 suite 通过。原日志、合成源 SHA、实际 tar/manifest/CLI 均封存于 `H:/TEMP/novelai-native-archive-20261115/`。最小后继只让父进程的原始行断言复用现测试依赖 `Database`，如原 deployment caller；固定旧造源、parser、指纹及 CLI 仍使用实际包，关闭源连接、所有清理/断言/期限不变。不把清理错误归为原 PNG 业务失败，也不删除原失败记录。
+
+后继固定 `e8b3b37` 在 Node 22.23.4 重新运行标准 `node --test --test-concurrency=1 tests/deployment/legacy-tools.test.mjs`，包含重新正式打包/解包，**26/26、零跳过，245.525 秒**；原清理钩子成功，实际解包目录已删除。原 120 秒打包/15 秒 CLI 时限不变，没有自动重试、安装或原生重建。实际新 tar SHA `c2a222a756db32670a3cb4a9c5d6e616b678aa9e8d46cb4aa0788ccdda1f5a1b`、manifest SHA `988747dbe20cc1bb84e3a502072c5a55201dd2982653694b0c7b2e6add9a0385`、CLI SHA `ea44f5c7214ff229e9a7db22b4da1efb56ae914d46d5264fe04ae86c2f2b2186` 已在清理前只读复制封存；本次合成 Native 源 SHA `4c70062c03145781cf0eeb02c173d2b2c10108eef63b2540a21002d69b024fa8`。完整原日志 `official-e8-standard.log` SHA `a7f853036e69855fb8fc454815778dfb37ae8dd1413a4dbd94ed121b23e46755`，结构化结果 `official-e8-result.json` SHA `1477025ba007a90f22fb4479b5ed77fc5ebf9d0fd201a6a734f9cd0bfe43dd4c`；首轮清理失败和冻结旧包的真实 PNG 红仍分别保留。该作者验收待独立技术审查，不作为新在线历史范围或整体迁移闭环结论。
+
+固定文档后继 `282c67db300fc01d13a0c998cf759fa9b033c0f3` 已独立技术审查 **PASS**，报告 `H:/TEMP/novelai-native-archive-independent-282c67d-20261115/INDEPENDENT-REVIEW.md`，SHA256 `e64d3aa46d8b327aa27181e4dfb682c7a61fd10711e31140fca0dd8841cba916`。非作者只读核实并解开上述实际封存 tar，没有重建或改写 manifest；先运行真正的包自验，再由固定旧 owner 产生真实 parentless 源。独立四项 **4/4、零跳过，18.629 秒**，七个实际包子进程全部退出且解包目录实际清理成功。原 PNG 实读保留 operation/jobId/时间 NULL；自洽摘要的坏 PNG、错误 MIME 和既存越界文件分别拒绝，每次前后源库、目录与原图保持不变。unknown binary 的原拒绝边界仍在，不把 MIME 校验当作 operation 来源；原 cached 红例与首次清理失败单独保留。
+
+根从 `04b172e` 整合整个282 lineage，实际共同基线为 `a87f9279`，三份 CLI/helper/deployment 技术文件逐字等于独审固定源，API 为真实并集，原9.87–9.93.1及回滚验证规范保持。根只复用同字节正式包与独审证据，不冒称另跑第三次245秒整套；产品范围不扩到在线历史兼容、新格式 converter 或生产迁移。保留证明与根静态检查结果见 `H:/TEMP/novelai-legacy-native-root-preservation.json`；下一步仍是当前格式的历史来源精度、完整 Native/故障恢复以及同候选最终发布验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
