@@ -2511,13 +2511,15 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 静态类型、architecture、默认及可信 a87 migration、改动格式和语法通过。首个获准的最窄 TEMP 探针逐字复用本夹具与 IO 前 guard，真实生成seed891一次，签名200/匿名未签401/本人200/其他成员403先通过；真实 Local descriptor 文件改名后 GET content 实际503，原500断言精准失败，test1.529s/file2.099s。wire body为安全英文 `No confirmed artifact replica has readable original bytes.`，共同 reader 的 `ARTIFACT_CONTENT_UNAVAILABLE` 既有503经过中央普通错误分支原样返回；原文件已 finally 恢复、实际stop及完整公共回放完成。日志、TEMP源码及摘要封存 `H:/TEMP/novelai-native-http-994-20261115/`，不把这次真实路径差异或静态绿色记为主文件通过，原500断言尚未改变。
 
-尚未执行本候选原四个实际子进程测试或取得通过结论；后续契约决定、实际运行、源码摘要和独审证据按父任务串行排期补入，不借依赖的旧绿色或其他 Native 文件宣称本片完成。未 full/build/compiled/Node24/native install、真实云端或生产。
+初版静态阶段尚未执行原四个实际子进程测试，随后首轮完整结果记在下文；后续契约决定、实际运行、源码摘要和独审证据按父任务串行排期补入，不借依赖的旧绿色或其他 Native 文件宣称本片完成。未 full/build/compiled/Node24/native install、真实云端或生产。
 
 后继在新独立树普通合入固定根 `c653bf2a2654a192f7f44c40dd136fc75c2db100`，保留其角色、DDL2314、默认启用、batch/common actual-start 及两侧完整文档，原 `1d1c588` 树和首红原件不改。Native 文件仍逐字相同，原18个测试节点、17次生成、240s总限和500缺图断言保持；下一次原四顶层全文件运行即使继续报告已知503≠500，也须让其余正常子例实际执行，不能 skip、删断言或以短探针替代。实际源运行仍按父任务独占排期，当前不把已知红写成通过。
 
 固定 `9ea858cc583f13c74242caf75a683f124ac16178` 获准完整执行一次原四顶层文件，**18项、13通过、5失败、零跳过，185.655秒**（主流程181.049秒），原日志 `H:/TEMP/novelai-native-http-994-followup-20261115/full-native-http-first.log`，SHA256 `09d8afdf366d416565953f1d78eff355e40afc4182f471c753d4d904220a23fe`。原 Local503≠500仍红；部分批次 callback 内后部 `let jobs` 遮蔽先前 `jobs()` 审计调用，触发 TDZ，连带下一诊断子例未取得失败任务ID，以及末尾主流程实际15≠17；加上父汇总为5失败。其余三顶层（HTML200失败退款、Direct原图/序号、multipart ZIP）全部通过，原 Full/5C/Medium、OpenAI、SSE私有错误重领、双成员11600ms/8MiB/10s接续、成员取消/恢复与429退款子例均到场通过。901/902重开、完成、原输入与顺序已通过，末累计数量未通过；不把连带红记作这些未完成的批次断言通过。
 
 全部实际 child 与测试清理退出后释放源槽，再只把该 callback 的局部变量和引用重命名为 `batchJobs`，原 helper、业务输入、断言与期限不动；首日志、受验源码和原9ea Git对象保留。该修正的静态检查不代替部分批次、后继诊断及整串17次实际生成的复验，后续源执行另按父任务排期；本片仍不是 Root 或9.98最终同候选验收。
+
+其后从固定 `843880bfe101b2263102c8f0688e6879a76bd3e4` 普通合入共同候选 `63169cf61ebf4e5870c916017ee79e96a328da3c`，仅解决计划文档插入冲突并保留两侧全文，Native源码 SHA256 仍为 `988f4322be9a096a8bd1f9239b3c37d20899baa117f5a264ff9e78d275ea0efc`。正常任务来自本次真实受理和 ArtifactPublished，仍通过现 Replica owner 的 descriptor/ticket 定位 Local，未把9.98历史 nullable operation/date/count/context补成当前值，也不新增parentless假源或更改500断言。原 helper/bootstrap/transport没有此接合所需的签名变化，故无需增加夹具分支。该静态同步不代表9.98已独审通过或Root已整合；下一次完整17次串联、重启及原四顶层验证须绑定共同最终候选和明确的缺图HTTP决定，当前不再运行205秒旧候选或以首轮13/5冒PASS。
 
 ## 10. 事实依据与修订
 
