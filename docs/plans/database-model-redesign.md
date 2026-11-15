@@ -2574,6 +2574,16 @@ registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现�
 
 非作者在私有固定导出仅替换一条 SQL、误按 input 去重，前述不同 input/原 EQP 与合法 Opening 均通过后，准确在新增同 input 阶段断言 `4800 != 9600`；恢复原 SQL 后原预算 1/1、零 skip。两次 TAP 0.6001842/0.5497111 秒分列，原测试、EQP、guard 未改；首轮启动器环境 setup 红单列。正式独审 `INDEPENDENT-REVIEW.md` SHA256 `55092398fb9a8bdecf803883c3157a7082b899e90ca2b10ac0fc596ce0212b25`，目录 `H:/TEMP/novelai-input-fixtures-independent-d086-20261115/`；作者最终源码日志 SHA256 `5626d104b6916548f5a2bc7eabc68c496c37b666c88257ce545d1418c459215a`。本片不改变业务 owner、DDL/历史 SQL/journal、格式或状态机；关键断言增量仍列维护者复核，不把窄通过扣减成新一轮 full 通过。
 
+### 9.102 完整回归后继的打包、Web 与存储边界夹具
+
+Root 在 `c514ada` 整合 `7f6e789`、`acf8cdd` 与 `f03ca97` 三组受审测试后继，产品、事件格式、writer/reducer 和 DDL 仍与固定 `df0` 相同，不把分项通过折算为新一轮完整后端通过。
+
+Web/执行器固定 `7f6e789` 只改三份测试/夹具：原 Opening 未知元数据保持 NULL，活动任务由正常 HTTP 受理，公共与所选私有恢复经唯一 installer。实际 backend/executor build 通过；runtime 整文件 3 pass、1 原 Windows skip，5.4958208 秒；Web 生命周期 pattern 实际执行全部 13 个场景，为 14 pass、1 原 skip，125.3087078 秒，保原 240 秒限制、448→449 断言及 73 路由。非作者复用封存的实际 compiled entry，正例、未知数量被改成 1、错误 cut 及多余私有 Key 四项 4/4、零 skip；未重建或启动 Nuxt。Nuxt 临时产物已按原 teardown 删除，没有事后产物摘要，不能将这些记录称为同候选发布物闭环。证据分别为 `H:/TEMP/novelai-web-final-fixtures-20261115/VERIFICATION-7f6e789.md` 与 `H:/TEMP/novelai-web-fixture-independent-7f6e789-20261115/INDEPENDENT-REVIEW.md`。
+
+打包夹具 `acf8cdd` 补齐当前保留源 CLI 的真实 re-export 依赖，精确缺失入口断言保留；原整文件 10/10、零 skip，0.8776737 秒，非作者静态审查通过。该结果验证合成 package closure，不代表正式发布包。存储/Opening 后继 `655bf72` 实际为 21 节点中的 20 pass、1 fail，失败在 Local 字节安装；`f03ca97` 仅修 namespace 内 key 错带 `images/` 前缀，原失败项后继 1/1、零 skip，1.8800944 秒，其余 20 项未重跑。独立仅在内存 DDL 去掉 stream/version UNIQUE，证明原 index=1 会被另一 commit/index UNIQUE 掩盖，而新 index=3 确实识别目标约束丢失；生产 DDL/hash guard 未改。证据在 `H:/TEMP/novelai-package-fixture-acf8cdd-run1-20261115/`、`H:/TEMP/novelai-fixture-boundaries-local-f03ca97-20261115/` 与 `H:/TEMP/novelai-fixture-boundaries-stream-probe-f03-20261115/`。
+
+固定 `df0` 的原两个 Windows 跳过项另在缓存 Linux Node22 镜像 `c380909e…` 执行原测试体：真实 dir_sync SIGKILL 与正常 SIGTERM 两项 2/2、零 skip，4.734417125 秒；六个真实 server 均退出，容器已移除，source/native 绑定保持。此结果只补这两项跨平台行为，不改写原 full 的 5 skip，也不证明最新源码、发布包、掉电或生产文件系统验收。日志与身份记录见 `H:/TEMP/novelai-linux22-recovery-df0-20261115/RESULT.md`。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
