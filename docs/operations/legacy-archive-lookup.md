@@ -33,6 +33,20 @@ node /verified/legacy-tools/scripts/audit-legacy-archive.mjs --source=/sealed/li
 
 `--data-dir` 只用于 artifact，按原显式 file 在该物理根目录内用 `r` 句柄读取；拒绝越界、软链接/junction 逃逸、文件身份变化、缺基线 SHA/长度、缺原件和坏内容。打开前后及读完后均核选定物理根的目录身份和路径归属，并同时核 named path/fd；同内容不能替代原 namespace。复用固定 owner 的纯 `describeStoredResult()` 核内容；不调用会 `r+`、sync 或 rename 的发布 owner。已核原字节时才将 `localContentVerified` 设为 true，省略 `--output` 也可仅验证。不会 GET R2/PikPak 或尝试兼容定位后重发布，单张本地图通过不代表全量外部存储恢复闭包。R2/PikPak 描述符必须是真正对象，缺字段才保留 NULL；primitive、array 或 false 不解释成空对象。
 
+## 批量导出的来源绑定
+
+显式 `--export=/private/new-directory` 仍只创建 `inputs.jsonl`、`artifacts.jsonl` 和最终 `audit.json`。新 producer 在同一 `legacy-archive-audit-v1` 报告中保存已核包内 wrapper 的 `toolSha256`，成功批量导出另保存 `exports.inputs` 与 `exports.artifacts`，每项严格为 `{basename,byteLength,rowCount,sha256}`；basename 只能是对应的固定 JSONL 名称，不包含任意目录。正文及 locator 清单仍只进入明确的私有输出；stdout 只增加这些摘要元数据。
+
+每个 JSONL 对实际成功写出的 UTF8 JSON 加换行计数、计算摘要；关闭前从同一 fd 分块实读，要求实际长度、摘要与写入流相同，并重复核对普通文件、单链接、named path/fd 和读期间身份。仅两份 batch 文件以可回读句柄创建；精确 selector 的原文输出继续只写。全部句柄关闭成功、原源 SHA 与无 sidecar 末端检查通过后才发布 `audit.json` 和 stdout。失败不发布成功证明，私有残留文件保留用于诊断；空产物清单仍是实际存在的零字节、零行文件，保存真实空文件 SHA。
+
+消费者须核对所选可信工具、audit 文件、原 source/cut 与每份实际 JSONL 的这个共同绑定。旧报告缺少 `exports` 时保留未知，不能从单独 JSONL 或摘要相同推出原 namespace、实际原图、完整引用覆盖或删除许可；本片不改变 retained owner、coverage 或源保留。这里的回读是字节完整性校验，不声明 fsync、掉电持久性或物理对象恢复。
+
+新 producer 以固定 `e04b42a1f6cab4137be4bd27d0a9b6e4ba13516d` 重新正式打包/解包，在 Windows x64 / Node 22.23.4 运行完整 `node --test --test-concurrency=1 tests/deployment/legacy-tools.test.mjs`：**29/29、零跳过，246.639 秒**。原 26 节点保留；新增真实空文件、同长字节篡改与关闭后末端源摘要拒绝三项，均要求原源不变和正确发布边界。三个健康导出的实际 audit 元数据也已只读封存；原清理成功、实际解包目录已删除。测试使用合成封存源，原 120 秒打包与 15 秒 CLI 期限不变，没有重试、安装或原生重建。
+
+实际新 tar SHA `0dceb37e6f7d5265454713608ef4bf94d0288ffde02273addd97c30c1bdd2f98`、manifest SHA `fb554aad1136e75fc87c6acda290bae2fab2ab1c59d6c8e64d16415f65f45b13`、CLI SHA `be05b47b12f7ed8dc7b31acaca0e62187ed165e224cd07ba40142b455869472c` 已在清理前封存于 `H:/TEMP/novelai-archive-export-proof-20261115/`。完整日志 `official-standard.log` SHA `fcc013a5d9d1855e57be9e403ac2b1b577cb8e669d9f760adcead5e829193e92`，结果 `official-result.json` SHA `41eb69367393f2681414f621bc22d74259f64d72166e369f3adfcb89a40bb712`；固定技术源待独立审查。旧 c2a/fb6 工具、原 manifest、报告及失败证据保持原字节。
+
+固定文档后继 `d19a6e6621ccf5b00d129c604138833b0b8c20ee` 已通过非作者独立审查，报告 `H:/TEMP/novelai-export-proof-independent-d19a6e6-20261115/INDEPENDENT-REVIEW.md`，SHA256 `15ac4bea80cc850c9fa0070fa067bbfb8192c951eb48d7247ce771521e5f04e6`。非作者核实并使用上述同一封存 tar，没有重新打包；一个父项及三个独立子项 **4/4、零跳过，13.545秒**。实际旧 owner 新建非空源，健康导出的两份真实 JSONL、行数/长度/SHA、工具及 source/cut 相等；真实写后同长篡改及所有输出关闭后的合成末端源摘要故障均在目标阶段拒绝，stdout为空、audit不发布，原源和健康输出保持。五个实际子进程全部退出，新解包目录真实清理成功。此证明不认证任意用户手写报告、不推断原 namespace 或完整覆盖；consumer 的来源接受仍须另核，coverage及源保留不变。Root整合时三份CLI/helper/deployment保持受审字节，复用这份实包与独审证据，不冒称再跑一轮246秒；保留证明见 `H:/TEMP/novelai-archive-export-root-preservation.json`。
+
 ## 2026-11-14 局部验收
 
 初始 `7197b7b` 的 Windows x64 / Node 22.23.4 tar SHA-256 为 `1d80e85bbc35ed288c37ebc32b5896f97eea5d9e28cb93d687edaa1e59b387c7`，解包后 4,027 项清单验证通过；入口 SHA-256 为 `6736a5d317dd55a7eb54337f7b43df7bb1395f29fd2d86ecb4e1c3939637ca10`。该候选随后独审确认三个 P2，不能因这些初始检查接收。原固定 server/SQL/journal 未改，未安装或重建 native。初始打包专项 19/19，新增 lookup 断言与原包边界反例同次运行，包含原请求/回执原字节、无认证内容的 metadata、必需历史摘要、未知 ID/格式、禁止覆盖/写源、保护输入的 Discord grant 拒绝、祖先 junction 逃逸、坏图，以及源 DB/sidecar/原图前后不变。19 是该文件的实际测试总数，不表示 19 个全新 lookup 用例。

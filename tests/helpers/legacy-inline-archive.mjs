@@ -31,6 +31,40 @@ async function archiveTool(bundle, directory) {
   return { script, env, run };
 }
 
+export async function assertLegacyArchiveExports(bundle, directory, report) {
+  const manifest = JSON.parse(await readFile(path.join(bundle, 'LEGACY_TOOLS.json'), 'utf8')),
+    script = await readFile(path.join(bundle, 'scripts/audit-legacy-archive.mjs'));
+  assert.equal(report.toolSha256, manifest.files['scripts/audit-legacy-archive.mjs'].sha256);
+  assert.equal(report.toolSha256, sha256(script));
+  assert.deepEqual(Object.keys(report.exports), ['inputs', 'artifacts']);
+  for (const kind of ['inputs', 'artifacts']) {
+    const basename = kind + '.jsonl',
+      bytes = await readFile(path.join(directory, basename));
+    let rowCount = 0;
+    if (bytes.length) {
+      assert.equal(bytes.at(-1), 10);
+      const rows = bytes.toString('utf8').slice(0, -1).split('\n');
+      for (const row of rows) {
+        JSON.parse(row);
+      }
+      rowCount = rows.length;
+    }
+    assert.deepEqual(report.exports[kind], {
+      basename,
+      byteLength: bytes.length,
+      rowCount,
+      sha256: sha256(bytes),
+    });
+    assert.equal(
+      rowCount,
+      kind === 'inputs'
+        ? report.protectedInputs + report.contexts + report.artifactInputs + report.diagnostics
+        : report.artifacts,
+    );
+  }
+  assert.deepEqual(JSON.parse(await readFile(path.join(directory, 'audit.json'), 'utf8')), report);
+}
+
 // These two sources belonged to online legacy-inline upgrade. D4 keeps their protected
 // input proof in the independent, verified old tool, never in the ordinary gateway.
 export async function verifyLegacyInlineArchive(t, bundle, directory) {
@@ -128,12 +162,35 @@ export async function verifyLegacyInlineArchive(t, bundle, directory) {
       assert.equal(report.protectedInputs, 2);
       assert.equal(report.networkCalls, 0);
       assert.equal(report.dispatches, 0);
+      assert.equal(Object.hasOwn(report, 'exports'), false);
       assert.equal(result.stdout.includes('legacy ' + source), false);
       assert.equal(result.stdout.includes('synthetic-inline-private-key'), false);
       assert.deepEqual(await readFile(filename), before);
       assert.deepEqual(await readdir(sourceDirectory), entries);
     });
   }
+  await t.test('原 inline 源的空产物导出绑定零字节和零行，原源不变', async () => {
+    const exported = path.join(directory, 'inline-export'),
+      result = run([
+        script,
+        '--source=' + filename,
+        '--source-sha256=' + sha256(before),
+        '--export=' + exported,
+      ]);
+    assert.deepEqual(await readFile(filename), before);
+    assert.deepEqual(await readdir(sourceDirectory), entries);
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.sourceSha256, sha256(before));
+    await assertLegacyArchiveExports(bundle, exported, report);
+    assert.deepEqual(report.exports.artifacts, {
+      basename: 'artifacts.jsonl',
+      byteLength: 0,
+      rowCount: 0,
+      sha256: sha256(Buffer.alloc(0)),
+    });
+    assert.equal(result.stdout.includes('synthetic-inline-private-key'), false);
+  });
   await t.test(
     '普通新 child 拒绝同一旧 inline 库，原文件不变且无加载旧 owner/网络/监听',
     async () => {
@@ -483,6 +540,7 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line));
+    await assertLegacyArchiveExports(bundle, exported, report);
     assert.equal(report.protectedInputs, 2);
     assert.equal(report.contexts, 1);
     assert.equal(report.diagnostics, 1);
