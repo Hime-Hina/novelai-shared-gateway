@@ -119,6 +119,76 @@ const groups = (members = ['m1', 'm2']) => [
   { id: 'g', share: 1, members, memberWeights: Object.fromEntries(members.map((id) => [id, 1])) },
   ...['g2', 'g3', 'g4'].map((id) => ({ id, share: 0, members: [] })),
 ];
+
+for (const id of ['ordinary-target', 'constructor', '__proto__', 'toString']) {
+  test(`不透明成员ID ${id} 经真实Key继承原余额和份额并完整回放`, async (t) => {
+    const inherited = Reflect.get({}, id),
+      beforePrototype = inherited && Object.getOwnPropertyDescriptors(inherited);
+    t.after(() => {
+      if (!inherited) {
+        return;
+      }
+      for (const field of ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable']) {
+        if (beforePrototype[field]) {
+          Object.defineProperty(inherited, field, beforePrototype[field]);
+        } else {
+          delete inherited[field];
+        }
+      }
+    });
+    const f = await setup(t);
+    f.db.transaction(() =>
+      f.members.registerMember(meta(`register-${id}`), {
+        memberId: id,
+        displayName: 'same display name',
+        apiKey: `synthetic-key-${id}`,
+      }),
+    )();
+    const body = {
+        action: 'delete-member',
+        userId: 'm2',
+        transferToUserId: id,
+        expectedConfigVersion: 1,
+      },
+      before = databaseState(f.db);
+    let result;
+    try {
+      result = await f.change(`opaque-remove-${id}`, body);
+    } catch (error) {
+      assert.equal(databaseState(f.db), before);
+      throw error;
+    }
+    assert.equal(result.receipt.autoJoined.userId, id);
+    assert.equal(f.members.readMember('m2').status, 'removed');
+    assert.deepEqual(f.generations.readWallet('a', id), {
+      v5: '40',
+      anlasFixed: '4000',
+      anlasPurchased: '0',
+    });
+    if (inherited) {
+      assert.deepEqual(Object.getOwnPropertyDescriptors(inherited), beforePrototype);
+    }
+    const once = databaseState(f.db),
+      changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+    assert.equal((await f.change(`opaque-remove-${id}`, body)).replayed, true);
+    assert.equal(databaseState(f.db), once);
+    assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+
+    const restored = new Database(':memory:');
+    t.after(() => restored.close());
+    initializeRelationalStorage(restored, 'generation-history');
+    const replayer = new RelationalCommitReplayer(restored);
+    for (const { seq } of f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      restored.transaction(() =>
+        replayer.replayCommit(readRelationalCommit(f.db, seq), f.inputs),
+      )();
+    }
+    assertPublicTables(f.db, restored);
+    assert.equal(restored.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
+  });
+}
 async function configure(f, configured = groups(), expectedConfigVersion = 1, at = NOW + 1) {
   return withAuthenticatedMemberApiKey(
     f.members,
