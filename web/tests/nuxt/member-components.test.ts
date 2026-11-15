@@ -281,6 +281,26 @@ it('历史首屏读取期间只用一页摘要占位，不先显示三十行再�
 });
 
 describe('MemberBatch', () => {
+  it('历史位置未知显示原位置未知，已知零仍是第1张', async () => {
+    const historical = snapshot();
+    historical.cancellable = false;
+    historical.counts = { total: 2, queued: 0, pending: 0, running: 0, done: 2, failed: 0 };
+    historical.jobs = historical.jobs.map((job, index) => ({
+      ...job,
+      status: 'done',
+      index: index === 0 ? 0 : null,
+    }));
+    const wrapper = await mountSuspended(MemberBatch, {
+      props: { requestId, api: memberApi(async () => historical), refreshVersion: 0 },
+    });
+    await wrapper.get('.n-collapse-item__header-main').trigger('click');
+    await flushPromises();
+    const jobs = wrapper.findAll('.batch-jobs li');
+    expect(jobs[0]!.text()).toContain('第 1 张');
+    expect(jobs[1]!.text()).toContain('原位置未知');
+    expect(jobs[1]!.text()).not.toContain('第 1 张');
+  });
+
   it('展开才查询，刷新通知单在途并合并一次补读', async () => {
     const first = deferred<BatchSnapshot>();
     let active = 0,

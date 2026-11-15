@@ -84,6 +84,7 @@ function open(f, options = {}) {
       }),
       request = event('OpeningRequestRecorded', {
         requestId: 'old-request',
+        originalRequestId: 'old-request',
         memberId: 'm1',
         inputId: 'old-input',
         contextId: unavailable ? null : (options.prepared?.contextId ?? original.context_id),

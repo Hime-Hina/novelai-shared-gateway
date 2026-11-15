@@ -15,6 +15,7 @@ import {
   type RelationalPayloads,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { readRelationalRequestOrigin } from './relational-generation-sources.ts';
 import {
   prepareRelationalInput,
   parseRelationalNormalizationContext,
@@ -104,7 +105,9 @@ interface RequestRow {
   member_id: string;
   input_id: string;
   context_id: string | null;
-  operation: 'generate' | 'upscale' | 'encode-vibe';
+  operation: 'generate' | 'upscale' | 'encode-vibe' | null;
+  source: string | null;
+  accepted_at: number | null;
   model: string | null;
   sample_count: number | null;
   seed_mode: string;
@@ -129,7 +132,7 @@ function diagnosticUnavailable(): never {
 
 function assertRequestBody(
   body: Record<string, unknown> | null,
-  expected: { operation: string; model: string | null },
+  expected: { operation: string | null; model: string | null },
 ): void {
   if (
     body &&
@@ -141,12 +144,13 @@ function assertRequestBody(
 }
 
 function assertRequestSeedMode(
-  request: { operation: string; seedMode: string },
+  request: { operation: string | null; seedMode: string },
   context?: RelationalNormalizationContext,
 ) {
   if (
     request.seedMode !== 'unknown' &&
-    ((request.operation === 'generate') === (request.seedMode === 'not_applicable') ||
+    ((request.operation !== null &&
+      (request.operation === 'generate') === (request.seedMode === 'not_applicable')) ||
       (request.operation === 'generate' &&
         context?.kind === 'member' &&
         context.member.randomSeed !== (request.seedMode === 'random')))
@@ -757,7 +761,7 @@ export class RelationalInputStore {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
     const request = this.request(requestId, memberId);
-    if (request.retired_at !== null) {
+    if (request.retired_at !== null || this.readOriginalRequestId(requestId) === null) {
       unavailable();
     }
     return request;
@@ -766,22 +770,13 @@ export class RelationalInputStore {
   private request(requestId: string, memberId: string): RequestRow {
     const request = this.sqlite
       .prepare<[string, string], RequestRow>(
-        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
+        'SELECT id,member_id,input_id,context_id,source,operation,accepted_at,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
       )
       .get(requestId, memberId);
     if (!request) {
       fail(404, 'request_not_found', '请求不存在。');
     }
-    const registered = this.registeredFact(`request:${requestId}`, [
-      'RequestAccepted',
-      'OpeningRequestRecorded',
-    ]);
-    if (
-      registered.eventType !== 'RequestAccepted' &&
-      registered.eventType !== 'OpeningRequestRecorded'
-    ) {
-      unavailable();
-    }
+    const registered = readRelationalRequestOrigin(this.sqlite, requestId);
     const expected = registered.payload;
     if (
       expected.requestId !== request.id ||
@@ -789,6 +784,10 @@ export class RelationalInputStore {
       expected.inputId !== request.input_id ||
       expected.contextId !== request.context_id ||
       expected.operation !== request.operation ||
+      expected.source !== request.source ||
+      (registered.eventType === 'RequestAccepted'
+        ? registered.occurredAt
+        : registered.payload.acceptedAt) !== request.accepted_at ||
       expected.model !== request.model ||
       expected.sampleCount !== request.sample_count ||
       expected.seedMode !== request.seed_mode ||
@@ -797,6 +796,13 @@ export class RelationalInputStore {
       unavailable();
     }
     return request;
+  }
+
+  // 原parent身份只由唯一原接受事实证明；当前FK容器/时间/ID形状都不能代替它。
+  readOriginalRequestId(requestId: string): string | null {
+    const event = readRelationalRequestOrigin(this.sqlite, requestId);
+    this.request(requestId, event.payload.memberId);
+    return event.eventType === 'RequestAccepted' ? requestId : event.payload.originalRequestId;
   }
 
   private registeredFact(streamId: string, types: string[]) {
@@ -1264,7 +1270,8 @@ export class RelationalInputStore {
             inputId: accepted.inputId,
             contextId: prepared.contextId,
             source: accepted.source,
-            operation: prepared.body.operation as RequestRow['operation'],
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
             model: prepared.body.model as string,
             sampleCount: prepared.sampleCount,
             seedMode: accepted.seedMode,
@@ -1296,7 +1303,8 @@ export class RelationalInputStore {
           eventType: 'RequestAliasRegistered',
           payload: {
             memberId: accepted.memberId,
-            operation: prepared.body.operation as RequestRow['operation'],
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
             keyHash: accepted.idempotency.keyHash,
             noCache: accepted.idempotency.noCache,
             seedMode: accepted.seedMode,
@@ -1772,9 +1780,10 @@ export class RelationalInputStore {
       unavailable();
     }
     const projected = this.sqlite
-      .prepare<[string], { request_id: string; sample_index: number; actual_seed: number | null }>(
-        'SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?',
-      )
+      .prepare<
+        [string],
+        { request_id: string; sample_index: number | null; actual_seed: number | null }
+      >('SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?')
       .get(fact.payload.jobId);
     if (
       projected &&
@@ -1850,7 +1859,10 @@ export class RelationalInputStore {
     }
     if (p.requestId !== null) {
       const request = this.request(p.requestId, p.originalMemberId);
-      if (request.operation !== p.operation) {
+      if (
+        request.operation !== p.operation ||
+        this.readOriginalRequestId(p.requestId) !== p.originalRequestId
+      ) {
         unavailable();
       }
     }
@@ -2313,6 +2325,9 @@ export class RelationalInputStore {
       unavailable();
     }
     const accepted = this.request(job.request_id, job.member_id);
+    if (this.readOriginalRequestId(job.request_id) === null) {
+      unavailable();
+    }
     const seed = this.jobSeed(job.request_id, jobId);
     const input = this.requestInput(accepted);
     if (!input.body || input.row.completeness !== 'complete') {

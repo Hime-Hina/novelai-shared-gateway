@@ -389,6 +389,7 @@ test('heatmap按真实child/Opening原0和NULL、取消及退休分类，不借�
               streamId: 'request:heatmap-history',
               payload: {
                 requestId: 'heatmap-history',
+                originalRequestId: 'heatmap-history',
                 memberId: 'm1',
                 inputId: original.input_id,
                 contextId: original.context_id,

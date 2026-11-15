@@ -154,7 +154,7 @@ onBeforeUnmount(() => {
         </p>
         <ul class="batch-jobs">
           <li v-for="job in batch.jobs" :key="job.id">
-            第 {{ job.index + 1 }} 张 · {{ job.model }} ·
+            {{ job.index === null ? '原位置未知' : `第 ${job.index + 1} 张` }} · {{ job.model }} ·
             {{
               job.status === 'failed' && job.cancelled
                 ? '已取消（尚未派发）'

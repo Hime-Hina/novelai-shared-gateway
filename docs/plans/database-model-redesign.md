@@ -2466,6 +2466,62 @@ PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/pl
 
 根从 `04b172e` 整合整个282 lineage，实际共同基线为 `a87f9279`，三份 CLI/helper/deployment 技术文件逐字等于独审固定源，API 为真实并集，原9.87–9.93.1及回滚验证规范保持。根只复用同字节正式包与独审证据，不冒称另跑第三次245秒整套；产品范围不扩到在线历史兼容、新格式 converter 或生产迁移。保留证明与根静态检查结果见 `H:/TEMP/novelai-legacy-native-root-preservation.json`；下一步仍是当前格式的历史来源精度、完整 Native/故障恢复以及同候选最终发布验收。
 
+### 9.98 终态 Opening 的未知元数据与原 parent 证据
+
+原公开合成历史的 child/image 行没有 parent、操作、受理/完成/发布时间和样本位置；job.createdAt 或 image.createdAt 不能补成这些角色。范围依据为固定 `5e629689` 的 result-recovery/r2-history 原件与 `H:/TEMP/novelai-opening-precision-scope-998/SCOPE.md`，不代表真实旧源已转换或迁移路线已验收。
+
+OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，不加投影列。当前 request/input ID 可以只是 FK 容器，其 origin 必须指明真实旧行，不能宣称存在旧受理。非持久 `generation_request_origins` view 统一正常 RequestAccepted 与 Opening 的原 parent 证明；InputStore 的 `readOriginalRequestId` 仍核对注册事实、来源及 request 投影，薄查询不展开正文、附件或 child。公开 parentless job 的 requestId 为 NULL，不能凭容器取得 parent 查询、输入、取消或 live/alias 授权；已知原 parent 仍使用当前路由 ID，不把原外部 ID 当当前路由。
+
+终态 Opening 允许 source/operation/acceptedAt、sampleIndex/admissionEpoch、done.completedAt、artifact.operation/publishedAt 为 NULL。已知零、literal seed、原创建时间仍保留；文件 MIME 不决定原操作，单个 child 不决定 count。正常接受、活动任务、派发、准备和发布继续要求完整已知元数据及真实原 parent。已知 Input/context 即使 count 未知仍走 9.92 原定义校验，不以新增 NULL 绕过正文或已知 seed 规则。
+
+副本 Opening 的已知 verifiedAt 与未知 uploadedAt 可并存；同一副本 owner 必须将其作为已有存在承诺，冷读与复制继续实际核对 namespace、来源和内容，不将未知 upload 变成待 PUT。未知操作仅冷读/按实际字节复制，不进入严格 publisher 或伪补旧 Local 时间。该冷读及普通首次验证边界由 9.98.2 同批交付。
+
+仍为单一未发布 event7；DDL hash 随表示变化为 `057d74f270c29492ab799d485b54966ab5e4c944b42f9a6bd70346a331261f86`，实际 `c653bf2` DDL/hash `2314a5a3…c5be7c8a` 固定为拒绝反例，不改 SQL/journal、不保留在线旧格式 fallback，不手标 ready。首核心以静态检查点接合，各后续实际源码范围如下；发布物、实云、全量恢复/容量和切换尚未验，不沿用旧绿计数。
+
+#### 9.98.1 核心 owner 与可运行反例
+
+事实解析与唯一 DDL 保存真实未知；InputStore 维护原 parent/定义/seed 来源；GenerationStore 在活动和执行入口共用已知执行条件。新增 `relational-opening-precision.test.mjs` 直接从独立原行形状断言缺失字段，覆盖 NULL/0 投影、parentless 授权隔离、公共原序回放无网络或私有认证、第二 owner SQL 故障的外层捕获回滚/健康重试/重复，以及实际旧 DDL 正确 hash 零写拒绝。五个既有合成 Opening fixture 仅显式声明其本来已知的原 parent，不给产品 parser 默认填值。首静态点 `603df1c` 未运行这些反例，后续实际范围分别记录，不借静态点标 PASS。
+
+静态读组复核指出首检查点 `603df1c` 的 request 投影核对仍经旧 registeredFact 扫描整个公共 request stream。后继改为复用唯一原接受角色 helper，保留原字段 compare，新增禁止整 stream 展开的薄读断言；不复制 source 规则或读取正文。此为同一未验收片的静态修正，不把旧检查点称为薄读验收通过。
+
+首联合 `208896ff` 的五文件精确 pattern 为 16 项，13 通过、3 个 Core fixture 失败，零跳过，4.512 秒；读组三项及 Cold 新三/原二均已到实际断言。Core 重领误再暂存输入造成真实 UNIQUE、临时新增 trigger 被真实 schema guard 提前拒绝、初始化原语的 empty-target 错误与测试统一格式 regex 不符。原日志保留；后继只改测试使用原完整 command 重领、在实际 artifact INSERT.run 注入故障并核尝试次数1、区分初始化原精确拒因，未放宽产品。`190ee618` 后续 Core 八项与读组三项同次 **11/11、零跳过，2.226 秒**；原行 NULL/0、真实 parent 隔离、完整公共回放无私有/网络、SQL 尾错原子回滚/重试、实际 c653 正确旧 DDL/hash 零写拒绝及原 stream 索引都实际到达。证据 `H:/TEMP/novelai-opening-precision-scope-998/{joint-first,core-read-second}*`，不是整片验收或非作者复审。
+
+静态继续发现 imported prepared 的角色需要与 6dd 保全合同一致：历史 failed 的原 prepared 描述符不是执行能力。仅 OpeningAttempt 归档投影复用既有 readable 描述符，保留 not_sent、身份/来源/原序检查，去掉执行输入索取；已知定义与 seed 仍由原 Input/Job owner 校验。正常 prepare/ArtifactPrepared/Published、prepared getter、实际 complete 和唯一 ready 继续同一严格完成前置。新增未知 parent/op/input 归档 building/完整回放保全而三口拒绝，另有真实 Local 清单到公共重建/所选私有/唯一 ready/重开字节的完整小检查。未放宽 live 或手改 ready。
+
+`dc320281` 三文件精确组 **14/15、零跳过，5.066 秒**：Attempt 四项（新归档保全及三口拒绝、原 noCharge 等矩阵、knownprepared 原字节恢复、queued 真 localhost 一次派发）和 Input 两项（原 known/NULL count 坏 Native 定义及完整恶意来源不能 replay/ready）全部通过；Core 唯一失败是新清单手拼 storageTargetId，被原规范来源身份拒绝，未到 ready。后继 `36b24d2` 仅该测试复用实际 ReplicaStore 的 configured Local target，原失败与所有断言保留，产品逐字未改。原 case 实际 **1/1、零跳过，TAP 1.098 秒**：公共重建先无 Key，随后选定私有与唯一 installer 联合恢复并磁盘重开，原 bytes/源 SHA、NULL parent/op/发布时间/上传时间及本次实际 inventory 核验时点均不变。首 14 项不与该 1 项伪称一次全 15 重跑。三文件组只有实际 queued worker 发生 1 次 loopback fetch/socket，其余与修后 Local 单例均零网络，所有 guard 的外联拒绝计数为 0。
+
+隔离 TEMP 固定当前 fixture/DDL，仅 Gen 回选 `75bdb120`，新未知 prepared 归档原例实际 **0/1**，准确失败于 OpeningAttempt 的 known-execution 能力索取；没有 loader/schema 早拒。还原 `36b24d2` 的同一 Gen 后，隔离树 Git/raw 字节恢复，原例 **1/1、零跳过，TAP 0.805 秒**，归档存在与 live/ready 权限的差异可运行辨识。这是作者负控，不算独立审查。命令、前后 Git/raw、计数、首失败及后继单例在 `H:/TEMP/novelai-opening-precision-scope-998/closure-first*`、`local-ready-fixed*`、`prepared-negative-*`；独立复审、同候选完整源码/发布物及真实旧源转换仍未完成。
+
+#### 9.98.2 冷读描述符与副本存在承诺
+
+只读描述符继续归原`result-files`：新增readableResultFile/assertReadableStoredResultDescriptor，operation可明确NULL，其余原ID、MIME枚举、规范路径、长度/SHA及图像结构校验保持。NULL按MIME核严格图片或opaque域，不补generate/encode；正常resultFile、describe、descriptor写入收窄、publisher和prepared读取仍要求已知operation，文件final/part及fsync边界不变。相同nullable结构不能成为新业务执行、Local发布或收费依据。
+
+Replica owner统一以未deleted且uploadedAt或verifiedAt至少一项已知表示原存在承诺；known0保留，不能把verified已知/uploaded未知当作从未上传。冷读/cache、copy重领、verify及调度同规则：R2原verified承诺可实GET并清当前错误而保留原NULL/known0；正常reserved没有任何上传/验证前态仍不得首次verified，已确认前态也不得被普通uploaded覆盖。未知publishedAt不取得24h资格；有原verifiedAt的R2仍按原7d/登记水位规则处理，不把开账header当年龄。SQL候选与原source/namespace/控制门禁保持，无持久bool/refcount或新timer。
+
+旧OpeningReplica envelope把uploadedNULL/verified0列为非法的断言属于错误角色，按批准契约移到原positive并核NULL/0及原完整public回放/重开零IO；原negative位置改真正非法负时间，保持数量/整笔回滚断言。普通从未上传的确认仍由真实reserved→ticket拒绝/零写，以及字段parser已接受但共同完整command/reducer拒绝并全表回滚两层控制，不能只依赖在线票据早拒。此关键断言角色修正需维护者最终复核，未为已知契约变化伪造一次修前红。
+
+Opening复制Local只读既有final，不调用publisher或写local_verified补造过去Local上传；实际新R2/Pik PUT/GET分别记录本次真实上传/核验时点，不改旧artifact publishedAt。正常ArtifactPublished仍沿原publisher恢复和首次Local确认，writer/reducer同时保已知描述符界线。Pik实读仅需原namespace/key/hash/len，不用new Date(NULL)造1970时间，也不收窄原uploaded-URL可读政策或每次额外GET；Brotli/原长/hash/MIME及IO后票据/source/config重核保持。无旧解释器、源DELETE、归档重定向或9.99实现。
+
+本分片在独立c653树静态推进；合法NULL的共同facts/DDL由Core片负责，不能SQL改NULL绕过旧DDL，也不能把source字段不完整时的单个内部一致性验证称为真实旧503/7行迁移闭环。复验命令、技术fixed与原source/负控证据在完成后补记，目前不声明测试、发布物或生产已通过。
+
+#### 9.98.3 历史查询、统计与公开 DTO
+
+RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin view 的列表 JOIN 同时绑定 `request:<当前ID>` 和 requestId，以既有 stream 索引限定来源，不逐页展开正文、附件或 child。原 parent 缺失的 child 公开 requestId 为 NULL，原 FK 容器不能出现在成员批次列表或取得 detail/cancel/input/live replay 权限；原单 child 内容权限仍由原 owner 核对。已知 parent 的分页先按真实受理时间和 ID 倒序，再进入 NULL 时间的稳定 ID 阶段，不用导入日、0 或数组位置补未知。
+
+公开批次保留 source、operation、createdAt、sampleIndex、model 与终态时间的原 NULL；已知时间和位置 0 保留。正常未完成任务的 completedAt 仍为空串，终态未知则为 NULL。model 原来经空串缺省时，本片明确改为 NULL DTO/type；当前真实辅助操作 producer 有规范化模型的，仍逐字返回该真实值，纯 formatter 的 NULL 对照不冒充 producer 产生了缺失模型。Report 原统计 owner 不重写：未知 operation 不计 generate，无 charge 不当作免费或金融 0。Web 只将原批次位置文案改为 NULL 显示“原位置未知”，已知 0 仍显示“第 1 张”，未新增 DOM、样式或状态。
+
+两个新历史检查先保存显式原行形状和来源/映射 SHA，再经受保护 InputStore 与完整 common replay 构造事实；断言原字段缺失、真正原 parent、已知 0、未知操作/费用、NULL 分页及 query_only 全表/total_changes 零写。原历史 helper 的手写四表投影改用同一 common owner，不 SQL 改 ready/epoch/cooldown。这是代表性合成原行验证，不是原 503 条旧源的迁移、真实图片或 installer 验收。
+
+联合技术点 `190ee618` 的 Core 与读组定向由 Core 作者实际运行 **11/11、零跳过，2.226 秒**；其中读组三项与随后 whole 范围重叠，不累加为独立审查。读组随后同源串行运行三个完整文件：member-history **8/8**、reports **18/19**、member-read 实际 localhost HTTP **21/21**，共 **47/48、零跳过**。唯一失败是旧 reports 断言把历史终态 updatedAt 的 NULL 期待为空串；首日志保留，后继 `a7ce00c` 仅对齐该断言并补同源 completedAt 已知 0/未知 NULL 两对照，产品逐字未改。原精确失败 case 随后实际 **1/1、零跳过，TAP 1.128 秒**，case 本体 0.301 秒；不把它称为后继全 48 项重跑。命令、源/15 个权威文件 Git/raw 前后绑定、首日志与后继控制在 `H:/TEMP/novelai-opening-reads-998-20261115/whole-three-{argv,result}.json`、`whole-*.log` 和 `terminal-focused-{argv,result}.json`。
+
+同后继 backend 类型、architecture 和默认 migration 检查通过。随后普通合入共同 `dc32028`，读组和 Web 八个相关文件的 Git blob 与固定 `5e6d810` 相同；现有 Node22/pnpm 的 `pnpm --dir web run typecheck` 实际通过，仅生成本树 ignored Nuxt 类型，未安装依赖或改配置。既有 Nuxt/happy-dom harness 的 MemberBatch describe 过滤首轮 **6 项通过、6 项同文件非匹配过滤、零失败，Vitest 8.57 秒**：新 NULL/0 展示和原三个直接用例，另有原循环生成的折叠/卸载两用例。准备阶段的四项预估漏计该循环，保留原准备记录并在结果报告更正，不将过滤数称为原条件 skip 或整文件通过。实际 wrapper 断言确认 NULL 显示“原位置未知”且不显示“第 1 张”，已知 0 显示“第 1 张”；八个源/配置文件 Git/raw 前后相同，源树保持干净。
+
+上述 Web 命令、实际 worker 继承的低层 loopback guard、Git/raw 和结果绑定见同目录 `web-type-source-dc32028.json`、`web-mount-{argv,result}-dc32028.json` 及 `web-mount-dc32028-first.log`。未跑全 Web、全后端、Nuxt 生产 build、编译发布物、Node24、真实浏览器、真实云或生产，不将局部通过称为整体验收或非作者 PASS。Modern Web Guidance 已按批准范围读取和检索，原代理失败后的离线检索无适用 guide，未改代理或套用无关规则。类似新历史展示继续在原 Request/Report/formatter owner 与上述唯一 origin 能力维护，不新增影子状态或格式兼容分支。
+
+固定联合技术36b24d2c72266226374f58f31ff60a2b12aaf7f5、文档后继63169cf61ebf4e5870c916017ee79e96a328da3c已通过非作者独立审查，报告 H:/TEMP/novelai-opening-joint-independent-36b24d2-20261115/INDEPENDENT-REVIEW.md，SHA256 ccb90a7a56c43922e32de661b97b4f1a905892c6c2e53941fcf8c355206ad228。四个独立反例和一个原known-prepared控制同批 **5/5、零跳过，3.101秒**；独立Git export的54路径及真实旧DDL模板均核同源。实际覆盖原字段NULL/0、无父权限、Local字节/选定私有源安装及磁盘重开、非空留存JSONL、未知prepared归档保全而三入口拒绝、R2 verified0/uploadNULL的真实client/mock GET与零PUT、完整公回放/私有空及已知Native坏定义422/旧库零写拒绝。该批未另跑Direct/Medium/aux或撤旧Key反例，相关原owner保持；不把作者范围加算为独审或实云。Root从be871c0普通整合全部631，实际共同基线85；仅计划合并两侧证据，技术文件保持固定字节，归档CLI、保留源核验和原安全错误文案成果保持。根交点检查另见 H:/TEMP/novelai-opening-precision-root-preservation.json；完整发布、实际旧503迁移夹具、同规模与生产仍按后继验收。
+
+根在该同字节技术并集运行 Core precision 与 public-errors 两个完整文件 **12/12、零跳过，3.199秒**，两个worker的入口前网络guard均denied0；未知Local库存实际安装/选定私有源/重开与原安全错误文案同时到场。backend类型、architecture、默认及可信main88迁移、204文件语法、31变更路径格式与diff通过。根保留证明绑定30份非plan文件逐字等于631及实际共同基线85，原归档CLI、保留源保护与公共错误owner不变；日志/命令在上述root-preservation和root-checks文件。此根交点组不替代作者分片、独审或同候选最终full/编译/发布验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

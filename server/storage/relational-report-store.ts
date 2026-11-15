@@ -82,7 +82,7 @@ interface UsageRow {
 }
 interface ErrorRow {
   id: string;
-  source: string;
+  source: string | null;
   accountId: string;
   status: string;
   error: string | null;
