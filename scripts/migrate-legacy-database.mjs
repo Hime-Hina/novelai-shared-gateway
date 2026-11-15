@@ -248,7 +248,7 @@ export function proveLegacyGenerationIntent(request, originalContext, mapping) {
   }
 }
 
-function append(target, references, at, key, drafts) {
+function append(target, references, at, replayer, inputs, key, drafts) {
   const events = drafts.map((draft) => {
       const kind = relationalFactStream(draft.eventType);
       let owner;
@@ -288,7 +288,7 @@ function append(target, references, at, key, drafts) {
       };
     }),
     commandId = `migration:${references.sourceId}:${key}`;
-  return new RelationalCommitReplayer(target).appendCommit(
+  return replayer.appendCommit(
     {
       commandId,
       fingerprint: domainDigest(events),
@@ -310,13 +310,13 @@ function append(target, references, at, key, drafts) {
       receipt: { imported: key, sourceId: references.sourceId },
       events,
     },
-    new RelationalInputStore(target),
+    inputs,
   );
 }
 
-function appendIndependentOpenings(target, references, at, key, drafts) {
+function appendIndependentOpenings(appendOpening, key, drafts) {
   for (let offset = 0; offset < drafts.length; offset += 100) {
-    append(target, references, at, `${key}:${offset / 100}`, drafts.slice(offset, offset + 100));
+    appendOpening(`${key}:${offset / 100}`, drafts.slice(offset, offset + 100));
   }
 }
 
@@ -772,7 +772,15 @@ function planLegacyRequests(source, references, findings) {
 }
 
 // 先规划原身份，金融 mapper 再返回原尝试/预扣；三者共用一笔完整提交。
-function appendLegacyRequest(target, references, at, plan, financial, artifacts) {
+function appendLegacyRequest(
+  target,
+  references,
+  inputs,
+  appendOpening,
+  plan,
+  financial,
+  artifacts,
+) {
   const {
       group,
       jobs,
@@ -788,7 +796,6 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
       count,
       inputId,
     } = plan,
-    inputs = new RelationalInputStore(target),
     first = jobs[0],
     freeUsage = new Map(financial.expected.freeUsage.map((row) => [row.jobId, row]));
   for (const { row } of jobs) {
@@ -937,7 +944,7 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
         events.push(fact);
       }
     }
-    append(target, references, at, `request:${group.requestId}`, events);
+    appendOpening(`request:${group.requestId}`, events);
     references.requestProofs.set(group.requestId, {
       inputId,
       memberId,
@@ -1087,26 +1094,26 @@ function planLegacyArtifacts(
   return { ...mapped, inputs, findings: [...findings, ...mapped.findings] };
 }
 
-function appendLegacyArtifactInputs(target, references, at, artifacts) {
-  const owner = new RelationalInputStore(target);
-  for (const input of artifacts.inputs) {
-    const payload = owner.stageOpeningInput({
-      inputId: input.inputId,
-      memberId: input.memberId,
-      ...input.content,
-    });
-    append(target, references, at, `artifact-input:${input.originalId}`, [
-      {
+function appendLegacyArtifactInputs(inputs, references, appendOpening, artifacts) {
+  for (let offset = 0; offset < artifacts.inputs.length; offset += 100) {
+    const events = artifacts.inputs.slice(offset, offset + 100).map((input) => {
+      const payload = inputs.stageOpeningInput({
+        inputId: input.inputId,
+        memberId: input.memberId,
+        ...input.content,
+      });
+      return {
         eventId: references.eventId('OpeningInputRecorded', input.inputId),
         eventType: 'OpeningInputRecorded',
         memberId: input.memberId,
         payload: { ...payload, origin: references.origin(input.originalId) },
-      },
-    ]);
+      };
+    });
+    appendOpening(`artifact-inputs:${offset / 100}`, events);
   }
 }
 
-function appendLegacyKeys(source, target, references, at, findings) {
+function appendLegacyKeys(source, target, references, inputs, appendOpening, findings) {
   const decisions = [];
   const registration =
     source.prepare(`SELECT e.event_id,e.event_type,e.actor_id,e.actor_kind,e.payload,
@@ -1242,10 +1249,7 @@ function appendLegacyKeys(source, target, references, at, findings) {
         payload.contextId !== null &&
         !target.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(payload.contextId)
       ) {
-        const context = new RelationalInputStore(target).stageOpeningContext(
-          payload.contextId,
-          entry.proof.context,
-        );
+        const context = inputs.stageOpeningContext(payload.contextId, entry.proof.context);
         events.push({
           eventId: references.eventId('ContextRegistered', payload.contextId),
           eventType: 'ContextRegistered',
@@ -1259,7 +1263,7 @@ function appendLegacyKeys(source, target, references, at, findings) {
         memberId: row.member_id,
         payload,
       });
-      append(target, references, at, `key:${originalId}`, events);
+      appendOpening(`key:${originalId}`, events);
     })();
   }
   return decisions;
@@ -1568,7 +1572,10 @@ export async function migrateLegacyDatabase(options) {
       phase = 'public-opening';
       target = new Database(path.join(output, 'library.sqlite'));
       initializeRelationalStorage(target, `B:${options.sourceSha256}:${options.cut}`);
-      const cutoff = source
+      const replayer = new RelationalCommitReplayer(target),
+        inputs = new RelationalInputStore(target),
+        appendOpening = append.bind(null, target, references, at, replayer, inputs),
+        cutoff = source
           .prepare('SELECT recorded_at FROM event_commits WHERE commit_seq=?')
           .get(BigInt(options.cut)),
         cutoffAt = time(cutoff?.recorded_at);
@@ -1577,7 +1584,7 @@ export async function migrateLegacyDatabase(options) {
       }
       source.transaction(() =>
         target.transaction(() => {
-          append(target, references, at, 'source', [
+          appendOpening('source', [
             {
               eventId: references.eventId('ImportSourceRegistered', references.sourceId),
               eventType: 'ImportSourceRegistered',
@@ -1595,15 +1602,15 @@ export async function migrateLegacyDatabase(options) {
           appendLegacyConfiguration(source, target, references, at, findings);
           const { members, accounts, sharing, requests } = prepared;
           if (members.facts.length) {
-            append(target, references, at, 'members', members.facts);
+            appendOpening('members', members.facts);
           }
 
           if (accounts.facts.length) {
-            append(target, references, at, 'accounts', accounts.facts);
+            appendOpening('accounts', accounts.facts);
           }
 
           if (sharing.facts.length) {
-            append(target, references, at, 'sharing', sharing.facts);
+            appendOpening('sharing', sharing.facts);
           }
           const artifacts = planLegacyArtifacts(
             source,
@@ -1621,25 +1628,40 @@ export async function migrateLegacyDatabase(options) {
               !(fact.eventType === 'OpeningChargeRecorded' && fact.payload.jobId !== null),
           );
           if (baseline.length) {
-            append(target, references, at, 'financial', baseline);
+            appendOpening('financial', baseline);
           }
-          appendLegacyArtifactInputs(target, references, at, artifacts);
+          appendLegacyArtifactInputs(inputs, references, appendOpening, artifacts);
           const artifactBaseline = artifacts.facts.filter(
             (fact) =>
               fact.eventType === 'OpeningStorageTargetRecorded' ||
               (fact.eventType === 'OpeningArtifactRecorded' &&
                 fact.payload.originalAttemptId === null),
           );
-          appendIndependentOpenings(target, references, at, 'artifacts', artifactBaseline);
+          appendIndependentOpenings(appendOpening, 'artifacts', artifactBaseline);
           for (const request of requests) {
-            appendLegacyRequest(target, references, at, request, financial, artifacts);
+            appendLegacyRequest(
+              target,
+              references,
+              inputs,
+              appendOpening,
+              request,
+              financial,
+              artifacts,
+            );
           }
           const replicas = artifacts.facts.filter(
             (fact) => fact.eventType === 'OpeningReplicaRecorded',
           );
-          appendIndependentOpenings(target, references, at, 'replicas', replicas);
+          appendIndependentOpenings(appendOpening, 'replicas', replicas);
           assertLegacyFinanceProjection(target, financial.expected);
-          keyDecisions = appendLegacyKeys(source, target, references, at, findings);
+          keyDecisions = appendLegacyKeys(
+            source,
+            target,
+            references,
+            inputs,
+            appendOpening,
+            findings,
+          );
           if (cutConfiguration) {
             phase = 'private-opening';
             privateResult = migrateLegacyPrivate(
