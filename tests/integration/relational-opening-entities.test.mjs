@@ -605,7 +605,7 @@ test('Opening Artifact实际Local副本走原owner与唯一ready，缺原字节�
     replica: {
       artifactId: descriptor.imageId,
       storageTargetId: targetId,
-      objectKey: descriptor.file,
+      objectKey: path.posix.basename(descriptor.file), // 原声明为 namespace 内相对 key。
       encoding: 'identity',
       uploadedAt: null,
       verifiedAt: 0,
