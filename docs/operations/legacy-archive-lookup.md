@@ -41,7 +41,9 @@ node /verified/legacy-tools/scripts/audit-legacy-archive.mjs --source=/sealed/li
 
 消费者须核对所选可信工具、audit 文件、原 source/cut 与每份实际 JSONL 的这个共同绑定。旧报告缺少 `exports` 时保留未知，不能从单独 JSONL 或摘要相同推出原 namespace、实际原图、完整引用覆盖或删除许可；本片不改变 retained owner、coverage 或源保留。这里的回读是字节完整性校验，不声明 fsync、掉电持久性或物理对象恢复。
 
-新 producer 须重新正式打包/解包验证；旧 c2a tar、原 manifest 和历史报告保持原字节。当前仅静态完成此候选，实际标准包测试、独立审查及新工具/tar SHA 待后续证据记录。
+新 producer 以固定 `e04b42a1f6cab4137be4bd27d0a9b6e4ba13516d` 重新正式打包/解包，在 Windows x64 / Node 22.23.4 运行完整 `node --test --test-concurrency=1 tests/deployment/legacy-tools.test.mjs`：**29/29、零跳过，246.639 秒**。原 26 节点保留；新增真实空文件、同长字节篡改与关闭后末端源摘要拒绝三项，均要求原源不变和正确发布边界。三个健康导出的实际 audit 元数据也已只读封存；原清理成功、实际解包目录已删除。测试使用合成封存源，原 120 秒打包与 15 秒 CLI 期限不变，没有重试、安装或原生重建。
+
+实际新 tar SHA `0dceb37e6f7d5265454713608ef4bf94d0288ffde02273addd97c30c1bdd2f98`、manifest SHA `fb554aad1136e75fc87c6acda290bae2fab2ab1c59d6c8e64d16415f65f45b13`、CLI SHA `be05b47b12f7ed8dc7b31acaca0e62187ed165e224cd07ba40142b455869472c` 已在清理前封存于 `H:/TEMP/novelai-archive-export-proof-20261115/`。完整日志 `official-standard.log` SHA `fcc013a5d9d1855e57be9e403ac2b1b577cb8e669d9f760adcead5e829193e92`，结果 `official-result.json` SHA `41eb69367393f2681414f621bc22d74259f64d72166e369f3adfcb89a40bb712`；固定技术源待独立审查。旧 c2a/fb6 工具、原 manifest、报告及失败证据保持原字节。
 
 ## 2026-11-14 局部验收
 
