@@ -8,6 +8,7 @@ import { inventoryLegacyDatabase } from './database-model-inventory.mjs';
 import { mapLegacyFinance, assertLegacyFinanceProjection } from './migrate-legacy-finance.mjs';
 import { mapLegacyArtifacts } from './migrate-legacy-artifacts.mjs';
 import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';
+import { assertLegacyDatabaseProjection } from './reconcile-legacy-database.mjs';
 import { RelationalConfigurationStore } from '../server/storage/relational-configuration-store.ts';
 import { domainDigest, canonicalJson } from '../server/events/domain-events.ts';
 import { relationalFactStream } from '../server/events/relational-fact-contracts.ts';
@@ -1088,12 +1089,10 @@ function planLegacyArtifacts(
     }
     references.inputsByArtifact.set(descriptor.id, input);
   }
-  const mapped = mapLegacyArtifacts(source, references, {
-    artifacts: descriptors,
-    storageTargets,
-    localMaterializationsByArtifact,
-  });
-  return { ...mapped, inputs, findings: [...findings, ...mapped.findings] };
+  // Original metadata is not an append draft: the artifact owner copies its scalar decisions.
+  const metadata = { artifacts: descriptors, storageTargets, localMaterializationsByArtifact };
+  const mapped = mapLegacyArtifacts(source, references, metadata);
+  return { ...mapped, metadata, inputs, findings: [...findings, ...mapped.findings] };
 }
 
 function appendLegacyArtifactInputs(inputs, references, appendOpening, artifacts) {
@@ -1706,9 +1705,7 @@ export async function migrateLegacyDatabase(options) {
     ) {
       reject();
     }
-    for (const line of inputLines) {
-      JSON.parse(line);
-    }
+    const archivedInputs = inputLines.map((line) => JSON.parse(line));
     const descriptors = (await readFile(options.artifacts, 'utf8'))
       .split('\n')
       .filter(Boolean)
@@ -1736,6 +1733,7 @@ export async function migrateLegacyDatabase(options) {
     let target,
       financial,
       privateResult = null,
+      sourceReconciliation = null,
       keyDecisions = [];
     try {
       source.pragma('query_only=ON');
@@ -1878,6 +1876,41 @@ export async function migrateLegacyDatabase(options) {
               references,
             );
           }
+          // Explicitly unsupported source plans remain building. Other findings (including missing
+          // physical bytes) cannot hide an omitted entity from the complete source comparison.
+          if (
+            findings.some((finding) =>
+              [
+                'MEMBER_OPENING_SOURCE_INCOMPLETE',
+                'REQUEST_MEMBER_SOURCE_UNPROVEN',
+                'JOB_REQUIRES_COMPLETE_OPENING_MAPPING',
+              ].includes(finding.code),
+            )
+          ) {
+            sourceReconciliation = { status: 'blocked', reason: 'source-plan-incomplete' };
+          } else {
+            sourceReconciliation = assertLegacyDatabaseProjection(source, target, {
+              references,
+              prepared,
+              artifacts,
+              descriptors,
+              keyDecisions,
+              privateResult,
+              readOriginalBaselines: () => {
+                const originalRefs = migrationReferences(options.sourceSha256);
+                return {
+                  members: mapLegacyMembers(source, originalRefs),
+                  accounts: mapLegacyAccounts(source, originalRefs),
+                  sharing: mapLegacySharing(source, originalRefs),
+                };
+              },
+              readOriginalDiagnostic: originalDiagnostic,
+              freeUsage: financial.expected.freeUsage,
+              proveGenerationIntent: proveLegacyGenerationIntent,
+              localMaterializations,
+              archive: { binding, audit, auditSha256: options.auditSha256, inputs: archivedInputs },
+            });
+          }
         })(),
       )();
       if (!cutConfiguration) {
@@ -1896,6 +1929,7 @@ export async function migrateLegacyDatabase(options) {
         financial: financial.expected,
         private: privateResult,
         keyDecisions,
+        sourceReconciliation,
         effectiveAt: at,
         cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
         inputManifestSha256: manifestSha256,

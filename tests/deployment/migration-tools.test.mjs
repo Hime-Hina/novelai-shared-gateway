@@ -54,6 +54,7 @@ test('independent migration package excludes ignored private sources and runs co
     names = Object.keys(manifest.files),
     packageJson = JSON.parse(await readFile(path.join(bundle, 'package.json'), 'utf8'));
   assert.equal(manifest.sourceCommit, result.sourceCommit);
+  assert.ok(names.includes('scripts/reconcile-legacy-database.mjs'));
   assert.ok(!names.some((name) => name.includes(canaryName.replace(/\.ts$/, '.js'))));
   assert.ok(!names.some((name) => /^(?:server|scripts)\/.*\.(?:ts|tsx|mts|cts)$/.test(name)));
   assert.deepEqual(Object.keys(packageJson.scripts), [

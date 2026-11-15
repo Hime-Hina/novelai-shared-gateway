@@ -147,6 +147,7 @@ try {
     'migrate-legacy-database.mjs',
     'materialize-legacy-originals.mjs',
     'migrate-legacy-finance.mjs',
+    'reconcile-legacy-database.mjs',
     'migrate-legacy-private.mjs',
     'migrate-legacy-artifacts.mjs',
     'database-model-inventory.mjs',
