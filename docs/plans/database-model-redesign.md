@@ -252,6 +252,12 @@ erDiagram
 
 旧源到新目标的金融核对复用 `assertLegacyFinanceProjection(target, expected)`：在同一目标快照事务只读比较完整主键集合、规范金额、NULL/已知 0、观察、原核对责任和免费窗口，不经 DTO number、不再运行分配或结算。它比较旧源 mapper 的期望与真实投影/原事实字段；唯一 installer 仍独立证明新完整事实到投影、保护内容与私有选源，两个方向不能互相替代。
 
+`OpeningOperatingGapRecorded` 保存切点各原资源池尚未承担的责任，不把旧累计缺口或已核销金额再次加到账上。原 gap ID/type/time 有证据才保存，否则为 NULL；origin 对应本账户切点。`OpeningOperatingRecorded` 每个非零责任必须引用同一完整提交先行、同账户/同 ImportSource/同原账户、资源和金额相等的唯一 gap；孤立、重复、换池或乱序拒绝。后续核销继续走原 owner，只能消耗当前 gap 的剩余责任及运营可用余额；开账事实不伪称本次观察到的损失或任务消费。
+
+`OpeningFundingReceiptRecorded` 与待到账 `OpeningFundingRecorded` 分离：前者保存原 `operating-receipt:<token>` 业务身份、稳定账户、原类型、可证原时间/数量、闭合规范请求及安全原回执；后者只保存原剩余待到账责任。仅该 Receipt 的统一 event-ID resolver 保留原业务 ID，其他实体继续同源 digest。每个 pending opening 必须有同笔先行、同账户/来源/token/资源/登记时点的原 Receipt，已知原数量不得小于剩余数量，已知原请求的归属必须一致。只有 pending 状态而原 audit 不在时，原登记角色/时点可以证明，原数量/请求/结果明确 NULL，不能以 current remaining 或当前钱包冒充原结果。已完成的 Receipt 不要求 pending；缺原规范意图的业务 ID 明确 410 归档拒绝，不冲突重算或重新入账。正常命令仍先复核当前 owner/epoch，再领取当前 command 回执或辨识原业务重复；私有 PST 未恢复时允许原同步 owner 的安全 unavailable 状态决定，不能把它与资金重复消费混为一谈。
+
+当前 mapper 对仍无原 `.quota` 金融开账、但已有官方字段的 account 流明确返回 `account_financial_state_requires_initial_opening`，保持 building；不能默默遗漏官方来源或把缺省解释为三池全零。这类账户的合法首次金融基线仍须在后继依据原事实补足，不以当前角色专项通过宣称完整 B converter 已完成。
+
 ### 3.4 命令、事件与幂等
 
 ```mermaid

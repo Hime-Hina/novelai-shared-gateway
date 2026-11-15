@@ -18,7 +18,7 @@ import {
 } from '../../server/quota/fair-share.ts';
 import { recordAnlasGap } from '../../server/quota/operating-accounting.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
-import { appendDomainCommit } from '../../server/events/event-store.ts';
+import { appendDomainCommit, readStreamProjection } from '../../server/events/event-store.ts';
 import {
   domainDigest,
   beginDomainCommand,
@@ -34,6 +34,7 @@ import {
   assertRelationalStorageReady,
 } from '../../server/storage/relational-storage.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
@@ -44,11 +45,24 @@ const NOW = 1800000000000,
   sourceId = 'synthetic-v4-finance',
   members = ['m1', 'm2', 'm3', 'm4'],
   origin = (originalId) => ({ sourceId, originalId }),
-  eventId = (eventType, originalId) => domainDigest([sourceId, eventType, originalId]);
+  eventId = (eventType, originalId) =>
+    eventType === 'OpeningFundingReceiptRecorded'
+      ? originalId
+      : domainDigest([sourceId, eventType, originalId]);
 
 async function sourceFixture(
   t,
-  { blockedLiabilities = false, huge = false, latestUnknownTime = false } = {},
+  {
+    blockedLiabilities = false,
+    huge = false,
+    latestUnknownTime = false,
+    coveredGap = false,
+    unknownFundingIntent = false,
+    missingFundingAudit = false,
+    knownFundingResult = false,
+    latestMatchesBaseline = false,
+    unopenedAccount = false,
+  } = {},
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-finance-map-')),
     store = new JsonStore(directory);
@@ -76,6 +90,18 @@ async function sourceFixture(
     v5UsagePercent: 40,
     quotaCheckedAt: NOW,
   }));
+  if (unopenedAccount)
+    db.accounts.push({
+      id: 'c',
+      token: 'synthetic-pst-c',
+      enabled: false,
+      quotaTier: 3,
+      subscriptionActive: true,
+      quotaFixed: 17,
+      quotaPurchased: 2,
+      v5UsagePercent: 9,
+      quotaCheckedAt: NOW,
+    });
   configureFairQuota(db, members);
   syncFairQuota(db, NOW);
   configureAnlasFallback(db, true, 'synthetic-owner', NOW);
@@ -128,12 +154,51 @@ async function sourceFixture(
     const before = db.settings.fairQuota.snapshot,
       after = { ...before, at: NOW + 5, anlasFixed: '9998', anlas: '10398' };
     recordAnlasGap(db, 'anlasFixed', parseAmount('2'), before, after, NOW + 5);
+    if (coveredGap) {
+      const context = {
+        actorId: 'm1',
+        findEvent: (id) => db.ledger.find((value) => value.id === id),
+        coveredAmount: () => '0',
+      };
+      manageOperatingFunding(
+        db,
+        {
+          action: 'operating-contribute',
+          resource: 'anlasFixed',
+          amount: 5,
+          receipt: 'contribution_receipt',
+        },
+        context,
+        NOW + 6,
+      );
+      manageOperatingFunding(
+        db,
+        {
+          action: 'operating-cover-loss',
+          resource: 'anlasFixed',
+          amount: 1,
+          receipt: 'cover_loss_receipt',
+          lossEventId: db.settings.fairQuota.operating.gapEventIds.anlasFixed,
+        },
+        context,
+        NOW + 7,
+      );
+    }
+    if (unknownFundingIntent) {
+      delete db.ledger.find((value) => value.id === 'operating-receipt:synthetic_receipt').request;
+    }
+    if (missingFundingAudit)
+      db.ledger = db.ledger.filter((value) => value.id !== 'operating-receipt:synthetic_receipt');
   }
   db.jobs = [failed];
   // A later official observation can coexist with the earlier financial baseline.
   // These are explicit synthetic cut inputs, not claimed production old-history reconstruction.
-  db.accounts[0].quotaFixed = 9900;
-  db.accounts[0].quotaCheckedAt = latestUnknownTime ? undefined : NOW + 5;
+  db.accounts[0].quotaFixed = latestMatchesBaseline ? 10000 : 9900;
+  db.accounts[0].quotaCheckedAt = latestUnknownTime
+    ? undefined
+    : latestMatchesBaseline
+      ? NOW
+      : NOW + 5;
   await store.write(db);
   await store.enableEventAuthority();
 
@@ -173,6 +238,39 @@ async function sourceFixture(
       events: financialEvents,
     }),
   )();
+  let knownResult = null;
+  if (knownFundingResult) {
+    const body = {
+      action: 'operating-contribute',
+      resource: 'anlasFixed',
+      amount: 1,
+      receipt: 'known_result_receipt',
+      lossEventId: 'unused-original-caller-reference',
+    };
+    knownResult = await store.update(
+      (world) =>
+        manageOperatingFunding(
+          world,
+          body,
+          {
+            actorId: 'm1',
+            findEvent: (id) => world.ledger.find((value) => value.id === id),
+            coveredAmount: () => '0',
+          },
+          NOW + 8,
+        ),
+      {
+        domainCommand: {
+          commandId: 'original-known-funding',
+          fingerprint: domainDigest(body),
+          actorKind: 'member',
+          actorId: 'm1',
+          recordedAt: NOW + 8,
+        },
+      },
+    );
+  }
+  const original = structuredClone(store.db.settings.fairQuota);
   await store.close();
   const filename = path.join(directory, 'library.sqlite'),
     sealed = new Database(filename);
@@ -185,12 +283,12 @@ async function sourceFixture(
     origin,
     eventId,
     memberIds: new Set(members),
-    accountIds: new Set(['a', 'b']),
+    accountIds: new Set(unopenedAccount ? ['a', 'b', 'c'] : ['a', 'b']),
     jobIds: new Set([failed.id]),
     attemptIds: new Set([failed.generationAttempt.id]),
     requestsByJob: new Map([[failed.id, 'retained-failed-request']]),
   };
-  return { source, filename, references, failed, original: db.settings.fairQuota };
+  return { source, filename, references, failed, original, knownResult };
 }
 
 function event(fact) {
@@ -352,7 +450,7 @@ function command(finance) {
   };
 }
 
-function initializeTarget(db, finance) {
+function initializeTarget(db, finance, accountEnabled = false) {
   initializeRelationalStorage(db, 'finance-history');
   const c = command(finance),
     genesisTypes = new Set([
@@ -361,6 +459,10 @@ function initializeTarget(db, finance) {
       'OpeningAccountRecorded',
     ]),
     genesis = c.events.filter((event) => genesisTypes.has(event.eventType));
+  if (accountEnabled)
+    genesis.find(
+      (value) => value.eventType === 'OpeningAccountRecorded' && value.accountId === 'a',
+    ).payload.enabled = true;
   db.transaction(() =>
     new RelationalCommitReplayer(db).appendCommit({
       ...c,
@@ -538,7 +640,7 @@ test('opening latest observation rejects cross-account/source, changed original 
 });
 
 test('actual last charge SQL failure rolls back the entire finance commit and protected staging, then healthy retry succeeds', async (t) => {
-  const f = await sourceFixture(t),
+  const f = await sourceFixture(t, { blockedLiabilities: true }),
     mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))(),
     db = new Database(':memory:');
   t.after(() => db.close());
@@ -561,6 +663,21 @@ test('actual last charge SQL failure rolls back the entire finance commit and pr
               2,
             );
             assert.equal(prepare.call(db, 'SELECT COUNT(*) AS n FROM wallets').get().n, 8);
+            assert.equal(
+              prepare
+                .call(db, 'SELECT unfunded_fixed AS amount FROM operating_state WHERE account_id=?')
+                .get('a').amount,
+              '2',
+            );
+            assert.equal(
+              prepare
+                .call(
+                  db,
+                  "SELECT COUNT(*) AS n FROM domain_events WHERE event_type IN ('OpeningOperatingGapRecorded','OpeningFundingReceiptRecorded')",
+                )
+                .get().n,
+              2,
+            );
             reached = true;
             throw new Error('synthetic_finance_tail');
           }
@@ -666,6 +783,8 @@ test('old-to-new reconciliation is query-only and rejects wrong pool, debt, dead
         wallets: 8,
         quotas: 2,
         observations: 3,
+        gaps: 0,
+        receipts: 0,
         operating: 2,
         funding: 0,
         charges: 2,
@@ -699,24 +818,128 @@ test('old-to-new reconciliation is query-only and rejects wrong pool, debt, dead
   }
 });
 
-test('real old gap and pending funding remain explicit blocking responsibilities instead of disappearing or becoming new spendable money', async (t) => {
+function applyFinanceFixture(db, mapped, accountEnabled = false) {
+  const c = initializeTarget(db, mapped, accountEnabled),
+    inputs = new RelationalInputStore(db);
+  db.transaction(() => {
+    inputs.stageOpeningInput({
+      inputId: 'retained-failed-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(db).appendCommit(c, inputs);
+  })();
+  return { c, inputs };
+}
+
+function appendSharingFixture(db, configVersion) {
+  const facts = [
+    {
+      eventType: 'OpeningGroupRecorded',
+      payload: {
+        groupId: 'shared',
+        name: 'known synthetic equal shares',
+        share: 1,
+        origin: origin('group'),
+      },
+    },
+    ...members.map((memberId, memberOrdinal) => ({
+      eventType: 'OpeningGroupMemberRecorded',
+      memberId,
+      payload: {
+        groupId: 'shared',
+        memberId,
+        memberOrdinal,
+        weight: 1,
+        origin: origin(memberId),
+      },
+    })),
+    {
+      eventType: 'OpeningPolicyRecorded',
+      payload: {
+        enabled: true,
+        boundAccountId: 'a',
+        configVersion,
+        autoAnlasFallback: true,
+        freePolicyVersion: 1,
+        freeEnabled: false,
+        freeWarningThreshold: null,
+        freeHardLimit: null,
+        lossPolicyVersion: 1,
+        lossV5_24h: 1,
+        lossFixed24h: '100',
+        lossFixed30d: '500',
+        lossMemberAttempts24h: 3,
+        origin: origin('policy'),
+      },
+    },
+  ].map(event);
+  db.transaction(() =>
+    new RelationalCommitReplayer(db).appendCommit({
+      commandId: 'opening-known-sharing',
+      fingerprint: domainDigest(facts),
+      actorKind: 'system',
+      actorId: null,
+      recordedAt: NOW + 20,
+      correlationId: null,
+      causationId: null,
+      receipt: null,
+      events: facts,
+      expectedVersions: Object.fromEntries(facts.map((value) => [value.streamId, '0'])),
+    }),
+  )();
+}
+
+test('real old gap and receipt keep separate cut responsibility, pending funding and immutable original decisions', async (t) => {
   const f = await sourceFixture(t, { blockedLiabilities: true }),
     before = await readFile(f.filename),
     mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
-  assert.deepEqual(mapped.findings.map((finding) => finding.code).sort(), [
-    'funding_receipt_history_requires_opening_decision',
-    'operating_gap_source_requires_opening_role',
-  ]);
-  assert.ok(mapped.findings.every((finding) => finding.blocking && finding.count > 0));
+  assert.deepEqual(mapped.findings, []);
   assert.equal(mapped.expected.funding[0].remaining, '3');
   assert.equal(mapped.expected.funding[0].registeredAt, NOW + 4);
-  assert.equal(
-    mapped.facts.some(
-      (fact) => fact.eventType === 'OpeningOperatingRecorded' && fact.accountId === 'a',
-    ),
-    false,
-  );
-  assert.equal(JSON.stringify(mapped.findings).includes('synthetic_receipt'), false);
+  assert.equal(mapped.expected.gaps[0].remaining, '2');
+  assert.equal(mapped.expected.gaps[0].originalType, 'resource_gap_observed');
+  assert.equal(mapped.expected.gaps[0].occurredAt, NOW + 5);
+  assert.equal(mapped.expected.receipts[0].eventId, 'operating-receipt:synthetic_receipt');
+  assert.equal(mapped.expected.receipts[0].request.amount, '3');
+  assert.equal(mapped.expected.receipts[0].result, null);
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  const c = initializeTarget(db, mapped),
+    replayer = new RelationalCommitReplayer(db),
+    { RelationalInputStore } = await import('../../server/storage/relational-input-store.ts'),
+    inputs = new RelationalInputStore(db);
+  db.transaction(() => {
+    inputs.stageOpeningInput({
+      inputId: 'retained-failed-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    replayer.appendCommit(c, inputs);
+  })();
+  db.transaction(() => assertLegacyFinanceProjection(db, mapped.expected))();
+  const once = databaseState(db),
+    changes = db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal(db.transaction(() => replayer.appendCommit(c, inputs))().replayed, true);
+  assert.equal(databaseState(db), once);
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+  const replay = new Database(':memory:');
+  t.after(() => replay.close());
+  initializeRelationalStorage(replay, 'finance-history');
+  for (const row of db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    const commit = readRelationalCommit(db, row.seq);
+    replay.transaction(() => new RelationalCommitReplayer(replay).replayCommit(commit, inputs))();
+  }
+  assert.equal(databaseState(replay), once);
+  assert.equal(relationalPrivateStateEmpty(replay), true);
   assert.equal(JSON.stringify(mapped).includes('synthetic-pst-'), false);
   assert.equal(JSON.stringify(mapped).includes('synthetic-key-'), false);
   assert.deepEqual(await readFile(f.filename), before);
@@ -763,7 +986,7 @@ test('exact6466 event7 reader refuses a legally installed event8 cut before read
     () => assertRelationalStorageFormat(oldDb),
     /Unsupported relational database format/,
   );
-  const f = await sourceFixture(t),
+  const f = await sourceFixture(t, { blockedLiabilities: true }),
     mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))(),
     c = initializeTarget(db, mapped),
     { RelationalInputStore } = await import('../../server/storage/relational-input-store.ts'),
@@ -787,4 +1010,422 @@ test('exact6466 event7 reader refuses a legally installed event8 cut before read
     /Unsupported relational database format/,
   );
   assert.equal(databaseState(db), before);
+});
+
+test('cut gap excludes original already-covered amount; current owner can cover only remaining responsibility', async (t) => {
+  const f = await sourceFixture(t, {
+      blockedLiabilities: true,
+      coveredGap: true,
+      latestMatchesBaseline: true,
+    }),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+  assert.deepEqual(mapped.findings, []);
+  const gap = mapped.expected.gaps[0];
+  assert.equal(gap.remaining, '1');
+  assert.equal(
+    mapped.expected.operating.find((value) => value.accountId === 'a').available.anlasFixed,
+    '4',
+  );
+  assert.equal(
+    mapped.expected.receipts.find((value) => value.originalType === 'operating_loss_covered')
+      .request.amount,
+    '1',
+  );
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  applyFinanceFixture(db, mapped, true);
+  appendSharingFixture(db, f.original.configVersion);
+  const quotas = new RelationalQuotaStore(db, { OWNER_USER_ID: 'm1' }),
+    body = {
+      action: 'operating-cover-loss',
+      receipt: 'new_cover_receipt',
+      resource: 'anlasFixed',
+      amount: 2,
+      lossEventId: gap.eventId,
+    },
+    meta = {
+      actorKind: 'admin',
+      actorId: 'local-admin',
+      correlationId: null,
+      causationId: null,
+      policyVersion: 'original-cut',
+      pricingVersion: 'original-cut',
+      recordedAt: NOW + 20,
+      fingerprint: domainDigest(body),
+    },
+    before = databaseState(db);
+  assert.throws(
+    () => db.transaction(() => quotas.manageQuotaFunding(meta, 'a', body, null))(),
+    /核销超过尚未承担/,
+  );
+  assert.equal(databaseState(db), before);
+  body.amount = 1;
+  const result = db.transaction(() =>
+    quotas.manageQuotaFunding(
+      { ...meta, fingerprint: domainDigest(body), commandId: 'new-cover' },
+      'a',
+      body,
+      null,
+    ),
+  )();
+  assert.equal(result.response.duplicate, false);
+  assert.equal(
+    db
+      .prepare(
+        "SELECT unfunded_fixed AS remaining,anlas_fixed_available AS available FROM operating_state WHERE account_id='a'",
+      )
+      .get().remaining,
+    '0',
+  );
+  assert.equal(
+    db
+      .prepare(
+        "SELECT anlas_fixed_available AS available FROM operating_state WHERE account_id='a'",
+      )
+      .get().available,
+    '3',
+  );
+  const once = databaseState(db),
+    changes = db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal(
+    db.transaction(() =>
+      quotas.manageQuotaFunding(
+        { ...meta, fingerprint: domainDigest(body), commandId: 'new-cover' },
+        'a',
+        body,
+        null,
+      ),
+    )().response.duplicate,
+    false,
+  );
+  assert.equal(databaseState(db), once);
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+  const replay = new Database(':memory:');
+  t.after(() => replay.close());
+  initializeRelationalStorage(replay, 'finance-history');
+  const inputs = new RelationalInputStore(db);
+  for (const row of db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    replay.transaction(() =>
+      new RelationalCommitReplayer(replay).replayCommit(readRelationalCommit(db, row.seq), inputs),
+    )();
+  }
+  assert.equal(databaseState(replay), once);
+  assert.equal(relationalPrivateStateEmpty(replay), true);
+});
+
+test('original funding response and intent remain immutable; current auth precedes duplicate and unknown intent is archived without writes', async (t) => {
+  const known = await sourceFixture(t, { knownFundingResult: true, latestMatchesBaseline: true }),
+    mapped = known.source.transaction(() => mapLegacyFinance(known.source, known.references))();
+  assert.deepEqual(mapped.findings, []);
+  const original = mapped.expected.receipts.find(
+    (value) => value.receipt === 'known_result_receipt',
+  );
+  assert.deepEqual(original.result, known.knownResult);
+  assert.equal(original.result.duplicate, false);
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  applyFinanceFixture(db, mapped, true);
+  appendSharingFixture(db, known.original.configVersion);
+  const quotas = new RelationalQuotaStore(db, { OWNER_USER_ID: 'm1' }),
+    body = {
+      action: 'operating-contribute',
+      resource: 'anlasFixed',
+      amount: 1,
+      receipt: original.receipt,
+      lossEventId: original.request.lossEventId,
+    },
+    meta = {
+      actorKind: 'admin',
+      actorId: 'local-admin',
+      correlationId: null,
+      causationId: null,
+      policyVersion: 'original-cut',
+      pricingVersion: 'original-cut',
+      recordedAt: NOW + 20,
+      fingerprint: domainDigest(body),
+    },
+    moneyBefore = db.prepare('SELECT * FROM wallets ORDER BY account_id,member_id').all(),
+    operatingBefore = db.prepare('SELECT * FROM operating_state ORDER BY account_id').all();
+  const duplicate = db.transaction(() => quotas.manageQuotaFunding(meta, 'a', body, null))();
+  assert.deepEqual(duplicate.response, { eventId: original.eventId, duplicate: true });
+  assert.deepEqual(quotas.assertFundingReceipt(duplicate), duplicate.response);
+  // No private PST was restored: the original sync owner records exactly its safe unavailable status.
+  assert.deepEqual(
+    duplicate.events.map((value) => ({ type: value.eventType, payload: value.payload })),
+    [
+      {
+        type: 'QuotaStatusChanged',
+        payload: { accountId: 'a', status: 'quota_sync_error', generationFailure: null },
+      },
+    ],
+  );
+  assert.deepEqual(
+    db.prepare('SELECT * FROM wallets ORDER BY account_id,member_id').all(),
+    moneyBefore,
+  );
+  assert.deepEqual(
+    db.prepare('SELECT * FROM operating_state ORDER BY account_id').all(),
+    operatingBefore,
+  );
+  const before = databaseState(db),
+    changes = db.prepare('SELECT total_changes() AS n').get().n,
+    lateDuplicate = db.transaction(() => quotas.manageQuotaFunding(meta, 'a', body, null))();
+  assert.deepEqual(lateDuplicate.response, { eventId: original.eventId, duplicate: true });
+  assert.deepEqual(quotas.assertFundingReceipt(lateDuplicate), lateDuplicate.response);
+  assert.equal(databaseState(db), before);
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.throws(
+    () =>
+      db.transaction(() =>
+        quotas.manageQuotaFunding({ ...meta, actorKind: 'system', actorId: null }, 'a', body, null),
+      )(),
+    { statusCode: 403 },
+  );
+  assert.throws(
+    () =>
+      db.transaction(() =>
+        quotas.manageQuotaFunding(
+          { ...meta, fingerprint: domainDigest({ ...body, amount: 2 }) },
+          'a',
+          { ...body, amount: 2 },
+          null,
+        ),
+      )(),
+    /收据已用于不同操作/,
+  );
+  assert.equal(databaseState(db), before);
+  const replay = new Database(':memory:');
+  t.after(() => replay.close());
+  initializeRelationalStorage(replay, 'finance-history');
+  for (const row of db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    replay.transaction(() =>
+      new RelationalCommitReplayer(replay).replayCommit(
+        readRelationalCommit(db, row.seq),
+        new RelationalInputStore(db),
+      ),
+    )();
+  }
+  assert.equal(databaseState(replay), before);
+  assert.equal(relationalPrivateStateEmpty(replay), true);
+  const unknown = await sourceFixture(t, {
+      blockedLiabilities: true,
+      unknownFundingIntent: true,
+      latestMatchesBaseline: true,
+    }),
+    archived = unknown.source.transaction(() =>
+      mapLegacyFinance(unknown.source, unknown.references),
+    )(),
+    target = new Database(':memory:');
+  t.after(() => target.close());
+  assert.deepEqual(archived.findings, []);
+  assert.equal(archived.expected.receipts[0].request, null);
+  applyFinanceFixture(target, archived, true);
+  appendSharingFixture(target, unknown.original.configVersion);
+  const prefix = databaseState(target),
+    command = {
+      action: 'operating-register-funding',
+      resource: 'anlasFixed',
+      amount: 3,
+      receipt: 'synthetic_receipt',
+      destination: 'operating',
+    };
+  assert.throws(
+    () =>
+      target.transaction(() =>
+        new RelationalQuotaStore(target, { OWNER_USER_ID: 'm1' }).manageQuotaFunding(
+          { ...meta, fingerprint: domainDigest(command) },
+          'a',
+          command,
+          null,
+        ),
+      )(),
+    { statusCode: 410 },
+  );
+  assert.equal(databaseState(target), prefix);
+});
+
+test('complete opening gap/receipt rejects changed source, account, amount, role order, missing/duplicate role and false business identity atomically', async (t) => {
+  const f = await sourceFixture(t, { blockedLiabilities: true }),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))(),
+    cases = [
+      [
+        'amount',
+        (values) =>
+          (values.find((e) => e.eventType === 'OpeningOperatingGapRecorded').payload.remaining =
+            '3'),
+        /金额相等/,
+      ],
+      [
+        'source',
+        (values) =>
+          (values.find(
+            (e) => e.eventType === 'OpeningOperatingGapRecorded',
+          ).payload.origin.sourceId = 'another-source'),
+        /同来源/,
+      ],
+      [
+        'account',
+        (values) => {
+          const e = values.find((e) => e.eventType === 'OpeningOperatingGapRecorded');
+          e.accountId = 'b';
+          e.streamId = 'account:b';
+          e.payload.accountId = 'b';
+        },
+        /同账户/,
+      ],
+      [
+        'order',
+        (values) => {
+          const at = values.findIndex((e) => e.eventType === 'OpeningOperatingGapRecorded');
+          const [gap] = values.splice(at, 1);
+          values.push(gap);
+        },
+        /同笔/,
+      ],
+      [
+        'orphan',
+        (values) => {
+          const e = structuredClone(
+            values.find((e) => e.eventType === 'OpeningOperatingGapRecorded'),
+          );
+          e.eventId = 'second-orphan-gap';
+          values.push(e);
+        },
+        /唯一运营责任/,
+      ],
+      [
+        'missing',
+        (values) => {
+          const e = values.find((e) => e.eventType === 'OpeningOperatingRecorded');
+          e.payload.fixedGapEventId = null;
+        },
+        /唯一运营责任/,
+      ],
+      [
+        'missing-receipt',
+        (values) =>
+          values.splice(
+            values.findIndex((e) => e.eventType === 'OpeningFundingReceiptRecorded'),
+            1,
+          ),
+        /原登记回执/,
+      ],
+      [
+        'receipt-id',
+        (values) =>
+          (values.find((e) => e.eventType === 'OpeningFundingReceiptRecorded').eventId =
+            'false-receipt-event'),
+        /原业务标识/,
+      ],
+      [
+        'receipt-intent',
+        (values) =>
+          (values.find(
+            (e) => e.eventType === 'OpeningFundingReceiptRecorded',
+          ).payload.request.amount = '4'),
+        /Invalid relational fact/,
+      ],
+    ];
+  for (const [name, mutate, error] of cases) {
+    await t.test(name, () => {
+      const db = new Database(':memory:');
+      try {
+        const c = initializeTarget(db, mapped),
+          inputs = new RelationalInputStore(db),
+          prefix = databaseState(db);
+        mutate(c.events);
+        c.fingerprint = domainDigest(c.events);
+        db.transaction(() =>
+          assert.throws(
+            () =>
+              db.transaction(() => {
+                inputs.stageOpeningInput({
+                  inputId: 'retained-failed-input',
+                  memberId: 'm1',
+                  completeness: 'unavailable',
+                  body: null,
+                  logicalBytes: 0,
+                  assets: [],
+                });
+                new RelationalCommitReplayer(db).appendCommit(c, inputs);
+              })(),
+            error,
+          ),
+        )();
+        assert.equal(databaseState(db), prefix);
+        assert.equal(db.prepare('SELECT COUNT(*) AS n FROM generation_inputs').get().n, 0);
+        const healthy = command(mapped);
+        healthy.events = healthy.events.filter(
+          (e) =>
+            !['ImportSourceRegistered', 'OpeningMemberRecorded', 'OpeningAccountRecorded'].includes(
+              e.eventType,
+            ),
+        );
+        healthy.expectedVersions = c.expectedVersions;
+        healthy.fingerprint = domainDigest(healthy.events);
+        db.transaction(() => {
+          inputs.stageOpeningInput({
+            inputId: 'retained-failed-input',
+            memberId: 'm1',
+            completeness: 'unavailable',
+            body: null,
+            logicalBytes: 0,
+            assets: [],
+          });
+          new RelationalCommitReplayer(db).appendCommit(healthy, inputs);
+        })();
+        db.transaction(() => assertLegacyFinanceProjection(db, mapped.expected))();
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
+
+test('pending source without original audit keeps unknown original amount and archived receipt, never substituting current remaining', async (t) => {
+  const f = await sourceFixture(t, { blockedLiabilities: true, missingFundingAudit: true }),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))();
+  assert.deepEqual(mapped.findings, []);
+  assert.equal(mapped.expected.funding[0].remaining, '3');
+  assert.equal(mapped.expected.receipts[0].amount, null);
+  assert.equal(mapped.expected.receipts[0].request, null);
+  assert.equal(mapped.expected.receipts[0].result, null);
+  assert.equal(mapped.expected.receipts[0].occurredAt, NOW + 4);
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  applyFinanceFixture(db, mapped);
+  db.transaction(() => assertLegacyFinanceProjection(db, mapped.expected))();
+  assert.equal(
+    new RelationalQuotaStore(db).readAccountQuota('a').pendingFixedDebit,
+    mapped.expected.quotas.find((value) => value.accountId === 'a').pendingFixedDebit,
+  );
+});
+
+test('official-only account without a financial opening is explicit building blocker rather than silently guessed zero', async (t) => {
+  const f = await sourceFixture(t, { unopenedAccount: true }),
+    before = await readFile(f.filename);
+  f.source.transaction(() => {
+    const original = readStreamProjection(f.source, 'account:c').projection,
+      mapped = mapLegacyFinance(f.source, f.references);
+    assert.equal(original.quota, undefined);
+    assert.equal(original.quotaFixed, 17);
+    assert.equal(original.quotaPurchased, 2);
+    assert.equal(original.quotaCheckedAt, NOW);
+    assert.deepEqual(mapped.findings, [
+      { code: 'account_financial_state_requires_initial_opening', count: 1, blocking: true },
+    ]);
+    assert.equal(
+      mapped.expected.quotas.some((value) => value.accountId === 'c'),
+      false,
+    );
+    assert.equal(
+      mapped.expected.wallets.some((value) => value.accountId === 'c'),
+      false,
+    );
+  })();
+  assert.deepEqual(await readFile(f.filename), before);
 });
