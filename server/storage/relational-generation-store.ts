@@ -752,6 +752,9 @@ export class RelationalGenerationStore {
           input.idempotency.keyHash,
         );
         if (mapping) {
+          if (mapping.resolution !== 'live' || mapping.originalCommandId === null) {
+            fail('原操作键已不可领取', 410);
+          }
           if (mapping.intentFingerprint !== metadata.fingerprint) {
             fail('操作键对应的意图已变化', 409);
           }
