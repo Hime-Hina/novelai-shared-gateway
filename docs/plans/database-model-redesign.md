@@ -2592,6 +2592,12 @@ Web/执行器固定 `7f6e789` 只改三份测试/夹具：原 Opening 未知元�
 
 原停用离线账户的真实 HTTP 用例在产品修后先通过启动、原 PNG 两种领取、他人 403、到期结案与完整钱包审计，但最终原成员余额映射误纳入 bootstrap 零钱包，仍记失败；`d0cf3c9` 仅按原 source 成员限定最后映射，前面的全钱包比较不筛选。后继原完整标题无 spy 一次 1/1、零 skip，2.672985 秒，原金额、账户仍停用、零上游调用和停止后完整公共回放均到场。非作者逆删这一 filter 后整文件 AST 精确原基线，固定 `d0cf3c9` 复审通过。Root 五份受影响路径逐字整合，证据 `H:/TEMP/novelai-review-context-root-integration-20261115/REPORT.md` 与 `H:/TEMP/novelai-review-context-independent-3c34-20261115/FINAL-REVIEW-d0cf.md`；原红及准备路径误写后按原 SHA 恢复的审计单列保留。此为局部修复，不替代下一轮完整后端、发布物或切换验收，关键测试断言仍列维护者复核。
 
+### 9.104 整合后固定 b9 的第二轮完整后端
+
+固定 `b9fef2bbebf07e886f6469250fa97b978c9fef5a` 一次原完整 `pnpm test`：2,885 节点为 2,873 pass、6 fail、1 cancelled、5 原 skip，323.2108703 秒，exit 1；原 44 unit/126 integration、并发 4、期限、断言和 skip 保留。六项实际早期失败是部分收费历史 child、四项 Native 旧 SQL 夹具及 R2 历史 child；新增取消项是原 503 冷历史在 60 秒超时，首轮内容请求及第二 child 入口已观察，但第二监听/错误/精确等待点未取证，不能把旧单例通过挪作本轮通过。完整后端仍未验收，不从旧 40 项失败扣减推结果。
+
+617 项 Git/raw、Node/native/pnpm/preload/runner 前后一致；Python 显式环境块与初始 pnpm 的 16 个实际变量名相等，393 个实际 OS Node 身份和 13 个线程均有关闭证据，不误杀复用 PID。旧 df0 的环境限制、原日志和计数保留；新旧实际阶段、序列化资格及封存 SHA 统一见[两轮完整源码记录](../history/database-model-full-source-20261115.md)。本轮不覆盖正式发布包、Node24、Docker、同规模恢复/容量或生产切换。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

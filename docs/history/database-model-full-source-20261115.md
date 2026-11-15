@@ -37,3 +37,23 @@
 | `ENVIRONMENT-QUALIFICATION.md` | `6f801b130206a8c716b32befd81cdba3ea05b38c085a7ec388e3306e87b97514` |
 
 `failures-final.json` 保留全部 40 个原 TAP 失败块、精确源码位置及子例归属。后继候选的窄通过只能按其提交和实际范围另列；不能从本轮结果、旧 PR CI 或局部包检查推导 compiled、三包、Nuxt、Docker、真实外部存储、迁移、同规模恢复或生产切换已验收。总体状态与待选事项仍见[数据库模型计划](../plans/database-model-redesign.md)和[迁移决策材料](database-model-migration-decision.md)。
+
+## 后继 b9 的第二次完整运行
+
+固定 `b9fef2bbebf07e886f6469250fa97b978c9fef5a` 在另一真实 Git 隔离树运行同一原命令，仍为 44 unit、126 integration、并发 4 和原期限/断言/平台条件。一次 exit 1，TAP **323.2108703 秒**、Popen 323.796 秒：**2,885 节点为 2,873 pass、6 fail、1 cancelled、5 原 skip**。2,079 个顶层的七个 `not ok` 已包含六项失败与一项超时取消，不能再加算，也不是从旧 40 fail 扣减得到。
+
+六项失败的实际首次阶段为：`failure-accounting` 原部分收费历史用例 child 启动退出 1；四项 `native-http` 仍在共享旧夹具 SQL `near ")"` 初始化失败；`r2-history-http` 在 child 启动等待时退出 1。本轮均未到对应内容/资金的完整业务 oracle，不能凭这些早期错误判定更深产品原因。历史到期核对、查询、输入、凭据、打包与存储边界的已整合后继实际进入本轮，具体修复及独立反例见计划 9.101–9.103；完整运行仍非通过。
+
+取消项为原 `result-recovery-http` 的 503 条冷历史用例，在原 60 秒触发 `testTimeoutFailure`。原测试与此前成功 `8b85b2a` 的 Git blob 和 SHA 完全相同，数量/事务/期限未改。本轮只读 observer 记录 mock listen 到首轮第 501 条实际 HTTP 之间 58.816311 秒，区间包括准备、安装和启动，不能猜成某一步 SQL 耗时。首轮 PNG/opaque 内容与权限请求及第二个实际 child 入口有记录；第二次监听、HTTP、SQLite/安全错误和精确等待点尚未取证，两个 child 最终均关闭。旧独审该项 38.527 秒的通过仍保留为原候选证据，不使本轮超时变绿；下一步只做阶段诊断，不延长期限或减少数据。
+
+617 个实际 tracked 文件逐 Git blob/raw 绑定，Node/native/pnpm/批准 preload 和 runner 前后完全相同。Python 显式创建新环境块，初始 pnpm Node 的 16 个实际名字与传入集合相等；后代允许原 pnpm metadata 与合成夹具变量，只记录名字，不谎称全部仅 OS 名单。393 个有入口记录的 OS Node 身份均有守卫和版本信息，336 个 self-exit 加 57 个父句柄退出覆盖这些身份；另 13 个 worker thread 随所属 OS 进程退出。主 coordinator 没有 self-prelude，仍单独使用真实 argv/父句柄/OS 退出证据；两个复用为 Chrome/svchost 的 PID 没有被终止。旧 df0 环境资格说明不追溯升级。
+
+新证据独立封存于 `H:/TEMP/novelai-root-full-postfix-20261115/`，没有覆盖旧运行：
+
+| 文件                     | SHA256                                                             |
+| ------------------------ | ------------------------------------------------------------------ |
+| `REPORT.md`              | `741097e38a6d62d82b5b65d39f0499622d97ada29e322984d728693e69c687f0` |
+| `FAILURES.md`            | `96ccf7b8619055383f935a8fe45cbabdf80da3f959a62981b51290f696a6b45a` |
+| `evidence-manifest.json` | `c3b101792b6b1d04305337ec6b6a7d385b3af85e04c305dd0d425e683ef61cdc` |
+
+静态准备的 before JSON 在正式 launch 按 runner 重写时仅发生 LF→CRLF 序列化变化，规范化后相同；实际运行 before/after 字节完全相同，原静态版本及 `metadata-serialization.json` 单列。以上只证明当前完整源码的实际失败范围、来源和退出，不替代发布物、迁移、实外端容量或生产切换。
