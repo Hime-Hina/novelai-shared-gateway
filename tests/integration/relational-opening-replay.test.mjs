@@ -109,6 +109,7 @@ const account = (sourceId = 'source') =>
     {
       accountId: 'historical-account',
       displayName: 'historical',
+      weight: null,
       enabled: false,
       credentialEpoch: 1,
       cooldownUntil: null,

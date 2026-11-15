@@ -13,7 +13,6 @@ import {
 } from '../../server/events/relational-event-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
@@ -157,12 +156,8 @@ function open(f, options = {}) {
       );
     }
     if (options.local) {
-      const local = new RelationalReplicaStore(f.db).planLocalArtifactPublication(
-        descriptor,
-        NOW + 10,
-      );
-      if (local.target) events.splice(2, 0, event(local.target.eventType, local.target.payload));
-      events.push(event(local.replica.eventType, local.replica.payload));
+      events.splice(2, 0, event('OpeningStorageTargetRecorded', options.local.target));
+      events.push(event('OpeningReplicaRecorded', options.local.replica));
     }
     events.push(...(options.extraEvents ?? []));
     const result = options.raw
@@ -596,7 +591,34 @@ test('Opening Artifact实际Local副本走原owner与唯一ready，缺原字节�
       buffer: image,
     });
   await publishStoredResult(f.dir, descriptor, image);
-  open(f, { local: true, unavailable: true });
+  const targetId = `local:${domainDigest('images')}`;
+  // 显式合成原manifest：上传时点未知、原核验时点已知0，均不取导入header的NOW+10。
+  // 这不是旧源推断；installer仍必须实际读取原file并核SHA/长度，不能以此承诺绕过字节。
+  const local = {
+    target: {
+      storageTargetId: targetId,
+      kind: 'local',
+      namespace: 'images',
+      credentialRef: null,
+      origin: origin('local-target'),
+    },
+    replica: {
+      artifactId: descriptor.imageId,
+      storageTargetId: targetId,
+      objectKey: descriptor.file,
+      encoding: 'identity',
+      uploadedAt: null,
+      verifiedAt: 0,
+      deletedAt: null,
+      lastErrorCode: null,
+      origin: origin('local-replica'),
+    },
+  };
+  open(f, { local, unavailable: true });
+  assert.deepEqual(f.db.prepare('SELECT uploaded_at,verified_at FROM artifact_replicas').get(), {
+    uploaded_at: null,
+    verified_at: 0,
+  });
   initializeFixtureConfiguration(f.db);
   const sourcePath = path.join(f.dir, 'entities-selected.sqlite');
   await f.db.backup(sourcePath);
