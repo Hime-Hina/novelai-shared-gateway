@@ -138,7 +138,7 @@ test('B困难切片保留parentless/原NULL/真实0，并由完整公共提交�
     const request = db.prepare('SELECT * FROM generation_requests').get(),
       job = db.prepare('SELECT * FROM generation_jobs').get(),
       input = db.prepare('SELECT * FROM generation_inputs').get();
-    assert.equal(request.original_request_id, null);
+    assert.equal(new RelationalInputStore(db).readOriginalRequestId(request.id), null);
     assert.equal(request.sample_count, null);
     assert.equal(request.accepted_at, null);
     assert.equal(job.completed_at, null);
