@@ -2454,7 +2454,7 @@ OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，
 
 副本 Opening 的已知 verifiedAt 与未知 uploadedAt 可并存；同一副本 owner 必须将其作为已有存在承诺，冷读与复制继续实际核对 namespace、来源和内容，不将未知 upload 变成待 PUT。未知操作仅冷读/按实际字节复制，不进入严格 publisher 或伪补旧 Local 时间。该冷读及普通首次验证边界由 9.98.2 同批交付。
 
-仍为单一未发布 event7；DDL hash 随表示变化，实际 `c653bf2` DDL/hash `2314a5a3…c5be7c8a` 固定为拒绝反例，不改 SQL/journal、不保留在线旧格式 fallback，不手标 ready。当前核心为静态检查点；新反例及查询/冷读合并后的实际 HTTP、完整回放、选定私有快照、真实 Local/唯一 installer 尚待统一候选验证，不沿用旧绿计数。
+仍为单一未发布 event7；DDL hash 随表示变化为 `057d74f270c29492ab799d485b54966ab5e4c944b42f9a6bd70346a331261f86`，实际 `c653bf2` DDL/hash `2314a5a3…c5be7c8a` 固定为拒绝反例，不改 SQL/journal、不保留在线旧格式 fallback，不手标 ready。首核心以静态检查点接合，各后续实际源码范围如下；发布物、实云、全量恢复/容量和切换尚未验，不沿用旧绿计数。
 
 #### 9.98.1 核心 owner 与可运行反例
 
@@ -2464,7 +2464,11 @@ OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，
 
 首联合 `208896ff` 的五文件精确 pattern 为 16 项，13 通过、3 个 Core fixture 失败，零跳过，4.512 秒；读组三项及 Cold 新三/原二均已到实际断言。Core 重领误再暂存输入造成真实 UNIQUE、临时新增 trigger 被真实 schema guard 提前拒绝、初始化原语的 empty-target 错误与测试统一格式 regex 不符。原日志保留；后继只改测试使用原完整 command 重领、在实际 artifact INSERT.run 注入故障并核尝试次数1、区分初始化原精确拒因，未放宽产品。`190ee618` 后续 Core 八项与读组三项同次 **11/11、零跳过，2.226 秒**；原行 NULL/0、真实 parent 隔离、完整公共回放无私有/网络、SQL 尾错原子回滚/重试、实际 c653 正确旧 DDL/hash 零写拒绝及原 stream 索引都实际到达。证据 `H:/TEMP/novelai-opening-precision-scope-998/{joint-first,core-read-second}*`，不是整片验收或非作者复审。
 
-静态继续发现 imported prepared 的角色需要与 6dd 保全合同一致：历史 failed 的原 prepared 描述符不是执行能力。仅 OpeningAttempt 归档投影复用既有 readable 描述符，保留 not_sent、身份/来源/原序检查，去掉执行输入索取；已知定义与 seed 仍由原 Input/Job owner 校验。正常 prepare/ArtifactPrepared/Published、prepared getter、实际 complete 和唯一 ready 继续同一严格完成前置。新增未知 parent/op/input 归档 building/完整回放保全而三口拒绝，另有真实 Local 清单到公共重建/所选私有/唯一 ready/重开字节的完整小检查；这些后继尚未运行，正常 knownprepared 恢复与真实 queued 派发正控仍待同候选验证。未放宽 live 或手改 ready。
+静态继续发现 imported prepared 的角色需要与 6dd 保全合同一致：历史 failed 的原 prepared 描述符不是执行能力。仅 OpeningAttempt 归档投影复用既有 readable 描述符，保留 not_sent、身份/来源/原序检查，去掉执行输入索取；已知定义与 seed 仍由原 Input/Job owner 校验。正常 prepare/ArtifactPrepared/Published、prepared getter、实际 complete 和唯一 ready 继续同一严格完成前置。新增未知 parent/op/input 归档 building/完整回放保全而三口拒绝，另有真实 Local 清单到公共重建/所选私有/唯一 ready/重开字节的完整小检查。未放宽 live 或手改 ready。
+
+`dc320281` 三文件精确组 **14/15、零跳过，5.066 秒**：Attempt 四项（新归档保全及三口拒绝、原 noCharge 等矩阵、knownprepared 原字节恢复、queued 真 localhost 一次派发）和 Input 两项（原 known/NULL count 坏 Native 定义及完整恶意来源不能 replay/ready）全部通过；Core 唯一失败是新清单手拼 storageTargetId，被原规范来源身份拒绝，未到 ready。后继 `36b24d2` 仅该测试复用实际 ReplicaStore 的 configured Local target，原失败与所有断言保留，产品逐字未改。原 case 实际 **1/1、零跳过，TAP 1.098 秒**：公共重建先无 Key，随后选定私有与唯一 installer 联合恢复并磁盘重开，原 bytes/源 SHA、NULL parent/op/发布时间/上传时间及本次实际 inventory 核验时点均不变。首 14 项不与该 1 项伪称一次全 15 重跑。三文件组只有实际 queued worker 发生 1 次 loopback fetch/socket，其余与修后 Local 单例均零网络，所有 guard 的外联拒绝计数为 0。
+
+隔离 TEMP 固定当前 fixture/DDL，仅 Gen 回选 `75bdb120`，新未知 prepared 归档原例实际 **0/1**，准确失败于 OpeningAttempt 的 known-execution 能力索取；没有 loader/schema 早拒。还原 `36b24d2` 的同一 Gen 后，隔离树 Git/raw 字节恢复，原例 **1/1、零跳过，TAP 0.805 秒**，归档存在与 live/ready 权限的差异可运行辨识。这是作者负控，不算独立审查。命令、前后 Git/raw、计数、首失败及后继单例在 `H:/TEMP/novelai-opening-precision-scope-998/closure-first*`、`local-ready-fixed*`、`prepared-negative-*`；独立复审、同候选完整源码/发布物及真实旧源转换仍未完成。
 
 #### 9.98.2 冷读描述符与副本存在承诺
 
