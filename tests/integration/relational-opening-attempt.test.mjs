@@ -1003,7 +1003,7 @@ test('unknown historical execution metadata still permits atomic deadline review
     afterChanges = f.db.prepare('SELECT total_changes() AS n').get().n;
   assert.deepEqual(
     f.db.transaction(() => f.generations.closeGenerationReview(command, result.jobId))(),
-    closed,
+    { ...closed, replayed: true, events: [] },
   );
   assert.equal(databaseState(f.db), after);
   assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, afterChanges);
