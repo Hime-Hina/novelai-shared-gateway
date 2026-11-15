@@ -44,6 +44,8 @@ Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务�
 
 上述批次的关系子进程夹具与同切点公共/选定私有恢复证据见[第 9.89 节](../plans/database-model-redesign.md#989-native-批次真实-child-来源迁移)。它使用真实本地 HTTP 和模拟上游，不代表真实 NAI 端点验收，也不把当前正常受理的 parent/child 当作旧 Opening 来源的等价迁移证明。
 
+当前新格式的强杀恢复先处理原 prepared 文件，再处理中断尝试；缺失或损坏的 prepared 字节保留预扣与未决责任并拒绝监听，不自动退款或重新请求上游。完整结果、迟到 Vibe 和冷历史来源的真实 child 验证范围见[结果恢复](../architecture/result-recovery.md#事件权威与启动)及[计划 9.96](../plans/database-model-redesign.md#996-结果恢复-http-child-的关系夹具)，模拟上游不代表真实 NAI 或实云验收。
+
 ### 输入范围与规范化
 
 JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `request` JSON 字符串或 JSON 文件部件；附件只能是被引用的 `image`、`mask`、`reference_image`、`ref_multiple_0..99`、`director_ref_0..99`，不能有未引用、重复或未知部件。最多 36 个总部件，每个附件非空且不超过 8 MiB。它们被展开成 base64 后执行相同输入校验；附件名不是服务器下载 URL。
