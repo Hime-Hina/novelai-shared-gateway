@@ -10,12 +10,12 @@
 | [contracts](contracts/)       | 现有 API 行为及目标接口契约          |
 | [architecture](architecture/) | 服务边界、业务规则、数据流和前端接入 |
 | [operations](operations/)     | 测试部署、生产发布、备份与回退       |
-| [history](history/)           | 已完成阶段、评估、实测与性能基线     |
+| [history](history/)           | 阶段记录、评估、实测与决策材料       |
 
 ## 计划
 
-- [当前重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源、成员生成接口、工作包与验收。
-- [数据库与数据模型重构草案](plans/database-model-redesign.md)：需求、实体关系、数据所有权、一次迁移与历史归档开账备选；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。T1/T2、T3 认证与 PR #43 已审 T4 子集已合入 main；#47–#53 继续推进，新库仍为 building，现行网关未切换。
+- [架构重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源与成员生成接口目标、工作包及分阶段验收记录。
+- [数据库与数据模型重构](plans/database-model-redesign.md)：数据模型、owner、迁移与归档选择、当前实现及剩余验收的统一记录；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。离线恢复与合法 ready 安装见[关系恢复指南](operations/relational-recovery.md)，实际部署和生产切换以[正式发布记录](operations/production-release.md)为准。
 - [后续扩展计划](plans/scaling-follow-up-plan.md)：多执行器、多账号/车队及数据库迁移，未纳入当前实施范围。
 
 ## 接口契约
@@ -27,7 +27,7 @@
 
 - [执行服务](architecture/executor-service.md)：Nuxt 与独立执行器的进程、权限和传输边界。
 - [请求生命周期](architecture/request-lifecycle.md)：持久请求、幂等、批次、取消、排队和冷却。
-- [结果恢复](architecture/result-recovery.md)：产物发布、结算与崩溃恢复保证。
+- [结果恢复](architecture/result-recovery.md)：原产物提交规则及独立旧工具的升级/重放说明；当前关系格式恢复见[运维指南](operations/relational-recovery.md)。
 - [失败退款与资源核对](architecture/failure-accounting.md)：本地退款、未知消费、运营损耗及核销。
 - [成员会话](architecture/member-sessions.md)：登录期限、续期、撤销与角色变化。
 - [状态通知](architecture/state-events.md)：事务后失效通知、授权过滤及两段 SSE。
