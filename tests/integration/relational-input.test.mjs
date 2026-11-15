@@ -10,6 +10,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import {
   appendRelationalCommit,
   readRelationalCommit,
@@ -378,15 +379,14 @@ test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不�
       .run(status, status === 'queued' ? 1 : null, `r1-${index}`);
   }
   assert.equal(store.activePayloadBytes(), bytes);
+  const shared = persist(accepted(normalized({ n_samples: 1 }), 'shared'), metadata('shared'));
+  assert.equal(
+    sqlite.prepare("SELECT sha256 FROM generation_inputs WHERE id='input-shared'").get().sha256,
+    sqlite.prepare("SELECT sha256 FROM generation_inputs WHERE id='input-r1'").get().sha256,
+  );
   // 只放大关系查询规模，来源引用复用夹具；不把这些行当作迁移或重建验收样本。
   sqlite.transaction(() => {
-    sqlite.exec(`INSERT INTO generation_requests
-      (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
-      SELECT 'shared',member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
-      FROM generation_requests WHERE id='r1';
-      INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id)
-      SELECT 'shared-child','shared',0,'pending',0,source_event_id FROM generation_requests WHERE id='shared';
-      WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<4096)
+    sqlite.exec(`WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<4096)
       INSERT INTO generation_requests
       (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
       SELECT 'history-'||n,member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
@@ -404,9 +404,107 @@ test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不�
   t.diagnostic(plan);
   assert.match(plan, /SCAN generation_jobs USING COVERING INDEX idx_jobs_active_request/);
   assert.doesNotMatch(plan, /\bSCAN (?:r|generation_requests|i|generation_inputs)\b/);
+  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='shared'").run();
+  assert.equal(store.activePayloadBytes(), bytes);
+  const inputId = sqlite
+    .prepare("SELECT input_id FROM generation_requests WHERE id='r1'")
+    .get().input_id;
+  const parent = shared.events.find((event) => event.eventType === 'RequestAccepted');
+  const child = shared.events.find((event) => event.eventType === 'JobAccepted');
+  const origin = { sourceId: 'budget-shared-input', originalId: 'same-input-parent' };
+  const command = metadata('same-input');
+  const common = {
+    occurredAt: command.recordedAt,
+    memberId: parent.memberId,
+    accountId: null,
+    policyVersion: command.policyVersion,
+    pricingVersion: command.pricingVersion,
+  };
+  // 明确的合成开账来源，验证同一 input 跨 parent；不代表真实迁移或 ready。
+  const events = [
+    {
+      ...common,
+      memberId: null,
+      eventType: 'ImportSourceRegistered',
+      streamId: `import:${origin.sourceId}`,
+      payload: {
+        sourceId: origin.sourceId,
+        sourceSha256: domainDigest({ inputId, origin }),
+        sourceCommit: 'synthetic-active-input-budget',
+        cutoffSeq: shared.commitSeq,
+        cutoffAt: command.recordedAt,
+        manifestSha256: domainDigest(origin),
+        route: 'B',
+      },
+    },
+    {
+      ...common,
+      eventType: 'OpeningRequestRecorded',
+      streamId: `request:${origin.originalId}`,
+      payload: {
+        ...parent.payload,
+        requestId: origin.originalId,
+        originalRequestId: origin.originalId,
+        inputId,
+        acceptedAt: parent.occurredAt,
+        retiredAt: null,
+        origin,
+      },
+    },
+    {
+      ...common,
+      eventType: 'OpeningJobRecorded',
+      streamId: `request:${origin.originalId}`,
+      payload: {
+        ...child.payload,
+        jobId: 'same-input-child',
+        requestId: origin.originalId,
+        createdAt: child.occurredAt,
+        artifactId: null,
+        completedAt: null,
+        errorCode: null,
+        errorStatus: null,
+        cancellationReason: null,
+        lateResultAt: null,
+        freeSucceededAt: null,
+        freeWarningThreshold: null,
+        retiredAt: null,
+        origin: { ...origin, originalId: 'same-input-child' },
+      },
+    },
+  ];
+  sqlite
+    .transaction(() =>
+      new RelationalCommitReplayer(sqlite).appendCommit(
+        {
+          ...command,
+          actorKind: 'system',
+          actorId: null,
+          fingerprint: domainDigest(events),
+          expectedVersions: {
+            [`import:${origin.sourceId}`]: '0',
+            [`request:${origin.originalId}`]: '0',
+          },
+          receipt: null,
+          events,
+        },
+        store,
+      ),
+    )
+    .immediate();
+  assert.equal(
+    sqlite.prepare('SELECT input_id FROM generation_requests WHERE id=?').get(origin.originalId)
+      .input_id,
+    inputId,
+  );
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM generation_inputs').get().n, 2);
+  assert.equal(store.readOriginalRequestId(origin.originalId), origin.originalId);
+  assert.equal(store.activePayloadBytes(), bytes * 2);
   sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='r1'").run();
   assert.equal(store.activePayloadBytes(), bytes);
-  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='shared'").run();
+  sqlite
+    .prepare('UPDATE generation_jobs SET status=? WHERE request_id=?')
+    .run('failed', origin.originalId);
   assert.equal(store.activePayloadBytes(), 0);
 });
 
@@ -862,6 +960,21 @@ test('partial 输入可复制已知字段和已校验附件，缺首次上下文
   const events = [
     {
       ...common,
+      memberId: null,
+      eventType: 'ImportSourceRegistered',
+      streamId: `import:${origin.sourceId}`,
+      payload: {
+        sourceId: origin.sourceId,
+        sourceSha256: sha,
+        sourceCommit: 'synthetic-partial-input-fixture',
+        cutoffSeq: '1',
+        cutoffAt: 500,
+        manifestSha256: domainDigest(origin),
+        route: 'B',
+      },
+    },
+    {
+      ...common,
       eventType: 'OpeningInputRecorded',
       streamId: 'input:partial',
       payload: {
@@ -930,7 +1043,7 @@ test('partial 输入可复制已知字段和已校验附件，缺首次上下文
         ...metadata('partial'),
         actorKind: 'system',
         actorId: null,
-        expectedVersions: { 'input:partial': '0', 'request:past': '0' },
+        expectedVersions: { 'import:legacy': '0', 'input:partial': '0', 'request:past': '0' },
         receipt: null,
         events,
       });
@@ -950,12 +1063,12 @@ test('partial 输入可复制已知字段和已校验附件，缺首次上下文
         .prepare(
           "INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,accepted_at,source_event_id) VALUES('past','m1','partial',NULL,'historical','generate','historical',1,'unknown',500,?)",
         )
-        .run(result.events[1].eventId);
+        .run(result.events[2].eventId);
       sqlite
         .prepare(
           "INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id) VALUES('past-job','past',0,'failed',0,?)",
         )
-        .run(result.events[2].eventId);
+        .run(result.events[3].eventId);
     })
     .immediate();
   const before = sqlite.serialize();
