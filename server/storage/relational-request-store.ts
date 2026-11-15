@@ -471,7 +471,8 @@ export class RelationalRequestStore {
     return this.sqlite.transaction(() => {
       const rows = this.sqlite
         .prepare<[number], { id: string; orderKnown: number }>(
-          `SELECT j.id,(origin.event_type='JobAccepted') AS orderKnown
+          `SELECT j.id,(origin.event_type='JobAccepted'
+          OR json_extract(origin.payload,'$.sourceOrder') IS NOT NULL) AS orderKnown
         FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
         JOIN domain_events origin ON origin.stream_id='request:'||r.id
           AND origin.event_type IN ('JobAccepted','OpeningJobRecorded')
@@ -480,7 +481,9 @@ export class RelationalRequestStore {
         WHERE j.status='failed' AND j.retired_at IS NULL AND r.retired_at IS NULL
         ORDER BY (origin.event_type='JobAccepted') DESC,
           CASE WHEN origin.event_type='JobAccepted' THEN origin.commit_seq END DESC,
-          CASE WHEN origin.event_type='JobAccepted' THEN origin.event_index END DESC,j.id DESC
+          CASE WHEN origin.event_type='JobAccepted' THEN origin.event_index END DESC,
+          CASE WHEN origin.event_type='OpeningJobRecorded'
+            THEN json_extract(origin.payload,'$.sourceOrder') END DESC,j.id DESC
         LIMIT ?`,
         )
         .all(limit);
@@ -503,6 +506,7 @@ export class RelationalRequestStore {
           seed: number | null;
           accountId: string | null;
           currentAccepted: number;
+          displayCost: number | null;
           currentEventType: string;
           queuePosition: number;
           queuedCount: number;
@@ -514,6 +518,10 @@ export class RelationalRequestStore {
       COALESCE(attempt.account_id,original.account_id) AS accountId,e.event_type AS currentEventType,
       EXISTS(SELECT 1 FROM domain_events accepted WHERE accepted.event_type='JobAccepted'
         AND accepted.stream_id='request:'||r.id AND json_extract(accepted.payload,'$.jobId')=j.id) AS currentAccepted,
+      (SELECT json_extract(opening.payload,'$.displayCost') FROM domain_events opening
+        WHERE opening.event_type='OpeningJobRecorded' AND opening.stream_id='request:'||r.id
+        AND opening.member_id=r.member_id AND json_extract(opening.payload,'$.jobId')=j.id
+        AND json_extract(opening.payload,'$.requestId')=r.id) AS displayCost,
       CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
         WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) ELSE 0 END AS queuePosition,
       (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
