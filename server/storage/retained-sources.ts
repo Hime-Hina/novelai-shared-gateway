@@ -476,16 +476,14 @@ export async function readRetainedArchiveBinding(
     (identity.format === 'legacy-archive-audit-v1' && identity.exports !== undefined)
   ) {
     const audit = legacyExportAudit(identity);
-    if (expectedAuditSha256 !== undefined && !dependenciesFile) {
+    if (!dependenciesFile) {
       fail();
     }
-    if (dependenciesFile) {
-      if (path.basename(dependenciesFile) !== 'artifacts.jsonl') {
-        fail();
-      }
-      await legacyArtifactFile(dependenciesFile, audit.exports.artifacts);
-      dependenciesSha256 = audit.exports.artifacts.sha256;
+    if (path.basename(dependenciesFile) !== 'artifacts.jsonl') {
+      fail();
     }
+    await legacyArtifactFile(dependenciesFile, audit.exports.artifacts);
+    dependenciesSha256 = audit.exports.artifacts.sha256;
   }
   return {
     format: identity.format === 'legacy-archive-audit-v1' ? 'legacy-export' : 'opaque',
@@ -515,12 +513,10 @@ async function boundLegacyExport(root: string, binding: RetainedBinding) {
     return;
   }
   const audit = legacyExportAudit(value);
-  if (binding.dependenciesSha256 !== null) {
-    if (binding.dependenciesSha256 !== audit.exports.artifacts.sha256) {
-      fail();
-    }
-    await legacyArtifactFile(path.join(root, 'dependencies.jsonl'), audit.exports.artifacts);
+  if (binding.dependenciesSha256 !== audit.exports.artifacts.sha256) {
+    fail();
   }
+  await legacyArtifactFile(path.join(root, 'dependencies.jsonl'), audit.exports.artifacts);
 }
 async function immutableFile(filename: string, value: string | Buffer) {
   const handle = await open(filename, 'wx', 0o600);

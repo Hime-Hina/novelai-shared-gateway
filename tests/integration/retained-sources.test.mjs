@@ -442,6 +442,64 @@ test('archive selected export: stored artifact hashes cannot detach from the pre
     checkpointRetainedSources(f.registry, path.join(f.root, 'refused-checkpoint')),
   );
 });
+test('archive selected export: declaring exports requires artifacts even without an external pin', async (t) => {
+  const f = await selectedArchive(t);
+  for (const pin of [undefined, f.pin]) {
+    await assert.rejects(readRetainedArchiveBinding(f.source, f.manifest, undefined, pin));
+  }
+  const binding = await readRetainedArchiveBinding(f.source, f.manifest, f.artifacts, f.pin);
+  const capture = await beginRetainedCapture(f.registry, 'archive', f.source);
+  await assert.rejects(
+    bindRetainedCapture(f.registry, capture.sourceId, f.manifest, {
+      ...binding,
+      dependenciesSha256: null,
+    }),
+  );
+  const current = await readRetainedSourceProtection(f.registry);
+  assert.equal(current.sources[0].binding, null);
+  assert.equal(current.sources[0].holds[0].state, 'preparing');
+});
+test('archive selected export: null cannot detach a declared artifact file from read or recovery', async (t) => {
+  const f = await selectedArchive(t),
+    { capture, binding } = await retainSelectedArchive(f, f.pin);
+  const checkpoint = path.join(f.root, 'healthy-checkpoint');
+  await checkpointRetainedSources(f.registry, checkpoint);
+  async function detach(root) {
+    const registryFile = path.join(root, 'registry.json');
+    const registry = JSON.parse(await readFile(registryFile));
+    registry.sources[0].binding.dependenciesSha256 = null;
+    await writeFile(registryFile, JSON.stringify(registry));
+    const saved = path.join(root, 'sources', capture.sourceId);
+    await filesystem.rename(
+      path.join(saved, 'dependencies.jsonl'),
+      path.join(saved, 'dependencies.held'),
+    );
+    assert.equal(await retainedFileSha256(path.join(saved, 'manifest.json')), f.pin);
+    assert.equal(
+      await retainedFileSha256(path.join(saved, 'dependencies.held')),
+      binding.dependenciesSha256,
+    );
+    await assert.rejects(lstat(path.join(saved, 'dependencies.jsonl')), { code: 'ENOENT' });
+  }
+  await detach(f.registry);
+  assert.equal(await retainedFileSha256(f.source), f.audit.sourceSha256);
+  assert.equal(await retainedFileSha256(f.manifest), f.pin);
+  await assert.rejects(readRetainedSourceProtection(f.registry));
+  await assert.rejects(
+    checkpointRetainedSources(f.registry, path.join(f.root, 'refused-checkpoint')),
+  );
+
+  await detach(checkpoint);
+  const changedSha = await retainedFileSha256(path.join(checkpoint, 'registry.json'));
+  const markerFile = path.join(checkpoint, 'checkpoint.json');
+  const marker = JSON.parse(await readFile(markerFile));
+  await writeFile(markerFile, JSON.stringify({ ...marker, sha256: changedSha }));
+  assert.equal(JSON.parse(await readFile(markerFile)).sha256, changedSha);
+  await assert.rejects(readRetainedSourceProtection(checkpoint, changedSha));
+  const restored = path.join(f.root, 'refused-restore');
+  await assert.rejects(restoreRetainedSources(restored, checkpoint, changedSha));
+  await assert.rejects(lstat(restored), { code: 'ENOENT' });
+});
 test('archive selected export: old reports without an external pin remain unknown', async (t) => {
   const f = await selectedArchive(t);
   delete f.audit.exports;

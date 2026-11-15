@@ -829,7 +829,7 @@ printf '%s' '{"source":"/sealed/library.sqlite","manifest":"/selected/export/aud
 | 保存与重读 | 复用原 `manifestSha256`、`dependenciesSha256` 和不可变 audit/产物清单副本，不加认证布尔、第二份 pin 或派生对象目录。读取、checkpoint、restore 继续核已存副本与共同元组，原交接文件移除也不能使保护丢失；有 exports 不等于独立来源已认证。旧无 exports 报告保持未知。            |
 | 失败保全   | CLI 先登记 durable preparing，再验证/复制，最后才 publish retained。错误不能删除 preparing 或发布成功；复制尾错可留下诊断文件，但 registry 的原 binding/hold 不得越过相应完成点。源与原清单不改，不把文件操作冒充 SQL/文件共同事务。                                            |
 
-本片所有 `dependencies`、coverage 仍为 unknown、releaseAllowed 为 false，产物源 DELETE 为零。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
+有 exports 即声明一份必须存在的产物清单，未提供外部 pin 也不能省略该文件；保存后的 `dependenciesSha256` 必须等于 audit 元组且实文件通过核验，不能置 NULL 脱离证明。旧无 exports 报告仍保持未知。本片所有 `dependencies`、coverage 仍为 unknown、releaseAllowed 为 false，产物源 DELETE 为零。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
 
 验收沿原 retained 测试：外部固定 pin 正向；同源手写自洽空清单并重算 audit 仍与已选 pin 不符；同长篡改、错 cut/tool、缺元组/清单拒绝；可信真实空清单正向；复制确实完成后注入尾错仍保 preparing；原文件移除后 checkpoint/restore 的已存证明仍保护。当前实现与实际验证状态由后继交付证据记录，不将这些要求预写为已通过。
 
