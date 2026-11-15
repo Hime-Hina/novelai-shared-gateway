@@ -18,24 +18,26 @@ test('online runtime rejects offline migration imports and re-exports', () => {
       ['reconcile-legacy-database', 'assertLegacyDatabaseProjection'],
       ['materialize-legacy-originals', 'materializeLegacyOriginals'],
     ]) {
-      const specifier = `${prefix}${module}.mjs`;
-      for (const source of [
-        `import { ${name} as run } from '${specifier}';`,
-        `import * as tool from '${specifier}';`,
-        `import '${specifier}';`,
-        `import {} from '${specifier}';`,
-        `import { type Capability } from '${specifier}';`,
-        `export { ${name} as run } from '${specifier}';`,
-        `export * from '${specifier}';`,
-        `export {} from '${specifier}';`,
-        `export { type Capability } from '${specifier}';`,
-        `const tool = await import('${specifier}');`,
-        `const tool = require('${specifier}');`,
-      ]) {
-        assert.ok(
-          checkSource(filename, source).some((error) => error.includes('offline migration')),
-          `${filename}: ${source}`,
-        );
+      for (const suffix of ['', '?version=1', '#module']) {
+        const specifier = `${prefix}${module}.mjs${suffix}`;
+        for (const source of [
+          `import { ${name} as run } from '${specifier}';`,
+          `import * as tool from '${specifier}';`,
+          `import '${specifier}';`,
+          `import {} from '${specifier}';`,
+          `import { type Capability } from '${specifier}';`,
+          `export { ${name} as run } from '${specifier}';`,
+          `export * from '${specifier}';`,
+          `export {} from '${specifier}';`,
+          `export { type Capability } from '${specifier}';`,
+          `const tool = await import('${specifier}');`,
+          `const tool = require('${specifier}');`,
+        ]) {
+          assert.ok(
+            checkSource(filename, source).some((error) => error.includes('offline migration')),
+            `${filename}: ${source}`,
+          );
+        }
       }
     }
   }
