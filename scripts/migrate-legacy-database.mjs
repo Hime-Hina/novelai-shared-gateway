@@ -314,6 +314,12 @@ function append(target, references, at, key, drafts) {
   );
 }
 
+function appendIndependentOpenings(target, references, at, key, drafts) {
+  for (let offset = 0; offset < drafts.length; offset += 100) {
+    append(target, references, at, `${key}:${offset / 100}`, drafts.slice(offset, offset + 100));
+  }
+}
+
 function memberOwner(job, input) {
   const candidates = new Set(
     [
@@ -1624,18 +1630,14 @@ export async function migrateLegacyDatabase(options) {
               (fact.eventType === 'OpeningArtifactRecorded' &&
                 fact.payload.originalAttemptId === null),
           );
-          if (artifactBaseline.length) {
-            append(target, references, at, 'artifacts', artifactBaseline);
-          }
+          appendIndependentOpenings(target, references, at, 'artifacts', artifactBaseline);
           for (const request of requests) {
             appendLegacyRequest(target, references, at, request, financial, artifacts);
           }
           const replicas = artifacts.facts.filter(
             (fact) => fact.eventType === 'OpeningReplicaRecorded',
           );
-          if (replicas.length) {
-            append(target, references, at, 'replicas', replicas);
-          }
+          appendIndependentOpenings(target, references, at, 'replicas', replicas);
           assertLegacyFinanceProjection(target, financial.expected);
           keyDecisions = appendLegacyKeys(source, target, references, at, findings);
           if (cutConfiguration) {
