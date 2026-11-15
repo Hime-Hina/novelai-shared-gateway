@@ -74,7 +74,7 @@ export async function lateResultsHttpFixture(t, png) {
         username,
         password: 'synthetic-password-123456789',
       });
-      members.setMemberCredentials(prepared, null);
+      db.transaction(() => members.setMemberCredentials(prepared, null))();
     }
 
     const now = Date.now(),
