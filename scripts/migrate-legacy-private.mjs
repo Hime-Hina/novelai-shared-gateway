@@ -150,15 +150,18 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       .prepare('SELECT status,source_event_id FROM members WHERE id=?')
       .get(row.id);
     requireValue(event.payload.memberId === row.id && current?.source_event_id === event.eventId);
-    const active =
-      current.status === 'active' &&
-      user.enabled !== false &&
-      (!normalized.discordLoginEnabled || user.discord?.member !== false);
     const originalEpoch =
       text(user.memberAuth?.version) && user.memberAuth.version ? user.memberAuth.version : null;
+    const currentMember = current.status === 'active';
+    const membershipPermits = !normalized.discordLoginEnabled || user.discord?.member !== false;
+    // Old Raw admission accepted enabled!=false; password and Cookie identities required enabled===true.
+    // KDF material follows the pure login owner. Discord-mode HTTP login remains that route owner's policy.
+    const apiEligible = currentMember && user.enabled !== false && membershipPermits;
+    const passwordEligible = currentMember && user.enabled === true && originalEpoch !== null;
+    const cookieEligible = currentMember && user.enabled === true && membershipPermits;
     const key = user.token;
     const keyValid =
-      active &&
+      apiEligible &&
       text(key) &&
       key.startsWith('STA1N-') &&
       key.trim() === key &&
@@ -166,7 +169,7 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       !key.includes('\0');
     if (keyValid) requireValue(row.token === key);
     // A new current-cut baseline identity for an old API-only key is not an old session/version.
-    const epoch = active
+    const epoch = apiEligible
       ? originalEpoch || (keyValid ? randomBytes(16).toString('hex') : null)
       : null;
     if (epoch && !originalEpoch) counts.newBaselineAuthEpochs++;
@@ -176,7 +179,7 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       epoch,
       note: typeof user.note === 'string' ? JSON.stringify(user.note) : null,
     });
-    users.set(row.id, { user, originalEpoch, active });
+    users.set(row.id, { user, originalEpoch, cookieEligible });
     counts.members++;
     const auth = user.memberAuth;
     if (auth?.username !== undefined) {
@@ -186,13 +189,13 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       requireValue((salt === null) === (passwordHash === null));
       if (salt !== null)
         requireValue(/^[a-f0-9]{48}$/.test(salt) && /^[a-f0-9]{128}$/.test(passwordHash));
-      // The API-only baseline must not turn a password without its original epoch into a session identity.
-      if (salt !== null && !originalEpoch) counts.unavailablePasswords++;
+      // Neither a Raw-only enabled value nor its new epoch may grant the old password identity.
+      if (salt !== null && !passwordEligible) counts.unavailablePasswords++;
       rows.password_credentials.push({
         member_id: row.id,
         username: auth.username,
-        salt: originalEpoch ? salt : null,
-        password_hash: originalEpoch ? passwordHash : null,
+        salt: passwordEligible ? salt : null,
+        password_hash: passwordEligible ? passwordHash : null,
       });
       counts.credentials++;
     } else requireValue(auth?.salt === undefined && auth?.hash === undefined);
@@ -212,8 +215,8 @@ export function migrateLegacyPrivate(target, normalized, refs) {
         member_id: row.id,
         discord_id: discord.id,
         guild_id: discord.guildId,
-        access_token: active ? optionalString(discord.accessToken) : null,
-        refresh_token: active ? optionalString(discord.refreshToken) : null,
+        access_token: apiEligible ? optionalString(discord.accessToken) : null,
+        refresh_token: apiEligible ? optionalString(discord.refreshToken) : null,
         expires_at: optionalTime(discord.expiresAt),
         checked_at: optionalTime(discord.checkedAt),
         eligible: discord.member == null ? null : Number(discord.member),
@@ -222,7 +225,7 @@ export function migrateLegacyPrivate(target, normalized, refs) {
     }
     const invite = user.discordInvite;
     if (
-      active &&
+      apiEligible &&
       !discord?.id &&
       invite &&
       validHash(invite.hash) &&
@@ -261,8 +264,7 @@ export function migrateLegacyPrivate(target, normalized, refs) {
     if (
       !previous ||
       !validHash(session.token_hash) ||
-      !identity?.active ||
-      user.enabled !== true ||
+      !identity?.cookieEligible ||
       !identity.originalEpoch ||
       session.auth_version !== identity.originalEpoch ||
       !time(session.created_at) ||
