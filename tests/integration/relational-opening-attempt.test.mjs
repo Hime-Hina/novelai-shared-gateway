@@ -805,9 +805,9 @@ test('prepared dependency rejects changed descriptor, request/input and original
     ],
     ["UPDATE generation_jobs SET sample_index=0 WHERE id='old-job'", [], inputUnavailable],
     [
-      "UPDATE generation_request_origins SET original_request_id='invented-parent' WHERE request_id='old-request'",
+      "UPDATE generation_requests SET source='novelai-native' WHERE id='old-request'",
       [],
-      /请求原parent来源与结构容器不符/,
+      inputUnavailable,
     ],
   ];
   for (const [sql, params, rejection] of mutations) {
