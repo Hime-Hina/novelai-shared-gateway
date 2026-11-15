@@ -11,12 +11,14 @@ test('online runtime rejects offline migration imports and re-exports', () => {
     ['web/server/api/example.ts', '../../../scripts/'],
   ]) {
     for (const [module, name] of [
-      ['database', 'migrateLegacyDatabase'],
-      ['finance', 'mapLegacyFinance'],
-      ['private', 'migrateLegacyPrivate'],
-      ['artifacts', 'mapLegacyArtifacts'],
+      ['migrate-legacy-database', 'migrateLegacyDatabase'],
+      ['migrate-legacy-finance', 'mapLegacyFinance'],
+      ['migrate-legacy-private', 'migrateLegacyPrivate'],
+      ['migrate-legacy-artifacts', 'mapLegacyArtifacts'],
+      ['reconcile-legacy-database', 'assertLegacyDatabaseProjection'],
+      ['materialize-legacy-originals', 'materializeLegacyOriginals'],
     ]) {
-      const specifier = `${prefix}migrate-legacy-${module}.mjs`;
+      const specifier = `${prefix}${module}.mjs`;
       for (const source of [
         `import { ${name} as run } from '${specifier}';`,
         `import * as tool from '${specifier}';`,

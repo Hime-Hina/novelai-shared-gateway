@@ -185,7 +185,7 @@ export function checkSource(filename, text) {
       : specifier;
     if (
       /^(?:server|web|executor)\//.test(filename) &&
-      /(?:^|\/)scripts\/migrate-legacy-(?:database|finance|private|artifacts)\.mjs$/.test(target)
+      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals)\.mjs$/.test(target)
     ) {
       report(
         node,
