@@ -2522,6 +2522,16 @@ RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin vie
 
 根在该同字节技术并集运行 Core precision 与 public-errors 两个完整文件 **12/12、零跳过，3.199秒**，两个worker的入口前网络guard均denied0；未知Local库存实际安装/选定私有源/重开与原安全错误文案同时到场。backend类型、architecture、默认及可信main88迁移、204文件语法、31变更路径格式与diff通过。根保留证明绑定30份非plan文件逐字等于631及实际共同基线85，原归档CLI、保留源保护与公共错误owner不变；日志/命令在上述root-preservation和root-checks文件。此根交点组不替代作者分片、独审或同候选最终full/编译/发布验收。
 
+### 9.99 保留依赖证据补全（只读首片，未开放源删除）
+
+9.98 的 failed Opening archive 可保存未知原 parent、operation 和不可执行输入的 prepared 描述符；它仍不能通过执行 getter、实际 complete 或唯一 ready。保留源 describe 原先借用严格完成 getter，因而正确拒绝执行能力却也无法声明这份确实存在的 final/part 依赖。本片只在 Gen owner 新增 `readGenerationResultDependency()`，供现 retained describe 一个 caller 使用，JSONL 结构不变。它声明原位置及摘要，不读取或验证产物文件、不执行上游、扣退或写账，也不授予 ready/发布能力。
+
+严格 getter 保持 completion → 原来源 → 严格 descriptor/attempt 比较 → 执行输入的次序。两口共用原唯一准备事实及完整 commit 读取；Opening 继续核原 source 登记、request/member/account/attempt 角色，并复用 Input 现只读 request、保护摘要和 seed 核验，已知信息不能降 NULL 绕过。普通 ArtifactPrepared 仍调用严格 getter，normal prepare、publisher、complete、结果恢复及 ready 不放宽。未知操作仅通过原 readable descriptor 校验，原 file/MIME/hash/len 与投影必须逐字段一致。
+
+聚焦检查覆盖未知归档非空 JSONL、实际 registry 不可变依赖副本、原 descriptor.file 与固定 `.part` 定位；原三口 410、publisher/正常 prepare 严格拒绝和源表/文件/认证不变继续保留。错 descriptor、request/input、seed/成员及原尝试来源投影应由 Gen/Input 共同 owner 拒绝；原普通 prepared 控制仍零写读取。源码尚待单独授权验证，实际结果和固定 SHA 交接后补记，不以测试编写宣称已通过。
+
+registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现总门禁，并非本片实现了逐物理 key pin、完整来源域证明或 DELETE。独立旧 archive 的 source 与导出 JSONL 共同摘要缺口仍由原 CLI owner 单独处理。本片没有新事实、DDL、domain 完成/删除合法迁移、外部删除、守卫或 CI 变化，生产释放未获授权。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

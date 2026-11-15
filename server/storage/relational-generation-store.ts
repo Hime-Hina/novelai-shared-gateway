@@ -1707,6 +1707,39 @@ export class RelationalGenerationStore {
   readGenerationResultPreparation(jobId: string) {
     const job = this.job(jobId),
       { attempt } = this.generationCompletion(job);
+    const result = this.resultPreparationSource(job, attempt);
+    assertStoredResultDescriptor(result.descriptor);
+    if (canonicalJson(result.descriptor) !== canonicalJson(this.prepared(job, attempt))) {
+      fail('准备结果与原事实不一致');
+    }
+    // 冷读复用输入 owner 的原请求/归属/摘要核验，不把当前关系行当作原授权。
+    this.inputs.readJobInput(jobId);
+    return { ...result, descriptor: result.descriptor };
+  }
+  // 只声明原 final/part 的保留依赖；归档描述符不证明字节存在或可执行/发布/ready。
+  readGenerationResultDependency(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    if (!attempt || job.artifactId !== null) {
+      fail('任务没有未发布的准备结果');
+    }
+    const result = this.resultPreparationSource(job, attempt);
+    // 普通准备结果仍走原完成、严格描述符和执行输入检查，不借 nullable 口放宽。
+    if (result.event.eventType === 'ArtifactPrepared') {
+      return this.readGenerationResultPreparation(jobId);
+    }
+    assertReadableStoredResultDescriptor(result.descriptor);
+    if (
+      canonicalJson(result.descriptor) !== canonicalJson(this.preparationDescriptor(job, attempt))
+    ) {
+      fail('准备结果与原事实不一致');
+    }
+    this.inputs.readOriginalRequestId(job.requestId);
+    // 此现有只读口核完整 request、受保护输入摘要/归属与原 seed；不取得执行输入。
+    this.inputs.readErrorLogRequest(jobId);
+    return { ...result, descriptor: result.descriptor };
+  }
+  private resultPreparationSource(job: Job, attempt: Attempt) {
     const opening = readRelationalOpeningAttempt(this.sqlite, attempt.id);
     const sources = this.sqlite
       .prepare<[string, string], { eventId: string; commitSeq: string }>(
@@ -1731,6 +1764,8 @@ export class RelationalGenerationStore {
     if (
       !event ||
       (event.eventType !== 'ArtifactPrepared' && event.eventType !== 'OpeningAttemptRecorded') ||
+      event.payload.attemptId !== attempt.id ||
+      event.streamId !== `request:${job.requestId}` ||
       event.accountId !== attempt.accountId ||
       event.memberId !== job.memberId
     ) {
@@ -1754,16 +1789,10 @@ export class RelationalGenerationStore {
             byteLength: event.payload.byteLength,
             sha256: event.payload.sha256,
           };
-    assertStoredResultDescriptor(descriptor);
-    if (canonicalJson(descriptor) !== canonicalJson(this.prepared(job, attempt))) {
-      fail('准备结果与原事实不一致');
-    }
-    // 冷读复用输入 owner 的原请求/归属/摘要核验，不把当前关系行当作原授权。
-    this.inputs.readJobInput(jobId);
     return { attemptId: attempt.id, event, descriptor };
   }
-  private prepared(job: Job, attempt: Attempt): Publication {
-    const value = {
+  private preparationDescriptor(job: Job, attempt: Attempt) {
+    return {
       imageId: attempt.preparedArtifactId,
       file: attempt.preparedFile,
       operation: job.operation,
@@ -1771,6 +1800,9 @@ export class RelationalGenerationStore {
       byteLength: attempt.preparedByteLength,
       sha256: attempt.preparedSha256,
     };
+  }
+  private prepared(job: Job, attempt: Attempt): Publication {
+    const value = this.preparationDescriptor(job, attempt);
     assertStoredResultDescriptor(value);
     return value;
   }
