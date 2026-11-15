@@ -2493,6 +2493,8 @@ HTTP 使用实际sole、启动后密码登录及同一稳定成员Key、管理�
 
 当前只做静态实现；backend 类型、architecture、默认 migration、三路径格式、测试语法和 diff 检查通过，原七行 AST printer SHA 为 `038d02eb03f1e7917da324d5a0aff0574ad71e9acc1a96cb5ac7d3e2a0c9a23a`。未运行 Node 业务/HTTP、未安装或重建 native、未触真实旧库/云/生产，原 dc9 NOTPASS、八图/十六次前置记录与首红完整保留。原 source/AST 对照和后继固定点、命令、静态结果封存于 `H:/TEMP/novelai-r2-history-precision-20261115/`。六图及坏源角色的关键断言变化仍需维护者最终门禁；下一步只在明确源槽运行这一个原 top-level case，首红按实际阶段保留，不扩大 timeout 或修产品兼容分支。
 
+静态技术 `3cdd0c7` 首次原单文件实际 **0 通过、1 失败、零跳过，TAP 1.166 秒**（case 0.549 秒）。新来源核对 SQL 错取不存在的 `generation_jobs.created_at`；发生在首个坏源 append 后、installer/GET/Ready/HTTP 之前，未到本批目标阶段，不能算坏来源拒绝或原 500/503 差异。首日志/原 fixed 字节保留，低层 guard 的实际 fetch/socket 均 0，清理成功且无 sole child 启动。批准后继仅将该字段改为既有 `generation_job_origins.created_at` 并复用 Request/Report 的 exactstream/requestId/jobId 三条件 JOIN；同一核对 SQL 的 request/job/artifact/replica 其余字段逐一核实真实列。未新增列、parent 时间 fallback 或改动原字段/金额/坏源/500 断言，后继待原单文件实际复验。
+
 ### 9.98 终态 Opening 的未知元数据与原 parent 证据
 
 原公开合成历史的 child/image 行没有 parent、操作、受理/完成/发布时间和样本位置；job.createdAt 或 image.createdAt 不能补成这些角色。范围依据为固定 `5e629689` 的 result-recovery/r2-history 原件与 `H:/TEMP/novelai-opening-precision-scope-998/SCOPE.md`，不代表真实旧源已转换或迁移路线已验收。

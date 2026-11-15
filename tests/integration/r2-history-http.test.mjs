@@ -497,9 +497,11 @@ async function historicalFixture(t) {
             db
               .prepare(
                 `SELECT r.source,r.operation,r.accepted_at,r.sample_count,r.model,
-              j.sample_index,j.admission_epoch,j.created_at,j.completed_at,
+              j.sample_index,j.admission_epoch,origin.created_at,j.completed_at,
               a.operation artifact_operation,a.published_at,a.sha256,a.byte_length
               FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+              JOIN generation_job_origins origin ON origin.stream_id='request:'||j.request_id
+                AND origin.request_id=j.request_id AND origin.job_id=j.id
               JOIN artifacts a ON a.id=j.artifact_id WHERE j.id=?`,
               )
               .get(record.jobId),
