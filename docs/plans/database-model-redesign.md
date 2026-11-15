@@ -2478,6 +2478,21 @@ HTTP 使用实际sole、启动后密码登录及同一稳定成员Key、管理�
 
 首轮源及日志完整保留在 `H:/TEMP/novelai-r2-history-http-20261115/first-run-test-source.mjs`、`first-source.log/json`；测试前后SHA256均为 `5169e62bb37b72fe92136390397aea162c69c53664261c6a75c26df2d25fc7a8`，log SHA256为 `798b31e04905499915b9838f3c9239a7255888a7219f9e3d68fd1406eea892f9`。15个相连权威与35个历史SQL/snapshot/journal逐Git/raw相同，见authority-binding.json；backend类型、architecture、默认/可信88 migration、格式/语法/diff通过。此为作者局部证据；503/500兼容裁定和独立审查仍待后续。未改产品、schema、共享helper、CLI、CI或架构守卫，未做full/build/compiled/Node24、真实旧源转换、实云或生产验收。
 
+#### 9.97.1 七行原来源接入当前 Opening（静态后继，尚未运行）
+
+在独立树从实际根 `13723ac` 普通合入冻结 `dc9b7ef`，仅接续同一测试/API/计划三路径，未改产品、共享 helper、守卫或原证据。原 `5e629689` 七行构造循环逐字保留，TypeScript AST printer 结果相同，来源 blob `0e96c827242df6db4d4da413a634e4b3f9328e3b`；原 e/f 错误 SHA 和旧 key 也保留。运行时另封完整原行 JSON、原稳定成员到本次 bootstrap 成员的显式映射、独立合成来源和真实 Local 文件清单，各自登记 source SHA。原七行不拥有 parent/source/operation/count/index/epoch/input 的证据，不将 MIME、单 child、当前成员代次或导入日补成这些字段。
+
+| 来源与角色                                              | 保留及预期边界                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 原 local/cloud/pikpak/old_snapshot/missing 五条合法声明 | 原 job ID/创建/完成时间、MIME/hash/长度、R2 key/verifiedAt/removedAt、已有 Pik URL/uploadedAt 原样映射；R2 uploadedAt、原 parent/source/op/受理/位置/epoch/count/input/publishedAt 未知为 NULL。原 image.createdAt 留在封存原行，不改名为 publishedAt                                                            |
+| 原 corrupt/cold_corrupt 两条已知坏声明                  | 分别保留 e/f SHA 与原 key，在独立 building 库完整公回放/所选私有后走唯一 installer；实际 R2/Pik client 经明确 transport mock 取得原 PNG，必须到真实 checksum mismatch，再以 ARTIFACT_CONTENT_UNAVAILABLE 拒绝。核各一次 GET/实际字节 SHA、target 全表、source SHA、原行及文件不变，不借无 promise/配置早拒当通过 |
+| 既有独立显式合成正例 proven_snapshot                    | 单独声明已知 parent、操作和原零时间/位置/代次，以及 R2/Pik 来源；不是原 old_snapshot，不用它补原字段。原 old_snapshot 无 Pik 声明，当前同 SHA 对象可用也仍拒 503                                                                                                                                                 |
+| 合法安装后的真实 IO 故障                                | 五条合法原行与一个独立正例共六图，按实际 configuredTarget 和当前实读 Local 清单合法 Ready；本次 verifiedAt 不是历史 uploadedAt/publishedAt。cloud/pikpak 的原 SHA/key 不变，在安装后损坏相同副本响应，核两次 HTTP 503，再恢复原响应并核两次原字节可读                                                            |
+
+因此后继的合法 Ready 是六图，不再用 dc9 八图合成前置范围冒称原七行逐字段迁移。四个成功来源仍保留签名 URL/Raw Key/Cookie/admin 四路径的十六次原字节和全部归属矩阵，另列两次故障恢复读取；未知费用/model 保持 NULL，原已知创建/完成时间与合成已知 0 分开核。原 no-declared-Pik、坏字节两例、无外联、无新 attempt/charge/钱包/receipt/任务变化、正常 stop 和完整 public replay/private-empty 保留。原总 20 秒、启动 15 秒、fetch 3 秒及末尾缺图 500 断言未改，状态码仍待维护者选择，不能把后继静态点标 PASS。
+
+当前只做静态实现；backend 类型、architecture、默认 migration、三路径格式、测试语法和 diff 检查通过，原七行 AST printer SHA 为 `038d02eb03f1e7917da324d5a0aff0574ad71e9acc1a96cb5ac7d3e2a0c9a23a`。未运行 Node 业务/HTTP、未安装或重建 native、未触真实旧库/云/生产，原 dc9 NOTPASS、八图/十六次前置记录与首红完整保留。原 source/AST 对照和后继固定点、命令、静态结果封存于 `H:/TEMP/novelai-r2-history-precision-20261115/`。六图及坏源角色的关键断言变化仍需维护者最终门禁；下一步只在明确源槽运行这一个原 top-level case，首红按实际阶段保留，不扩大 timeout 或修产品兼容分支。
+
 ### 9.98 终态 Opening 的未知元数据与原 parent 证据
 
 原公开合成历史的 child/image 行没有 parent、操作、受理/完成/发布时间和样本位置；job.createdAt 或 image.createdAt 不能补成这些角色。范围依据为固定 `5e629689` 的 result-recovery/r2-history 原件与 `H:/TEMP/novelai-opening-precision-scope-998/SCOPE.md`，不代表真实旧源已转换或迁移路线已验收。
