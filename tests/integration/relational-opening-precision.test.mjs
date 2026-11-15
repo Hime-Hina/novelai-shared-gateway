@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   fixture,
   meta,
@@ -22,8 +24,6 @@ import {
   initializeRelationalStorage,
   assertRelationalStorageFormat,
   assertRelationalStorageReady,
-  RELATIONAL_DATABASE_FORMAT,
-  RELATIONAL_WRITER_VERSION,
 } from '../../server/storage/relational-storage.ts';
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
@@ -439,33 +439,105 @@ test('即使Input/context/执行元数据全部已知，parentless容器仍不�
   assert.equal(databaseState(f.db), before);
 });
 
-test('实际c653旧DDL及正确旧hash在同event7也零写拒绝，不能用改版本号冒旧源', (t) => {
+test('实际c653旧DDL及正确旧hash被真实同event7 reader零写拒绝；当前8也拒旧源', async (t) => {
   const old = JSON.parse(
-    readFileSync(new URL('../fixtures/relational-schema-c653.json', import.meta.url), 'utf8'),
-  );
+      readFileSync(new URL('../fixtures/relational-schema-c653.json', import.meta.url), 'utf8'),
+    ),
+    prior = JSON.parse(
+      readFileSync(
+        new URL('../fixtures/relational-schema-v7-finance.json', import.meta.url),
+        'utf8',
+      ),
+    );
   assert.equal(old.sourceCommit, 'c653bf2a2654a192f7f44c40dd136fc75c2db100');
   assert.equal(old.sourceBlob, 'f9736713426a1c46b86a18839eae686ef2328431');
-  assert.equal(old.eventSchemaVersion, RELATIONAL_EVENT_SCHEMA_VERSION);
+  assert.equal(old.eventSchemaVersion, 7);
+  assert.equal(prior.sourceCommit, '6466c9b7dca10c11c82372aa92578379e9b1cda6');
+  assert.equal(prior.eventSchemaVersion, old.eventSchemaVersion);
+  assert.equal(RELATIONAL_EVENT_SCHEMA_VERSION, 8);
   assert.equal(old.sha256, '2314a5a3e20179083ca93a8a886ff8aaa83205ce395069b447a54a76c5be7c8a');
   assert.equal(createHash('sha256').update(old.sql).digest('hex'), old.sha256);
+  assert.equal(
+    createHash('sha256').update(prior.sql).digest('hex'),
+    '057d74f270c29492ab799d485b54966ab5e4c944b42f9a6bd70346a331261f86',
+  );
+  assert.equal(
+    createHash('sha256').update(prior.storageSource).digest('hex'),
+    '6c3a4951043af9c75c0198dc7ba8ab8a9058b6d1b63b52c98cc0d579e5579fb3',
+  );
+  assert.notEqual(old.sql, prior.sql);
   assert.notEqual(old.sql, RELATIONAL_SCHEMA_SQL);
-  const db = new Database(':memory:');
-  t.after(() => db.close());
+  const dir = await mkdtemp(path.join(tmpdir(), 'nai-same-event-hash-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // 复用已封实际旧 reader 原字节，仅给它供应同一封存包内的原 SQL，不改 header 或 writer。
+  await writeFile(path.join(dir, 'package.json'), '{"type":"module"}');
+  await writeFile(path.join(dir, 'relational-storage.ts'), prior.storageSource);
+  await writeFile(
+    path.join(dir, 'relational-schema.ts'),
+    `export const RELATIONAL_SCHEMA_SQL=${JSON.stringify(prior.sql)};\n`,
+  );
+  await symlink(
+    await realpath(new URL('../../node_modules', import.meta.url)),
+    path.join(dir, 'node_modules'),
+    'junction',
+  );
+  const priorReader = await import(pathToFileURL(path.join(dir, 'relational-storage.ts')).href),
+    healthy = new Database(':memory:'),
+    db = new Database(':memory:');
+  t.after(() => {
+    healthy.close();
+    db.close();
+  });
+  priorReader.initializeRelationalStorage(healthy, 'healthy-old7');
+  priorReader.assertRelationalStorageFormat(healthy);
+  db.pragma('foreign_keys = ON');
   db.exec(old.sql);
   const insert = db.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
-  insert.run('database_format', RELATIONAL_DATABASE_FORMAT);
+  insert.run('database_format', priorReader.RELATIONAL_DATABASE_FORMAT);
   insert.run('schema_sha256', old.sha256);
   insert.run(
     'event_authority',
     JSON.stringify({
-      version: RELATIONAL_WRITER_VERSION,
-      minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+      version: priorReader.RELATIONAL_WRITER_VERSION,
+      minimumWriterVersion: priorReader.RELATIONAL_WRITER_VERSION,
     }),
   );
   db.prepare(
     "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old',1,0,'building')",
   ).run();
+  for (const original of [healthy, db]) {
+    const ddl = (name) =>
+      original.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(name).sql;
+    assert.match(ddl('domain_events'), /schema_version = 7/);
+    assert.match(ddl('domain_events'), /amount_version = 'decimal-12-v1'/);
+    for (const table of ['normalization_contexts', 'generation_inputs']) {
+      assert.match(ddl(table), /schema_version = 1/);
+    }
+    assert.equal(
+      original.prepare("SELECT value FROM app_meta WHERE key='database_format'").get().value,
+      priorReader.RELATIONAL_DATABASE_FORMAT,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        original.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get().value,
+      ),
+      { version: 5, minimumWriterVersion: 5 },
+    );
+    assert.equal(
+      original.prepare('SELECT reducer_version FROM projection_state').get().reducer_version,
+      1,
+    );
+  }
   const before = db.serialize();
+  for (const check of [
+    priorReader.assertRelationalStorageFormat,
+    priorReader.assertRelationalStorageReady,
+  ]) {
+    assert.throws(() => check(db), {
+      message: 'Unsupported relational database format or schema version.',
+    });
+    assert.deepEqual(db.serialize(), before);
+  }
   for (const check of [
     () => assertRelationalStorageFormat(db),
     () => assertRelationalStorageReady(db),
