@@ -28,6 +28,7 @@ import {
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
 import { readRelationalArtifactContent } from '../../server/storage/relational-replica-io.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 
 // 与旧503夹具相同的原行粒度：只有child创建日和文件创建日，没有原parent或发布/完成时点。
@@ -485,19 +486,19 @@ test('parentless未知操作实际Local清单经selected-private唯一ready并�
   await writeFile(file, bytes);
   const observed = readFileSync(file);
   assert.equal(createHash('sha256').update(observed).digest('hex'), hash);
+  const target = new RelationalReplicaStore(f.db, { dataDir: f.dir }).configuredTarget(
+    'local',
+  ).target;
   // 此时点是本次清单实际读文件的核验，不是从旧image.createdAt猜上传或发布时间。
   const verifiedAt = NOW + 20,
     events = [
       event('OpeningStorageTargetRecorded', {
-        storageTargetId: 'precision-local',
-        kind: 'local',
-        namespace: 'images',
-        credentialRef: null,
+        ...target,
         origin: origin(original.image.file),
       }),
       event('OpeningReplicaRecorded', {
         artifactId: original.image.id,
-        storageTargetId: 'precision-local',
+        storageTargetId: target.storageTargetId,
         objectKey: path.posix.basename(original.image.file),
         encoding: 'identity',
         uploadedAt: null,
@@ -520,7 +521,7 @@ test('parentless未知操作实际Local清单经selected-private唯一ready并�
         receipt: { inventoryVerified: true },
         events,
         expectedVersions: {
-          'storage:precision-local': '0',
+          [`storage:${target.storageTargetId}`]: '0',
           [`artifact:${original.image.id}`]: '1',
         },
       },
