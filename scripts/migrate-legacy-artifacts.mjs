@@ -29,7 +29,12 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
     findings = [],
     targets = new Map(),
     emittedTargets = new Set(),
-    artifacts = new Set();
+    artifacts = new Set(),
+    materializations = metadata.localMaterializationsByArtifact ?? new Map(),
+    materialized = new Set();
+  if (!(materializations instanceof Map)) {
+    conflict();
+  }
   const finding = (originalId, code) => findings.push({ originalId, code });
   const fact = (eventType, payload, memberId, accountId, originalId) => {
     const parsed = parseRelationalFact({ eventType, payload });
@@ -52,7 +57,7 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
       origin: refs.origin(target.originalId),
     });
   }
-  const replica = (artifact, kind, location) => {
+  const replica = (artifact, kind, location, originalId = artifact.artifactId) => {
     const target = targets.get(kind);
     if (!target) {
       finding(artifact.artifactId, `${kind.toUpperCase()}_NAMESPACE_UNPROVEN`);
@@ -69,7 +74,7 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
         storageTargetId: target.storageTargetId,
         ...location,
         lastErrorCode: null,
-        origin: refs.origin(artifact.artifactId),
+        origin: refs.origin(originalId),
       },
       artifact.memberId,
       null,
@@ -140,6 +145,44 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
       finding(original.id, 'ARTIFACT_ONLINE_DESCRIPTOR_UNSUPPORTED');
       continue;
     }
+    let materialization = null;
+    if (materializations.has(original.id)) {
+      materialization = materializations.get(original.id);
+      const fields = [
+        'artifactId',
+        'memberId',
+        'inputId',
+        'sha256',
+        'byteLength',
+        'file',
+        'verifiedAt',
+        'proofRef',
+      ];
+      if (
+        !materialization ||
+        typeof materialization !== 'object' ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(materialization)) ||
+        Object.keys(materialization).length !== fields.length ||
+        fields.some((field) => !Object.hasOwn(materialization, field)) ||
+        materialization.artifactId !== original.id ||
+        materialization.memberId !== input.memberId ||
+        materialization.inputId !== input.inputId ||
+        materialization.sha256 !== original.sha256 ||
+        materialization.byteLength !== original.byteLength ||
+        materialization.file !== canonicalFile ||
+        !Number.isSafeInteger(materialization.verifiedAt) ||
+        materialization.verifiedAt < 0 ||
+        typeof materialization.proofRef !== 'string' ||
+        !materialization.proofRef ||
+        !(refs.boundLocalMaterializationProofs instanceof Map) ||
+        refs.boundLocalMaterializationProofs.get(materialization.proofRef) !==
+          domainDigest(materialization) ||
+        targets.get('local')?.namespace !== 'images'
+      ) {
+        conflict();
+      }
+      materialized.add(original.id);
+    }
     fact(
       'OpeningArtifactRecorded',
       artifact,
@@ -147,7 +190,22 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
       attempt?.accountId ?? null,
       original.id,
     );
-    if (original.file !== null) {
+    if (materialization) {
+      // 这是 B 新目标复制并实读后的当前 baseline；不先导入旧 tombstone 再复活。
+      // 原 Local 删除来源仍在 archive，产物 publishedAt/retiredAt 不随复制改变。
+      replica(
+        artifact,
+        'local',
+        {
+          objectKey: materialization.file.slice('images/'.length),
+          encoding: 'identity',
+          uploadedAt: null,
+          verifiedAt: materialization.verifiedAt,
+          deletedAt: null,
+        },
+        materialization.proofRef,
+      );
+    } else if (original.file !== null) {
       if (!original.file.startsWith('images/') || original.file === 'images/') {
         finding(original.id, 'LOCAL_LOCATOR_UNPROVEN');
       } else {
@@ -202,6 +260,9 @@ export function mapLegacyArtifacts(_source, refs, metadata) {
         deletedAt: null,
       });
     }
+  }
+  if (materialized.size !== materializations.size) {
+    conflict();
   }
   return {
     facts,
