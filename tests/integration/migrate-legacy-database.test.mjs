@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +12,7 @@ const entry = process.env.MIGRATE_LEGACY_TEST_ENTRY;
 if (entry && !path.isAbsolute(entry)) {
   throw new Error('MIGRATE_LEGACY_TEST_ENTRY must name an absolute compiled file.');
 }
+const TargetDatabase = entry ? createRequire(entry)('better-sqlite3') : Database;
 const { migrateLegacyDatabase, proveLegacyGenerationIntent, readLegacyCutConfiguration } =
   await import(
     entry
@@ -56,7 +58,8 @@ async function fixture(
   jobPatch = {},
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
-    store = new JsonStore(path.join(directory, 'old'));
+    store = new JsonStore(path.join(directory, 'old')),
+    sourceArtifacts = [].concat(artifact ?? []);
   t.after(async () => {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -74,14 +77,14 @@ async function fixture(
         ...memberPatch,
       },
     ],
-    images: artifact ? [artifact] : [],
+    images: sourceArtifacts,
     jobs: [
       {
         id: 'job',
         memberId: 'member',
         userToken: 'STA1N-synthetic-current-key',
         status,
-        ...(artifact ? { imageId: artifact.id } : {}),
+        ...(sourceArtifacts.length ? { imageId: sourceArtifacts[0].id } : {}),
         source: 'novelai-native',
         createdAt: 0,
         request: { model: 'nai-diffusion-4-5-full', prompt: '', scale: 0 },
@@ -818,6 +821,144 @@ test('旧parentless done的独立产物沿原稳定归属/未知operation与publ
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
 
+test('独立Opening每批至多100条且保原序完整回放，第二副本批尾SQL错回滚整个转换', async (t) => {
+  const original = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    artifacts = Array.from({ length: 102 }, (_, index) => {
+      const id = `batch-artifact-${String(index).padStart(3, '0')}`;
+      return {
+        id,
+        memberId: 'member',
+        token: 'STA1N-synthetic-current-key',
+        mimeType: 'image/webp',
+        byteLength: original.length,
+        sha256: hash(original),
+        file: `images/${id}.webp`,
+      };
+    }),
+    f = await fixture(t, 'done', null, artifacts),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite')),
+    replay = new Database(':memory:');
+  try {
+    const batches = (key) =>
+      target
+        .prepare(
+          'SELECT command_id,event_count FROM commits WHERE command_id LIKE ? ORDER BY commit_seq',
+        )
+        .all(`migration:%:${key}%`);
+    assert.deepEqual(
+      batches('artifacts').map((row) => row.event_count),
+      [100, 3],
+    );
+    assert.deepEqual(
+      batches('replicas').map((row) => row.event_count),
+      [100, 2],
+    );
+    for (const type of ['OpeningArtifactRecorded', 'OpeningReplicaRecorded']) {
+      assert.deepEqual(
+        target
+          .prepare(
+            'SELECT payload FROM domain_events WHERE event_type=? ORDER BY commit_seq,event_index',
+          )
+          .all(type)
+          .map((row) => JSON.parse(row.payload).artifactId),
+        artifacts.map((artifact) => artifact.id),
+      );
+    }
+    assert.equal(result.readyInstalled, false);
+    initializeRelationalStorage(
+      replay,
+      target.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    const replayer = new RelationalCommitReplayer(replay),
+      inputs = new RelationalInputStore(target);
+    for (const { seq } of target
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      replay.transaction(() => replayer.replayCommit(readRelationalCommit(target, seq), inputs))();
+    }
+    for (const { name: table } of target
+      .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+      .all()) {
+      assert.deepEqual(
+        replay.prepare('SELECT * FROM ' + table).all(),
+        target.prepare('SELECT * FROM ' + table).all(),
+        table,
+      );
+    }
+    assert.equal(relationalPrivateStateEmpty(replay), true);
+  } finally {
+    replay.close();
+    target.close();
+  }
+  const failedOutput = f.options.output + '-chunk2-fault',
+    prepare = TargetDatabase.prototype.prepare;
+  let stage = null;
+  TargetDatabase.prototype.prepare = function (sql, ...args) {
+    const statement = Reflect.apply(prepare, this, [sql, ...args]);
+    if (
+      this.name === path.join(failedOutput, 'library.sqlite') &&
+      /^INSERT INTO artifact_replicas\(/.test(sql) &&
+      Reflect.apply(prepare, this, ['SELECT count(*) AS n FROM artifact_replicas']).get().n === 101
+    ) {
+      stage = {
+        inTransaction: this.inTransaction,
+        artifacts: Reflect.apply(prepare, this, ['SELECT count(*) AS n FROM artifacts']).get().n,
+        replicas: Reflect.apply(prepare, this, [
+          'SELECT count(*) AS n FROM artifact_replicas',
+        ]).get().n,
+        batches: Reflect.apply(prepare, this, [
+          "SELECT event_count FROM commits WHERE command_id LIKE 'migration:%:replicas:%' ORDER BY commit_seq",
+        ]).all(),
+      };
+      this.exec(
+        "CREATE TEMP TRIGGER synthetic_replica_chunk2_tail BEFORE INSERT ON main.artifact_replicas BEGIN SELECT RAISE(ABORT,'migration-replica-chunk2-tail'); END",
+      );
+    }
+    return statement;
+  };
+  try {
+    await assert.rejects(
+      migrateLegacyDatabase({ ...f.options, output: failedOutput }),
+      /migration-replica-chunk2-tail/,
+    );
+  } finally {
+    TargetDatabase.prototype.prepare = prepare;
+  }
+  assert.deepEqual(stage, {
+    inTransaction: true,
+    artifacts: 102,
+    replicas: 101,
+    batches: [{ event_count: 100 }, { event_count: 2 }],
+  });
+  const failed = new Database(path.join(failedOutput, 'library.sqlite')),
+    empty = new Database(':memory:');
+  try {
+    initializeRelationalStorage(
+      empty,
+      failed.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    for (const { name: table } of failed
+      .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")
+      .all()) {
+      assert.deepEqual(
+        failed.prepare('SELECT * FROM ' + table).all(),
+        empty.prepare('SELECT * FROM ' + table).all(),
+        table,
+      );
+    }
+    assert.equal(relationalPrivateStateEmpty(failed), true);
+    assert.equal(failed.prepare('SELECT status FROM projection_state').get().status, 'building');
+  } finally {
+    empty.close();
+    failed.close();
+  }
+  await assert.rejects(readFile(path.join(failedOutput, 'report.private.json')), {
+    code: 'ENOENT',
+  });
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
 test('所选原图实复制到新owned target后才产生Local proof；manifest绑定原source/config/tuple且不改源', async (t) => {
   const original = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
     f = await fixture(t, 'done', null, {
@@ -906,9 +1047,9 @@ test('私有尾部真实SQL错外catch回滚整笔公共/正文/私有，阶段�
   const f = await fixture(t),
     { file, bytes } = await selectedCutConfiguration(f),
     options = { ...f.options, cutConfig: file, cutConfigSha256: hash(bytes) },
-    original = Database.prototype.prepare;
+    original = TargetDatabase.prototype.prepare;
   let stage = null;
-  Database.prototype.prepare = function (sql, ...args) {
+  TargetDatabase.prototype.prepare = function (sql, ...args) {
     const statement = Reflect.apply(original, this, [sql, ...args]);
     if (
       this.name === path.join(f.options.output, 'library.sqlite') &&
@@ -928,7 +1069,7 @@ test('私有尾部真实SQL错外catch回滚整笔公共/正文/私有，阶段�
   try {
     await assert.rejects(migrateLegacyDatabase(options), /migration-private-tail/);
   } finally {
-    Database.prototype.prepare = original;
+    TargetDatabase.prototype.prepare = original;
   }
   assert.equal(stage.transaction, true);
   assert.equal(stage.jobs, 1);
