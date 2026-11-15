@@ -36,7 +36,7 @@ test('independent migration package excludes ignored private sources and runs co
     });
   const packaged = run([
     path.join(root, 'scripts/package-migration-tools.mjs'),
-    '--output=' + path.join(directory, 'output'),
+    '--output=' + (process.env.MIGRATION_TOOLS_TEST_OUTPUT || path.join(directory, 'output')),
   ]);
   assert.equal(packaged.status, 0, packaged.stderr);
   const result = JSON.parse(packaged.stdout);
