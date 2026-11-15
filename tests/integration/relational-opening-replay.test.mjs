@@ -54,18 +54,33 @@ function command(db, id, events) {
     events,
   };
 }
-const funding = (changes = {}) =>
-  event('OpeningFundingRecorded', {
-    receipt: 'pending-external-receipt',
-    accountId: 'a',
-    resource: 'anlasFixed',
-    destination: 'operating',
-    remaining: '10',
-    registeredAt: NOW - 1,
-    snapshotAt: null,
-    origin,
-    ...changes,
-  });
+const funding = (changes = {}) => {
+  const pending = event('OpeningFundingRecorded', {
+      receipt: 'pending-external-receipt',
+      accountId: 'a',
+      resource: 'anlasFixed',
+      destination: 'operating',
+      remaining: '10',
+      registeredAt: NOW - 1,
+      snapshotAt: null,
+      origin,
+      ...changes,
+    }),
+    p = pending.payload,
+    receipt = event('OpeningFundingReceiptRecorded', {
+      accountId: p.accountId,
+      receipt: p.receipt,
+      resource: p.resource,
+      amount: null,
+      originalType: 'operating_funding_registered',
+      occurredAt: p.registeredAt,
+      request: null,
+      result: null,
+      origin: { ...p.origin, originalId: `operating-receipt:${p.receipt}` },
+    });
+  receipt.eventId = receipt.payload.origin.originalId;
+  return [receipt, pending];
+};
 const storage = (changes = {}) =>
   event('OpeningStorageTargetRecorded', {
     storageTargetId: targetId,
@@ -191,7 +206,7 @@ test('来源按完整提交/索引先行，时间回退和已知零保留；后�
 test('Funding与Target同笔恢复原值，无钱包贷记；第二owner已写故障被外catch后全表回滚且可重试', async (t) => {
   const f = await fixture(t, { seconds: 0 }),
     replay = new RelationalCommitReplayer(f.db),
-    saved = command(f.db, 'funding-and-target', [funding(), storage()]);
+    saved = command(f.db, 'funding-and-target', [...funding(), storage()]);
   let sawBoth = false;
   f.db.function('opening_second_owner', (fundings, targets) => {
     sawBoth = fundings === 1 && targets === 1;
@@ -233,9 +248,10 @@ test('开账pending收据由原source fact解释，随机eventId不被拆成rece
   const f = await fixture(t, { seconds: 0 }),
     replay = new RelationalCommitReplayer(f.db),
     opened = f.db.transaction(() =>
-      replay.appendCommit(command(f.db, 'opening-pending', [funding()])),
+      replay.appendCommit(command(f.db, 'opening-pending', [...funding()])),
     )();
-  assert.notEqual(opened.events[0].eventId, 'operating-receipt:pending-external-receipt');
+  const pendingEvent = opened.events.find((value) => value.eventType === 'OpeningFundingRecorded');
+  assert.notEqual(pendingEvent.eventId, 'operating-receipt:pending-external-receipt');
   const quotas = new RelationalQuotaStore(f.db),
     ticket = quotas.beginQuotaObservation('a', NOW + 10),
     observed = accountQuotaResult(
@@ -258,7 +274,7 @@ test('开账pending收据由原source fact解释，随机eventId不被拆成rece
     )();
   const received = result.events.find((e) => e.eventType === 'FundingReceived');
   assert.equal(received.payload.receipt, 'pending-external-receipt');
-  assert.equal(received.payload.receiptEventId, opened.events[0].eventId);
+  assert.equal(received.payload.receiptEventId, pendingEvent.eventId);
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM pending_funding').get().n, 0);
   assert.equal(
     f.db.prepare('SELECT anlas_fixed_available AS amount FROM operating_state').get().amount,
@@ -303,7 +319,7 @@ test('OpeningFunding保留有依据的零和缺省NULL；非法目标不被当�
     replay = new RelationalCommitReplayer(f.db);
   f.db.transaction(() =>
     replay.appendCommit(
-      command(f.db, 'known-zero', [funding({ remaining: '0', registeredAt: 0, snapshotAt: 0 })]),
+      command(f.db, 'known-zero', [...funding({ remaining: '0', registeredAt: 0, snapshotAt: 0 })]),
     ),
   )();
   const row = f.db.prepare('SELECT remaining,registered_at,snapshot_at FROM pending_funding').get();
@@ -325,7 +341,7 @@ test('OpeningFunding保留有依据的零和缺省NULL；非法目标不被当�
 test('新Opening不能进入合法ready，原完整提交重复仍零写', async (t) => {
   const f = await fixture(t, { seconds: 0 }),
     replay = new RelationalCommitReplayer(f.db),
-    opened = command(f.db, 'before-ready', [funding(), storage()]);
+    opened = command(f.db, 'before-ready', [...funding(), storage()]);
   f.db.transaction(() => replay.appendCommit(opened))();
   const sourcePath = path.join(f.dir, 'selected-opening.sqlite');
   initializeFixtureConfiguration(f.db);
@@ -346,7 +362,7 @@ test('新Opening不能进入合法ready，原完整提交重复仍零写', async
     assert.throws(
       () =>
         replay.appendCommit(
-          command(f.db, 'after-ready', [funding({ receipt: 'new-after-ready' })]),
+          command(f.db, 'after-ready', [...funding({ receipt: 'new-after-ready' })]),
         ),
       /offline building/,
     ),

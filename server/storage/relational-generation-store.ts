@@ -3217,6 +3217,7 @@ export class RelationalGenerationStore {
           this.quotas.openAccountQuota(e);
           break;
         case 'OpeningOperatingRecorded': {
+          this.quotas.assertOpeningOperating(e);
           const p = e.payload;
           this.sqlite
             .prepare(
