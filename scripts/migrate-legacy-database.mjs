@@ -11,7 +11,11 @@ import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';
 import { RelationalConfigurationStore } from '../server/storage/relational-configuration-store.ts';
 import { domainDigest, canonicalJson } from '../server/events/domain-events.ts';
 import { relationalFactStream } from '../server/events/relational-fact-contracts.ts';
-import { readableResultFile, readStoredResultContent } from '../server/storage/result-files.ts';
+import {
+  assertReadableStoredResultDescriptor,
+  readableResultFile,
+  readStoredResultContent,
+} from '../server/storage/result-files.ts';
 import { RelationalInputStore } from '../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../server/storage/relational-replay.ts';
 import { initializeRelationalStorage } from '../server/storage/relational-storage.ts';
@@ -1267,118 +1271,312 @@ function appendLegacyKeys(source, target, references, inputs, appendOpening, fin
   return decisions;
 }
 
+// 新恢复输入只选择本次物化来源，不声称原 R2 promise。原 source/cut/audit/config/namespace
+// 与逐实体 export pointer 必须闭合；member/input 最终仍由本次 source plan 复核，不能按 SHA 合并实体。
+export async function readRescuedOriginals(filename, expectedSha256, selected, configuration) {
+  const exact = (value, keys) =>
+    value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key));
+  if (!configuration || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? '')) {
+    reject();
+  }
+  const info = await lstat(filename);
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 16777216) {
+    reject();
+  }
+  const bytes = await readFile(filename);
+  if (hash(bytes) !== expectedSha256) {
+    reject();
+  }
+  const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    directory = path.dirname(path.resolve(filename));
+  if (
+    !exact(value, [
+      'format',
+      'sourceSha256',
+      'sourceCommit',
+      'cut',
+      'auditSha256',
+      'cutConfigurationSha256',
+      'namespace',
+      'namespaceReceipt',
+      'originals',
+    ]) ||
+    value.format !== 'novelai-legacy-rescued-originals-v1' ||
+    ['sourceSha256', 'sourceCommit', 'cut', 'auditSha256'].some(
+      (key) => value[key] !== selected[key],
+    ) ||
+    value.cutConfigurationSha256 !== configuration.selectedSha256 ||
+    typeof configuration.sourceNamespaces.r2AccountId !== 'string' ||
+    typeof configuration.sourceNamespaces.r2Bucket !== 'string' ||
+    value.namespace !==
+      `r2://${configuration.sourceNamespaces.r2AccountId}/${configuration.sourceNamespaces.r2Bucket}` ||
+    !exact(value.namespaceReceipt, ['file', 'sha256']) ||
+    value.namespaceReceipt.sha256 !== configuration.namespaceReceipt.sha256 ||
+    !Array.isArray(value.originals) ||
+    !value.originals.length
+  ) {
+    reject();
+  }
+  const checkReceipt = async (receipt) => {
+    if (
+      !exact(receipt, ['file', 'sha256']) ||
+      typeof receipt.file !== 'string' ||
+      !receipt.file ||
+      !/^[a-f0-9]{64}$/.test(receipt.sha256 ?? '')
+    ) {
+      reject();
+    }
+    const file = path.resolve(directory, receipt.file),
+      stat = await lstat(file);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      stat.size > 16777216 ||
+      (await retainedFileSha256(file)) !== receipt.sha256
+    ) {
+      reject();
+    }
+  };
+  await checkReceipt(value.namespaceReceipt);
+  const ids = new Set(),
+    exports = new Map(),
+    descriptorsByArtifact = new Map();
+  for (const row of value.originals) {
+    const pointer = row?.sourceArtifactRowPointer;
+    if (
+      !exact(row, [
+        'artifactId',
+        'memberId',
+        'inputId',
+        'sha256',
+        'byteLength',
+        'sourceArtifactRowPointer',
+        'file',
+        'r2',
+        'downloadReceipt',
+      ]) ||
+      ['artifactId', 'memberId', 'inputId'].some(
+        (key) => typeof row[key] !== 'string' || !row[key],
+      ) ||
+      ids.has(row.artifactId) ||
+      !/^[a-f0-9]{64}$/.test(row.sha256 ?? '') ||
+      !Number.isSafeInteger(row.byteLength) ||
+      row.byteLength < 1 ||
+      !(row.file === null || (typeof row.file === 'string' && row.file)) ||
+      !exact(pointer, ['file', 'fileSha256', 'line', 'lineSha256']) ||
+      typeof pointer.file !== 'string' ||
+      !pointer.file ||
+      !/^[a-f0-9]{64}$/.test(pointer.fileSha256 ?? '') ||
+      !/^[a-f0-9]{64}$/.test(pointer.lineSha256 ?? '') ||
+      !Number.isSafeInteger(pointer.line) ||
+      pointer.line < 1 ||
+      !(
+        row.r2 === null ||
+        (exact(row.r2, ['bucket', 'key']) &&
+          row.r2.bucket === configuration.sourceNamespaces.r2Bucket &&
+          typeof row.r2.key === 'string' &&
+          row.r2.key.startsWith('images/') &&
+          !/[\x00-\x1f\x7f]/.test(row.r2.key))
+      )
+    ) {
+      reject();
+    }
+    if (row.downloadReceipt !== null) {
+      await checkReceipt(row.downloadReceipt);
+    }
+    const file = path.resolve(directory, pointer.file);
+    let exported = exports.get(file);
+    if (!exported) {
+      const stat = await lstat(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16777216) {
+        reject();
+      }
+      const data = await readFile(file),
+        lines = [];
+      let start = 0,
+        end;
+      while ((end = data.indexOf(10, start)) >= 0) {
+        lines.push(data.subarray(start, end + 1));
+        start = end + 1;
+      }
+      exported = { sha256: hash(data), lines };
+      exports.set(file, exported);
+    }
+    const line = exported.lines[pointer.line - 1];
+    if (pointer.fileSha256 !== exported.sha256 || !line || hash(line) !== pointer.lineSha256) {
+      reject();
+    }
+    const descriptor = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line));
+    if (
+      descriptor.id !== row.artifactId ||
+      descriptor.sha256 !== row.sha256 ||
+      descriptor.byteLength !== row.byteLength
+    ) {
+      reject();
+    }
+    descriptorsByArtifact.set(row.artifactId, descriptor);
+    ids.add(row.artifactId);
+  }
+  return {
+    ...value,
+    filename: path.resolve(filename),
+    selectedSha256: expectedSha256,
+    descriptorsByArtifact,
+  };
+}
+
+export async function writeNewMigrationFile(filename, bytes) {
+  const handle = await open(filename, 'wx', 0o600);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function materializeSelectedLocalOriginal(
   configuration,
   descriptors,
   references,
   output,
+  artifactExport,
+  rescued = null,
 ) {
-  const proofs = new Map();
-  if (!configuration?.localOriginal) {
+  const proofs = new Map(),
+    selectedOriginals = [];
+  if (configuration?.localOriginal) {
+    selectedOriginals.push({
+      directory: path.dirname(configuration.filename),
+      ...configuration.localOriginal,
+    });
+  }
+  if (rescued) {
+    for (const row of rescued.originals) {
+      if (row.file === null) {
+        reject();
+      }
+      selectedOriginals.push({ ...row, directory: path.dirname(rescued.filename) });
+    }
+  }
+  if (!selectedOriginals.length) {
     return proofs;
   }
-  const directory = path.dirname(configuration.filename),
-    selected = configuration.localOriginal,
-    pointer = selected.sourceArtifactRowPointer,
-    rowFile = path.resolve(directory, pointer.file),
+  const rowFile = path.resolve(artifactExport),
     rowStat = await lstat(rowFile);
   if (!rowStat.isFile() || rowStat.isSymbolicLink() || rowStat.size > 16777216) {
     reject();
   }
   const rowBytes = await readFile(rowFile);
-  if (hash(rowBytes) !== pointer.fileSha256) {
-    reject();
-  }
+  const rowSha256 = hash(rowBytes),
+    lines = [],
+    descriptorById = new Map(descriptors.map((row) => [row.id, row]));
   let start = 0,
-    end = -1;
-  for (let index = 1; index <= pointer.line; index++) {
-    end = rowBytes.indexOf(10, start);
-    if (end < 0) {
+    end;
+  while ((end = rowBytes.indexOf(10, start)) >= 0) {
+    lines.push(rowBytes.subarray(start, end + 1));
+    start = end + 1;
+  }
+  for (const selected of selectedOriginals) {
+    const { directory, sourceArtifactRowPointer: pointer } = selected;
+    if (path.resolve(directory, pointer.file) !== rowFile || pointer.fileSha256 !== rowSha256) {
       reject();
     }
-    if (index !== pointer.line) {
-      start = end + 1;
+    // 选定 pointer 绑定原行完整 bytes（含其终止 LF）；不 trim、重编码或改用另一摘要。
+    const line = lines[pointer.line - 1];
+    if (!line || hash(line) !== pointer.lineSha256) {
+      reject();
     }
-  }
-  // 选定 pointer 绑定原行完整 bytes（含其终止 LF）；不 trim、重编码或改用另一摘要。
-  const line = rowBytes.subarray(start, end + 1);
-  if (hash(line) !== pointer.lineSha256) {
-    reject();
-  }
-  const original = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line)),
-    descriptor = descriptors.find((row) => row.id === original.id),
-    input = references.inputsByArtifact.get(original.id);
-  if (
-    !descriptor ||
-    !input ||
-    !references.memberIds.has(input.memberId) ||
-    original.sha256 !== descriptor.sha256 ||
-    original.byteLength !== descriptor.byteLength ||
-    selected.sha256 !== descriptor.sha256 ||
-    selected.byteLength !== descriptor.byteLength
-  ) {
-    reject();
-  }
-  const file = readableResultFile({
-      imageId: descriptor.id,
-      operation: descriptor.operation,
-      mimeType: descriptor.mimeType,
-    }),
-    selectedFile = path.resolve(directory, selected.file),
-    info = await lstat(selectedFile);
-  if (!info.isFile() || info.isSymbolicLink() || info.size !== selected.byteLength) {
-    reject();
-  }
-  const handle = await open(selectedFile, 'r');
-  let bytes;
-  try {
-    const before = await handle.stat({ bigint: true });
-    bytes = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
+    const original = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line)),
+      descriptor = descriptorById.get(original.id),
+      input = references.inputsByArtifact.get(original.id);
     if (
-      !before.isFile() ||
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.mtimeNs !== after.mtimeNs ||
-      before.ctimeNs !== after.ctimeNs ||
-      bytes.length !== selected.byteLength ||
-      hash(bytes) !== selected.sha256
+      !descriptor ||
+      !input ||
+      proofs.has(original.id) ||
+      (selected.artifactId !== undefined &&
+        (selected.artifactId !== original.id ||
+          selected.memberId !== input.memberId ||
+          selected.inputId !== input.inputId)) ||
+      !references.memberIds.has(input.memberId) ||
+      original.sha256 !== descriptor.sha256 ||
+      original.byteLength !== descriptor.byteLength ||
+      selected.sha256 !== descriptor.sha256 ||
+      selected.byteLength !== descriptor.byteLength
     ) {
       reject();
     }
-  } finally {
-    await handle.close();
-  }
-  await mkdir(path.join(output, 'images'), { mode: 0o700 });
-  await writeFile(path.join(output, file), bytes, { flag: 'wx', mode: 0o600 });
-  await readStoredResultContent(output, {
-    imageId: descriptor.id,
-    operation: descriptor.operation,
-    mimeType: descriptor.mimeType,
-    byteLength: descriptor.byteLength,
-    sha256: descriptor.sha256,
-    file,
-  });
-  const tuple = {
-      artifactId: descriptor.id,
-      memberId: input.memberId,
-      inputId: input.inputId,
-      sha256: descriptor.sha256,
-      byteLength: descriptor.byteLength,
-      file,
-      verifiedAt: Date.now(),
-    },
-    proof = {
-      ...tuple,
-      proofRef: `local-materialization:${domainDigest({
-        sourceSha256: references.sourceSha256,
-        cutConfigurationSha256: configuration.selectedSha256,
+    const file = readableResultFile({
+        imageId: descriptor.id,
+        operation: descriptor.operation,
+        mimeType: descriptor.mimeType,
+      }),
+      pending = {
+        imageId: descriptor.id,
+        operation: descriptor.operation,
+        mimeType: descriptor.mimeType,
+        byteLength: descriptor.byteLength,
+        sha256: descriptor.sha256,
+        file,
+      },
+      selectedFile = path.resolve(directory, selected.file),
+      info = await lstat(selectedFile);
+    assertReadableStoredResultDescriptor(pending);
+    if (!info.isFile() || info.isSymbolicLink() || info.size !== selected.byteLength) {
+      reject();
+    }
+    const handle = await open(selectedFile, 'r');
+    let bytes;
+    try {
+      const before = await handle.stat({ bigint: true });
+      bytes = await handle.readFile();
+      const after = await handle.stat({ bigint: true });
+      if (
+        !before.isFile() ||
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs ||
+        before.ctimeNs !== after.ctimeNs ||
+        bytes.length !== selected.byteLength ||
+        hash(bytes) !== selected.sha256
+      ) {
+        reject();
+      }
+    } finally {
+      await handle.close();
+    }
+    await mkdir(path.join(output, 'images'), { mode: 0o700, recursive: true });
+    await writeNewMigrationFile(path.join(output, file), bytes);
+    const verified = await readStoredResultContent(output, pending);
+    if (!verified) {
+      reject();
+    }
+    const tuple = {
+        artifactId: descriptor.id,
+        memberId: input.memberId,
+        inputId: input.inputId,
+        sha256: descriptor.sha256,
+        byteLength: descriptor.byteLength,
+        file,
+        verifiedAt: Date.now(),
+      },
+      proof = {
         ...tuple,
-      })}`,
-    };
-  proofs.set(descriptor.id, proof);
-  references.boundLocalMaterializationProofs.set(proof.proofRef, domainDigest(proof));
+        proofRef: `local-materialization:${domainDigest({
+          sourceSha256: references.sourceSha256,
+          cutConfigurationSha256: configuration.selectedSha256,
+          ...(rescued ? { rescuedOriginalsSha256: rescued.selectedSha256 } : {}),
+          ...tuple,
+        })}`,
+      };
+    proofs.set(descriptor.id, proof);
+    references.boundLocalMaterializationProofs.set(proof.proofRef, domainDigest(proof));
+  }
   return proofs;
 }
 
@@ -1449,7 +1647,8 @@ export async function migrateLegacyDatabase(options) {
       !options ||
       !/^[a-f0-9]{64}$/.test(options.sourceSha256 ?? '') ||
       !/^[a-f0-9]{64}$/.test(options.auditSha256 ?? '') ||
-      !/^[1-9][0-9]*$/.test(options.cut ?? '')
+      !/^[1-9][0-9]*$/.test(options.cut ?? '') ||
+      Boolean(options.rescuedOriginals) !== Boolean(options.rescuedOriginalsSha256)
     ) {
       reject();
     }
@@ -1516,8 +1715,16 @@ export async function migrateLegacyDatabase(options) {
       .map((line) => JSON.parse(line));
     phase = 'cut-configuration';
     const cutConfiguration = options.cutConfig
-      ? await readLegacyCutConfiguration(options.cutConfig, options.cutConfigSha256, options, at)
-      : null;
+        ? await readLegacyCutConfiguration(options.cutConfig, options.cutConfigSha256, options, at)
+        : null,
+      rescued = options.rescuedOriginals
+        ? await readRescuedOriginals(
+            options.rescuedOriginals,
+            options.rescuedOriginalsSha256,
+            options,
+            cutConfiguration,
+          )
+        : null;
     const output = path.resolve(options.output);
     await mkdir(output, { mode: 0o700 });
     const source = new Database(path.resolve(options.source), {
@@ -1549,6 +1756,8 @@ export async function migrateLegacyDatabase(options) {
           descriptors,
           references,
           output,
+          options.artifacts,
+          rescued,
         ),
         inputManifest = {
           format: 'legacy-B-inputs-v1',
@@ -1558,15 +1767,16 @@ export async function migrateLegacyDatabase(options) {
           sourceCommit: options.sourceCommit,
           auditSha256: options.auditSha256,
           cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
+          rescuedOriginalsSha256: rescued?.selectedSha256 ?? null,
           effectiveAt: at,
           localMaterializations: [...localMaterializations.values()],
         },
         manifestBytes = Buffer.from(canonicalJson(inputManifest)),
         manifestSha256 = hash(manifestBytes);
-      await writeFile(path.join(output, 'migration-inputs.private.json'), manifestBytes, {
-        flag: 'wx',
-        mode: 0o600,
-      });
+      await writeNewMigrationFile(
+        path.join(output, 'migration-inputs.private.json'),
+        manifestBytes,
+      );
       phase = 'public-opening';
       target = new Database(path.join(output, 'library.sqlite'));
       initializeRelationalStorage(target, `B:${options.sourceSha256}:${options.cut}`);
@@ -1732,6 +1942,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         ['output', 'output'],
         ['cut-config', 'cutConfig'],
         ['cut-config-sha256', 'cutConfigSha256'],
+        ['rescued-originals', 'rescuedOriginals'],
+        ['rescued-originals-sha256', 'rescuedOriginalsSha256'],
       ]),
       options = {};
     for (const argument of process.argv.slice(2)) {
@@ -1742,7 +1954,10 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
       }
       options[key] = match[2];
     }
-    if (Object.keys(options).length !== names.size) {
+    if (
+      [...names.values()].slice(0, 10).some((key) => !Object.hasOwn(options, key)) ||
+      Boolean(options.rescuedOriginals) !== Boolean(options.rescuedOriginalsSha256)
+    ) {
       reject();
     }
     const result = await migrateLegacyDatabase(options);
