@@ -814,6 +814,25 @@ printf '{}' | node /verified/package/scripts/retained-sources.mjs read /private/
 
 CLI读取stdin JSON，错误不输出源内容或秘密。实际Python调用begin/describe/bind/checkpoint/publish，R2调用同一owner；无source删除命令。独立旧archive只能按固定只读工具产出的原audit/artifacts.jsonl及整源SHA登记，不在线加载旧Store；未知字段与外部字节核验不足保持unknown。`archive`请求使用`source/manifest/dependencies`三个已选私有路径，不更改原件或导入旧解释器。
 
+### 旧归档的选定导出证明
+
+`archive` 可在 registry 后增加独立的 `SELECTED_AUDIT_SHA256` 参数；stdin 仍只提供原三个路径。这个期望摘要必须由接收者以外的可信执行/交接预先选定，绑定实际工具包、原 source/cut 及这次实际导出的 audit 和两份 JSONL。不能从同一次 stdin、audit.toolSha256、同目录自报 manifest 或调用者自己重算的摘要取得认证。此 CLI 是本地私有操作者边界，没有 HTTP 接收口或通用签名认证；没有外部 pin 的旧报告仍可保存，但始终是未知来源覆盖。
+
+```sh
+printf '%s' '{"source":"/sealed/library.sqlite","manifest":"/selected/export/audit.json","dependencies":"/selected/export/artifacts.jsonl"}' | node /verified/package/scripts/retained-sources.mjs archive /private/retained-sources SELECTED_AUDIT_SHA256
+```
+
+| 约束       | 权威及允许变化                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 外部选定   | `retained-sources.ts` 先核 audit 原字节 SHA 等于独立参数，再核源完整文件 SHA。audit 的固定格式、原 source/tool/opening 摘要、完整 cut 和安全计数及两份固定 basename/长度/行数/SHA 元组必须完整。toolSha 自报本身不认证工具；不从当前配置补原来源。                              |
+| 本次消费   | 原 `artifacts.jsonl` 必须实际存在、basename 正确，按有界读取核 UTF8、换行行数、实际长度和 SHA；其元组必须与 audit 及产物计数一致。零行只接受真实存在的空文件和空摘要。inputs 仅保存 audit 中的共同元组，不声称本次重新读取 inputs bytes 或从 metadata 重算 opening/原正文摘要。 |
+| 保存与重读 | 复用原 `manifestSha256`、`dependenciesSha256` 和不可变 audit/产物清单副本，不加认证布尔、第二份 pin 或派生对象目录。读取、checkpoint、restore 继续核已存副本与共同元组，原交接文件移除也不能使保护丢失；有 exports 不等于独立来源已认证。旧无 exports 报告保持未知。            |
+| 失败保全   | CLI 先登记 durable preparing，再验证/复制，最后才 publish retained。错误不能删除 preparing 或发布成功；复制尾错可留下诊断文件，但 registry 的原 binding/hold 不得越过相应完成点。源与原清单不改，不把文件操作冒充 SQL/文件共同事务。                                            |
+
+有 exports 即声明一份必须存在的产物清单，未提供外部 pin 也不能省略该文件；保存后的 `dependenciesSha256` 必须等于 audit 元组且实文件通过核验，不能置 NULL 脱离证明。旧无 exports 报告仍保持未知。本片所有 `dependencies`、coverage 仍为 unknown、releaseAllowed 为 false，产物源 DELETE 为零。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
+
+验收沿原 retained 测试：外部固定 pin 正向；同源手写自洽空清单并重算 audit 仍与已选 pin 不符；同长篡改、错 cut/tool、缺元组/清单拒绝；可信真实空清单正向；复制确实完成后注入尾错仍保 preparing；原文件移除后 checkpoint/restore 的已存证明仍保护。当前实现与实际验证状态由后继交付证据记录，不将这些要求预写为已通过。
+
 每份新业务snapshot含`retained-catalog/`及其独立SHA侧件；普通manifest内容先固定，checkpoint包含当次preparing责任及既有证明，所以不自循环。整个snapshot继续由原tar/AES-GCM/回读和外部`r2-backup.json`绑定。单独一个可改的SHA侧件不是认证依据；灾后必须先按原远端receipt下载并验证包，再使用其checkpoint和SHA向**全新**私有目录执行`restore`。该命令不覆盖已有registry，也不把preparing/unknown提升为完整覆盖；本地目录真实发布后才可凭原manifest/source SHA执行`publish`。
 
 registry的不可变manifest/依赖证明不在local daily退休时删除，remote hold独立保留。远端结果不明、capturing kill、SQL或文件失败都不得按年龄/PID清除pin。lease恢复只清已结束的短metadata进程且严格匹配原文件身份，不等于capture/PUT已经结束。灾后漏掉checkpoint之后的新登记时仍unknown，须重核全部保留源；不能就此开自动释放。Windows功能检查不代表POSIX目录fsync/断电持久性或生产恢复门禁。

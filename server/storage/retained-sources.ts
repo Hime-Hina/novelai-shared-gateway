@@ -289,6 +289,235 @@ export async function retainedFileSha256(filename: string) {
   }
   return digest.digest('hex');
 }
+interface LegacyExportFile {
+  basename: string;
+  byteLength: number;
+  rowCount: number;
+  sha256: string;
+}
+const legacyCounts = [
+  'commits',
+  'events',
+  'protectedInputs',
+  'protectedInputBytes',
+  'contexts',
+  'artifactInputs',
+  'diagnostics',
+  'artifacts',
+  'networkCalls',
+  'dispatches',
+] as const;
+type LegacyExportAudit = Record<(typeof legacyCounts)[number], number> & {
+  format: string;
+  sourceCommit: string;
+  toolSha256: string;
+  sourceSha256: string;
+  openingSha256: string;
+  lastCommitSeq: string;
+  externalObjectBytesVerified: boolean;
+  exports: { inputs: LegacyExportFile; artifacts: LegacyExportFile };
+};
+function exactFields(value: unknown, names: readonly string[]) {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    same(Object.keys(value).sort(), [...names].sort())
+  );
+}
+function legacyExportAudit(value: LegacyExportAudit) {
+  if (
+    !exactFields(value, [
+      'format',
+      'sourceCommit',
+      'toolSha256',
+      'sourceSha256',
+      'openingSha256',
+      'lastCommitSeq',
+      'externalObjectBytesVerified',
+      'exports',
+      ...legacyCounts,
+    ]) ||
+    value.format !== 'legacy-archive-audit-v1' ||
+    typeof value.sourceCommit !== 'string' ||
+    !/^[a-f0-9]{40}$/.test(value.sourceCommit) ||
+    [value.toolSha256, value.sourceSha256, value.openingSha256].some(
+      (hash) => typeof hash !== 'string' || !hashPattern.test(hash),
+    ) ||
+    typeof value.lastCommitSeq !== 'string' ||
+    !/^[1-9][0-9]*$/.test(value.lastCommitSeq) ||
+    legacyCounts.some((key) => !Number.isSafeInteger(value[key]) || value[key] < 0) ||
+    BigInt(value.lastCommitSeq) !== BigInt(value.commits) ||
+    value.networkCalls !== 0 ||
+    value.dispatches !== 0 ||
+    value.externalObjectBytesVerified !== false ||
+    !exactFields(value.exports, ['inputs', 'artifacts'])
+  ) {
+    fail();
+  }
+  for (const kind of ['inputs', 'artifacts'] as const) {
+    const file = value.exports[kind];
+    if (
+      !exactFields(file, ['basename', 'byteLength', 'rowCount', 'sha256']) ||
+      file.basename !== kind + '.jsonl' ||
+      !Number.isSafeInteger(file.byteLength) ||
+      file.byteLength < 0 ||
+      !Number.isSafeInteger(file.rowCount) ||
+      file.rowCount < 0 ||
+      typeof file.sha256 !== 'string' ||
+      !hashPattern.test(file.sha256) ||
+      (file.rowCount === 0) !== (file.byteLength === 0) ||
+      (file.byteLength === 0 && file.sha256 !== createHash('sha256').digest('hex'))
+    ) {
+      fail();
+    }
+  }
+  const inputRows =
+    value.protectedInputs + value.contexts + value.artifactInputs + value.diagnostics;
+  if (
+    !Number.isSafeInteger(inputRows) ||
+    value.exports.inputs.rowCount !== inputRows ||
+    value.exports.artifacts.rowCount !== value.artifacts
+  ) {
+    fail();
+  }
+  return value;
+}
+async function legacyArtifactFile(filename: string, expected: LegacyExportFile) {
+  const before = await regular(filename),
+    handle = await open(filename, 'r');
+  try {
+    const fd = await handle.stat({ bigint: true });
+    if (
+      fd.dev !== before.dev ||
+      fd.ino !== before.ino ||
+      before.size !== BigInt(expected.byteLength)
+    ) {
+      fail();
+    }
+    const digest = createHash('sha256'),
+      decoder = new TextDecoder('utf-8', { fatal: true });
+    const buffer = Buffer.alloc(64 * 1024);
+    let byteLength = 0,
+      rowCount = 0,
+      lastByte = -1;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) {
+        break;
+      }
+      const chunk = buffer.subarray(0, bytesRead);
+      digest.update(chunk);
+      decoder.decode(chunk, { stream: true });
+      byteLength += bytesRead;
+      for (const byte of chunk) {
+        if (byte === 10) {
+          rowCount++;
+        }
+      }
+      lastByte = chunk[chunk.length - 1];
+      if (!Number.isSafeInteger(byteLength) || !Number.isSafeInteger(rowCount)) {
+        fail();
+      }
+    }
+    decoder.decode();
+    const after = await regular(filename);
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      byteLength !== expected.byteLength ||
+      rowCount !== expected.rowCount ||
+      (byteLength !== 0 && lastByte !== 10) ||
+      digest.digest('hex') !== expected.sha256
+    ) {
+      fail();
+    }
+  } finally {
+    await handle.close();
+  }
+}
+async function archiveManifest(filename: string) {
+  if ((await regular(filename)).size > 65536n) {
+    fail();
+  }
+  const raw = await bytes(filename);
+  return {
+    value: JSON.parse(raw.toString('utf8')),
+    sha256: createHash('sha256').update(raw).digest('hex'),
+  };
+}
+// 外部选定的 audit pin 只作用于本次接收；保存的原 manifest SHA 即固定这些字节，不另存认证布尔。
+export async function readRetainedArchiveBinding(
+  sourceFile: string,
+  manifestFile: string,
+  dependenciesFile?: string,
+  expectedAuditSha256?: string,
+): Promise<RetainedBinding> {
+  if (
+    expectedAuditSha256 !== undefined &&
+    (typeof expectedAuditSha256 !== 'string' || !hashPattern.test(expectedAuditSha256))
+  ) {
+    fail();
+  }
+  const manifest = await archiveManifest(manifestFile);
+  if (expectedAuditSha256 !== undefined && manifest.sha256 !== expectedAuditSha256) {
+    fail();
+  }
+  const sourceSha256 = await retainedFileSha256(sourceFile),
+    identity = manifest.value;
+  if (!identity || identity.sourceSha256 !== sourceSha256) {
+    fail();
+  }
+  let dependenciesSha256 = dependenciesFile ? await retainedFileSha256(dependenciesFile) : null;
+  if (
+    expectedAuditSha256 !== undefined ||
+    (identity.format === 'legacy-archive-audit-v1' && identity.exports !== undefined)
+  ) {
+    const audit = legacyExportAudit(identity);
+    if (!dependenciesFile) {
+      fail();
+    }
+    if (path.basename(dependenciesFile) !== 'artifacts.jsonl') {
+      fail();
+    }
+    await legacyArtifactFile(dependenciesFile, audit.exports.artifacts);
+    dependenciesSha256 = audit.exports.artifacts.sha256;
+  }
+  return {
+    format: identity.format === 'legacy-archive-audit-v1' ? 'legacy-export' : 'opaque',
+    sourceSha256,
+    manifestSha256: manifest.sha256,
+    dependenciesSha256,
+    dependencies: 'unknown',
+    historyId: null,
+    finalCommitSeq: identity.lastCommitSeq ?? null,
+  };
+}
+async function boundLegacyExport(root: string, binding: RetainedBinding) {
+  if (binding.format !== 'legacy-export') {
+    return;
+  }
+  const { value, sha256 } = await archiveManifest(path.join(root, 'manifest.json'));
+  if (
+    sha256 !== binding.manifestSha256 ||
+    !value ||
+    value.format !== 'legacy-archive-audit-v1' ||
+    value.sourceSha256 !== binding.sourceSha256 ||
+    (value.lastCommitSeq ?? null) !== binding.finalCommitSeq
+  ) {
+    fail();
+  }
+  if (value.exports === undefined) {
+    return;
+  }
+  const audit = legacyExportAudit(value);
+  if (binding.dependenciesSha256 !== audit.exports.artifacts.sha256) {
+    fail();
+  }
+  await legacyArtifactFile(path.join(root, 'dependencies.jsonl'), audit.exports.artifacts);
+}
 async function immutableFile(filename: string, value: string | Buffer) {
   const handle = await open(filename, 'wx', 0o600);
   try {
@@ -455,6 +684,7 @@ async function readProtectedRetainedRegistry(root: string, checkpointSha256?: st
     ) {
       fail();
     }
+    await boundLegacyExport(sourceRoot, source.binding);
   }
   return registry;
 }
@@ -525,6 +755,7 @@ export async function bindRetainedCapture(
       ) {
         fail();
       }
+      await boundLegacyExport(stored, binding);
       return { sourceId: id };
     }
     if (row.holds.some((h) => h.state !== 'preparing')) {
@@ -552,6 +783,7 @@ export async function bindRetainedCapture(
         binding.dependenciesSha256,
       );
     }
+    await boundLegacyExport(target, binding);
     row.binding = binding;
     if (finalLocation) {
       if (
@@ -601,7 +833,7 @@ export async function publishRetainedArchive(
   sourceFile: string,
   manifestFile: string,
 ) {
-  return mutate(root, async (registry) => {
+  return mutate(root, async (registry, selected) => {
     const row = source(registry, id),
       hold = row.holds[0];
     if (
@@ -615,6 +847,7 @@ export async function publishRetainedArchive(
     ) {
       fail();
     }
+    await boundLegacyExport(path.join(selected, 'sources', id), row.binding);
     hold.state = 'retained';
     return { sourceId: id, holdId: hold.id };
   });
@@ -881,6 +1114,7 @@ export async function checkpointRetainedSources(root: string, filename: string) 
       const from = path.join(selected, 'sources', row.id),
         to = path.join(filename, 'sources', row.id);
       await directory(from);
+      await boundLegacyExport(from, row.binding);
       await mkdir(to, { mode: 0o700 });
       await immutableCopy(
         path.join(from, 'manifest.json'),
