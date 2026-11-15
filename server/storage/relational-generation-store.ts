@@ -755,6 +755,9 @@ export class RelationalGenerationStore {
           if (mapping.intentFingerprint !== metadata.fingerprint) {
             fail('操作键对应的意图已变化', 409);
           }
+          if (mapping.originalCommandId === null) {
+            fail('原操作键已不可领取', 410);
+          }
           return this.readAcceptedGenerationReceipt(
             { ...metadata, commandId: mapping.originalCommandId },
             mapping,

@@ -1816,8 +1816,8 @@ export class RelationalInputStore {
             operation: string;
             keyHash: string;
             sourceEventId: string;
-            originalCommandId: string;
-            originalRequestId: string;
+            originalCommandId: string | null;
+            originalRequestId: string | null;
             originalJobId: string;
             requestId: string | null;
             contextId: string | null;
@@ -1874,6 +1874,8 @@ export class RelationalInputStore {
       return null;
     }
     if (
+      p.originalRequestId === null ||
+      p.originalCommandId === null ||
       p.noCache === null ||
       p.seedMode === null ||
       p.requestId === null ||

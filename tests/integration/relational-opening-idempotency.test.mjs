@@ -269,9 +269,9 @@ test('Opening未知tombstone没有原receipt也保留旧键且拒live，不猜�
       operation: 'generate',
       keyHash: generationIdempotencyKeyHash(resolution),
       intentFingerprint: 'd'.repeat(64),
-      originalRequestId: 'missing-request',
+      originalRequestId: null,
       originalJobId: 'missing-job',
-      originalCommandId: 'missing-command',
+      originalCommandId: null,
       noCache: null,
       seedMode: null,
       requestId: null,
@@ -304,6 +304,99 @@ test('Opening未知tombstone没有原receipt也保留旧键且拒live，不猜�
   }
   const target = rebuild(t, f.db);
   assert.equal(target.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n, 2);
+});
+
+test('NULL原parent或POST的旧键永久410，原字段完整回放和重复零写且不复活认证', async (t) => {
+  const f = await fixture(t),
+    noNetwork = t.mock.method(globalThis, 'fetch', () => assert.fail('本用例不允许网络')),
+    saved = [];
+  for (const [index, original] of [
+    { originalRequestId: null, originalCommandId: null },
+    { originalRequestId: null, originalCommandId: 'known-original-post' },
+    { originalRequestId: 'known-original-parent', originalCommandId: null },
+  ].entries()) {
+    const payload = {
+      originalMemberId: 'm1',
+      operation: 'generate',
+      keyHash: generationIdempotencyKeyHash(`null-origin-${index}`),
+      intentFingerprint: 'd'.repeat(64),
+      ...original,
+      originalJobId: `original-job-${index}`,
+      noCache: null,
+      seedMode: null,
+      requestId: null,
+      commitSeq: null,
+      contextId: null,
+      resolution: index === 1 ? 'archived' : 'unavailable',
+      originRef: `archive:original-key:${index}`,
+      archivedReceipt: null,
+      createdAt: 0,
+      origin: origin(`original-key-${index}`),
+    };
+    const result = append(
+      f,
+      [
+        {
+          eventType: 'OpeningIdempotencyRecorded',
+          streamId: `idempotency:m1:generate:${payload.keyHash}`,
+          memberId: 'm1',
+          payload,
+        },
+      ],
+      `import-null-key-${index}`,
+    );
+    saved.push(readRelationalCommit(f.db, result.commitSeq));
+    const mapping = f.inputs.readGenerationIdempotency('m1', 'generate', payload.keyHash),
+      before = databaseState(f.db),
+      changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+    assert.equal(mapping.originalRequestId, payload.originalRequestId);
+    assert.equal(mapping.originalCommandId, payload.originalCommandId);
+    assert.equal(mapping.originalJobId, payload.originalJobId);
+    assert.equal(mapping.createdAt, 0);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      assert.throws(
+        () => f.inputs.readGenerationIdempotencyContext('m1', 'generate', payload.keyHash),
+        (error) => error.statusCode === 410,
+      );
+      assert.throws(
+        () =>
+          f.db.transaction(() =>
+            f.generations.readAcceptedGenerationReceipt(
+              {
+                ...meta('current-command-is-not-the-original', NOW, 'm1'),
+                fingerprint: payload.intentFingerprint,
+              },
+              mapping,
+            ),
+          )(),
+        (error) => error.statusCode === 410,
+      );
+    }
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  }
+  const target = rebuild(t, f.db),
+    before = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual(
+    target.prepare('SELECT * FROM idempotency_keys ORDER BY key_hash').all(),
+    f.db.prepare('SELECT * FROM idempotency_keys ORDER BY key_hash').all(),
+  );
+  for (const stored of saved) {
+    assert.equal(
+      target.transaction(() =>
+        new RelationalCommitReplayer(target).replayCommit(stored, f.inputs),
+      )().replayed,
+      true,
+    );
+  }
+  assert.equal(databaseState(target), before);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(target.prepare('SELECT COUNT(*) AS n FROM generation_jobs').get().n, 0);
+  for (const table of ['api_keys', 'member_sessions', 'upstream_credentials']) {
+    assert.equal(target.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+  }
+  assert.equal(noNetwork.mock.callCount(), 0);
 });
 
 test('原Opening key完整提交在后续合法退休后仍可历史重复零写，当前POST资格仍拒绝', async (t) => {
@@ -340,6 +433,145 @@ test('原Opening key完整提交在后续合法退休后仍可历史重复零写
   )();
   assert.equal(databaseState(target), before);
   assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('NULL只属于不可领取旧键，原在线Key闭包和SQL live约束保持严格', async (t) => {
+  const f = await fixture(t);
+  await f.accept('normal-template');
+  const normal = definition(f, 'normal-template'),
+    keyHash = generationIdempotencyKeyHash('normal-key'),
+    command = {
+      ...meta('normal-original-post', NOW, 'm1'),
+      fingerprint: normal.payload.intentFingerprint,
+    },
+    input = {
+      inputId: 'normal-key-input',
+      requestId: 'normal-key-request',
+      memberId: 'm1',
+      source: 'native',
+      seedMode: 'fixed',
+      confirmation: null,
+      request: normal.request,
+      context: normal.context,
+      idempotency: { keyHash, noCache: true },
+      jobs: [
+        {
+          jobId: 'normal-key-job',
+          status: 'pending',
+          queueSeq: null,
+          queueExpiresAt: null,
+          deadlineAt: null,
+          admissionEpoch: 0,
+          cacheKey: null,
+        },
+      ],
+    },
+    result = await withAuthenticatedMemberApiKey(
+      f.members,
+      'synthetic-key-m1',
+      () => f.generations.acceptGeneration(command, input),
+      {},
+    ),
+    mapping = f.inputs.readGenerationIdempotency('m1', 'generate', keyHash);
+  assert.equal(mapping.originalRequestId, input.requestId);
+  assert.equal(mapping.originalCommandId, command.commandId);
+  assert.equal(mapping.commitSeq, result.commitSeq);
+  assert.equal(mapping.resolution, 'live');
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal(
+    f.db.transaction(() => f.generations.acceptGeneration(command, input))().replayed,
+    true,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  for (const [index, originalRequestId, originalCommandId, resolution] of [
+    [0, null, command.commandId, 'live'],
+    [1, input.requestId, null, 'live'],
+    [2, null, command.commandId, 'archived'],
+  ]) {
+    f.db.transaction(() =>
+      assert.throws(
+        () =>
+          f.db
+            .prepare(
+              `INSERT INTO idempotency_keys
+      SELECT original_member_id,operation,?,intent_fingerprint,?,original_job_id,?,
+      request_id,NULL,context_id,?,origin_ref,?,created_at,source_event_id
+      FROM idempotency_keys WHERE key_hash=?`,
+            )
+            .run(
+              generationIdempotencyKeyHash(`invalid-null-${index}`),
+              originalRequestId,
+              originalCommandId,
+              resolution,
+              canonicalJson(result.receipt),
+              keyHash,
+            ),
+        /CHECK constraint failed/,
+      ),
+    )();
+    assert.equal(databaseState(f.db), before);
+  }
+  const complete = definition(f, input.requestId, 'invalid-live');
+  for (const field of ['originalRequestId', 'originalCommandId']) {
+    assert.throws(
+      () =>
+        parseRelationalFact({
+          eventType: 'OpeningIdempotencyRecorded',
+          payload: { ...complete.payload, [field]: null },
+        }),
+      TypeError,
+    );
+  }
+  const unknownPost = definition(f, input.requestId, 'unknown-post', {
+    originalRequestId: null,
+    originalCommandId: null,
+    requestId: null,
+    contextId: null,
+    resolution: 'unavailable',
+    archivedReceipt: null,
+    noCache: null,
+    seedMode: null,
+  });
+  unknownPost.payload.intentFingerprint = f.inputs.generationInputIntent(
+    'm1',
+    normal.request,
+    normal.context,
+    'fixed',
+    false,
+  ).fingerprint;
+  append(f, [unknownPost.event], 'unknown-post-import');
+  const archived = databaseState(f.db),
+    archivedChanges = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.throws(
+    () =>
+      f.db.transaction(() =>
+        f.generations.reuseGeneration(
+          {
+            ...meta('current-reuse-not-original-post', NOW, 'm1'),
+            fingerprint: unknownPost.payload.intentFingerprint,
+          },
+          {
+            memberId: 'm1',
+            request: normal.request,
+            context: normal.context,
+            seedMode: 'fixed',
+            noCache: false,
+            idempotency: { keyHash: unknownPost.payload.keyHash, noCache: false },
+            sourceJobId: input.jobs[0].jobId,
+          },
+        ),
+      )(),
+    (error) => error.statusCode === 410,
+  );
+  assert.equal(databaseState(f.db), archived);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, archivedChanges);
+  const target = rebuild(t, f.db);
+  assert.deepEqual(
+    new RelationalInputStore(target).readGenerationIdempotency('m1', 'generate', keyHash),
+    mapping,
+  );
 });
 
 test('Opening每键显式原fixed/random与noCache决定独立于目标first intent，不能从同seed猜模式', async (t) => {
@@ -430,6 +662,8 @@ test('Opening live原模式、回执、来源、成员及child闭包错误全笔
   assert.throws(() => append(f, [definition(f, 'opened-original').event]));
   const complete = definition(f, 'original');
   for (const patch of [
+    { originalRequestId: null },
+    { originalCommandId: null },
     { noCache: null },
     { seedMode: null },
     { noCache: false },

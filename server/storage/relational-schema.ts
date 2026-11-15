@@ -519,9 +519,9 @@ CREATE TABLE idempotency_keys (
   operation TEXT NOT NULL,
   key_hash TEXT NOT NULL,
   intent_fingerprint TEXT NOT NULL,
-  original_request_id TEXT NOT NULL,
+  original_request_id TEXT,
   original_job_id TEXT NOT NULL,
-  original_command_id TEXT NOT NULL,
+  original_command_id TEXT,
   request_id TEXT,
   commit_seq INTEGER REFERENCES commits(commit_seq),
   context_id TEXT REFERENCES normalization_contexts(id),
@@ -531,9 +531,11 @@ CREATE TABLE idempotency_keys (
   created_at INTEGER NOT NULL,
   ${fact},
   PRIMARY KEY (original_member_id, operation, key_hash),
-  CHECK (request_id IS NULL OR request_id = original_request_id),
+  CHECK (request_id IS NULL OR
+    (original_request_id IS NOT NULL AND request_id = original_request_id)),
   CHECK (resolution != 'live' OR
-    (request_id IS NOT NULL AND context_id IS NOT NULL
+    (original_request_id IS NOT NULL AND original_command_id IS NOT NULL
+      AND request_id IS NOT NULL AND context_id IS NOT NULL
       AND (commit_seq IS NOT NULL OR archived_receipt IS NOT NULL))),
   CHECK (commit_seq IS NULL OR archived_receipt IS NULL),
   FOREIGN KEY (request_id, original_member_id) REFERENCES generation_requests(id, member_id)

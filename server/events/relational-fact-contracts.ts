@@ -756,9 +756,10 @@ export const relationalPayloadParsers = {
     operation,
     keyHash: hash,
     intentFingerprint: hash,
-    originalRequestId: id,
+    // 旧键可能只保存 job；未知 parent/原 POST 只在不可领取的归档事实中保留 NULL。
+    originalRequestId: nullable(id),
     originalJobId: id,
-    originalCommandId: id,
+    originalCommandId: nullable(id),
     noCache: nullable(bool),
     seedMode: nullable(choices('fixed', 'random', 'not_applicable')),
     requestId: nullable(id),
@@ -952,7 +953,9 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     if (
       row.commitSeq !== null ||
       (row.resolution === 'live' &&
-        (row.requestId === null ||
+        (row.originalRequestId === null ||
+          row.originalCommandId === null ||
+          row.requestId === null ||
           row.contextId === null ||
           row.archivedReceipt === null ||
           row.noCache === null ||
