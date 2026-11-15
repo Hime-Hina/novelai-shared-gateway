@@ -9,7 +9,11 @@ import { readOperatingAccount } from '../server/quota/operating-accounting.ts';
 import { parseAmount, formatAmount } from '../server/quota/resource-amounts.ts';
 import { fairQuotaSnapshot } from '../server/quota/fair-share.ts';
 import { quotaNumber, quotaTimestamp } from '../server/quota/eligibility.ts';
-import { financialObservedV5 } from '../server/storage/relational-quota-store.ts';
+import {
+  financialObservedV5,
+  RelationalQuotaStore,
+} from '../server/storage/relational-quota-store.ts';
+import { readRelationalOpeningAttempt } from '../server/storage/relational-generation-sources.ts';
 
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'];
 const object = (value) => {
@@ -567,4 +571,177 @@ export function mapLegacyFinance(source, references) {
     findings: [...findings].map(([code, count]) => ({ code, count, blocking: true })),
     expected,
   };
+}
+
+// Compare original cut expectations, not another allocation/settlement calculation.
+// The installer independently verifies complete new facts -> projections/content.
+export function assertLegacyFinanceProjection(target, expected) {
+  if (!target.inTransaction) {
+    throw new Error('Finance reconciliation requires the owning target snapshot transaction.');
+  }
+  const checked = {},
+    equal = (name, actual) => {
+      if (!Array.isArray(expected[name])) {
+        throw new TypeError('Missing original finance reconciliation expectations.');
+      }
+      const rows = (values) => values.map((row) => canonicalJson(row)).sort();
+      if (canonicalJson(rows(actual)) !== canonicalJson(rows(expected[name]))) {
+        throw Object.assign(new Error(`Legacy finance reconciliation mismatch: ${name}.`), {
+          code: 'LEGACY_FINANCE_RECONCILIATION_FAILED',
+        });
+      }
+      checked[name] = actual.length;
+    };
+  equal(
+    'wallets',
+    target
+      .prepare(
+        `SELECT account_id AS accountId,member_id AS memberId,
+    v5_available AS v5,anlas_fixed_available AS anlasFixed,anlas_purchased_available AS anlasPurchased
+    FROM wallets`,
+      )
+      .all()
+      .map(({ accountId, memberId, ...available }) => ({ accountId, memberId, available })),
+  );
+  const quotas = new RelationalQuotaStore(target);
+  equal(
+    'quotas',
+    target
+      .prepare('SELECT account_id AS id FROM account_quota_state')
+      .all()
+      .map(({ id }) => ({
+        ...quotas.readAccountQuota(id),
+        ...quotas.readOfficialQuotaV5(id),
+      })),
+  );
+  equal(
+    'observations',
+    target
+      .prepare(
+        `SELECT event_id AS eventId,payload FROM domain_events
+    WHERE event_type='OpeningQuotaObservationRecorded'`,
+      )
+      .all()
+      .map(({ eventId, payload }) => {
+        const { origin: _origin, ...original } = JSON.parse(payload);
+        return { eventId, ...original };
+      }),
+  );
+  equal(
+    'operating',
+    target
+      .prepare(
+        `SELECT account_id AS accountId,
+    v5_available AS v5,anlas_fixed_available AS anlasFixed,anlas_purchased_available AS anlasPurchased,
+    unfunded_fixed AS unfundedFixed,unfunded_purchased AS unfundedPurchased,
+    unattributed_fixed AS unattributedFixed,unattributed_purchased AS unattributedPurchased,
+    v5_capacity_gap AS v5CapacityGap,fixed_gap_event_id AS fixedGapEventId,
+    purchased_gap_event_id AS purchasedGapEventId,v5_gap_event_id AS v5GapEventId
+    FROM operating_state`,
+      )
+      .all()
+      .map(({ v5, anlasFixed, anlasPurchased, ...row }) => ({
+        ...row,
+        available: { v5, anlasFixed, anlasPurchased },
+      })),
+  );
+  equal(
+    'funding',
+    target
+      .prepare(
+        `SELECT receipt,account_id AS accountId,resource,destination,
+    remaining,registered_at AS registeredAt,snapshot_at AS snapshotAt FROM pending_funding`,
+      )
+      .all(),
+  );
+  equal(
+    'charges',
+    target
+      .prepare(
+        `SELECT original_job_id AS originalJobId,
+    original_member_id AS originalMemberId,original_account_id AS originalAccountId,
+    job_id AS jobId,wallet_account_id AS walletAccountId,wallet_member_id AS walletMemberId,
+    attempt_id AS attemptId,status,resolution,origin_ref AS originRef,
+    v5,anlas_fixed AS anlasFixed,anlas_purchased AS anlasPurchased,
+    billing_mode AS billingMode,estimated,v5_equivalent AS v5Equivalent,shared_v5_reserved AS sharedV5Reserved,
+    config_version AS configVersion,reserved_at AS reservedAt,terminal_at AS terminalAt,
+    reservation_event_id AS reservationEventId,terminal_event_id AS terminalEventId
+    FROM charges`,
+      )
+      .all()
+      .map(({ v5, anlasFixed, anlasPurchased, estimated, ...row }) => ({
+        ...row,
+        resources: { v5, anlasFixed, anlasPurchased },
+        estimated: estimated === null ? null : estimated === 1,
+      })),
+  );
+  equal(
+    'attempts',
+    target
+      .prepare(
+        `SELECT id AS attemptId,job_id AS jobId,account_id AS accountId,
+    credential_epoch AS credentialEpoch,authorized_at AS authorizedAt,
+    dispatch_state AS dispatchState,upstream_started_at AS upstreamStartedAt,
+    upstream_headers_at AS upstreamHeadersAt,upstream_completed_at AS upstreamCompletedAt,
+    upstream_http_status AS upstreamHttpStatus,candidate_mode AS candidateMode,
+    upstream_candidates AS upstreamCandidates,actual_consumption AS actualConsumption,
+    review_status AS reviewStatus,first_unknown_at AS firstUnknownAt,review_deadline_at AS reviewDeadlineAt,
+    review_closed_at AS reviewClosedAt,loss_event_id AS lossEventId,closure_event_id AS closureEventId,
+    prepared_artifact_id AS preparedArtifactId,prepared_file AS preparedFile,
+    prepared_mime_type AS preparedMimeType,prepared_byte_length AS preparedByteLength,
+    prepared_sha256 AS preparedSha256 FROM generation_attempts`,
+      )
+      .all()
+      .map((row) => {
+        const original = readRelationalOpeningAttempt(target, row.attemptId);
+        if (
+          !original ||
+          row.lossEventId !== (row.reviewStatus === null ? null : original.eventId) ||
+          row.closureEventId !==
+            (row.reviewStatus !== null && row.reviewStatus !== 'pending' ? original.eventId : null)
+        ) {
+          throw new Error('Finance reconciliation requires the original opening attempt anchors.');
+        }
+        const {
+          dispatchState,
+          upstreamStartedAt,
+          upstreamHeadersAt,
+          upstreamCompletedAt,
+          upstreamHttpStatus,
+          upstreamCandidates,
+          actualConsumption,
+          lossEventId: _loss,
+          closureEventId: _closure,
+          ...values
+        } = row;
+        return {
+          ...values,
+          connectionSourceEventId: original.payload.connectionSourceEventId,
+          response: {
+            dispatchState,
+            upstreamStartedAt,
+            upstreamHeadersAt,
+            upstreamCompletedAt,
+            upstreamHttpStatus,
+          },
+          upstreamCandidates: JSON.parse(upstreamCandidates),
+          actualConsumption: json(actualConsumption),
+          lossCoverageRemaining: original.payload.lossCoverageRemaining,
+          originalLossEventId: original.payload.originalLossEventId,
+          originalClosureEventId: original.payload.originalClosureEventId,
+        };
+      }),
+  );
+  equal(
+    'freeUsage',
+    target
+      .prepare(
+        `SELECT j.id AS jobId,r.member_id AS memberId,
+    j.free_succeeded_at AS succeededAt,j.free_warning_threshold AS warningThreshold
+    FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+    WHERE j.free_succeeded_at IS NOT NULL`,
+      )
+      .all(),
+  );
+  return checked;
 }
