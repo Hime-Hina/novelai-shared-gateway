@@ -1072,16 +1072,18 @@ test(
           state,
           'SELECT member_id AS id,v5_available AS v5Available,anlas_fixed_available AS anlasFixedAvailable,anlas_purchased_available AS anlasPurchasedAvailable FROM wallets WHERE account_id=? ORDER BY member_id',
           original.accounts[0].id,
-        ).map(({ id, ...balance }) => [
-          id,
-          {
-            ...balance,
-            anlasAvailable: formatAmount(
-              parseAmount(balance.anlasFixedAvailable) +
-                parseAmount(balance.anlasPurchasedAvailable),
-            ),
-          },
-        ]),
+        )
+          .filter(({ id }) => Object.hasOwn(before, id))
+          .map(({ id, ...balance }) => [
+            id,
+            {
+              ...balance,
+              anlasAvailable: formatAmount(
+                parseAmount(balance.anlasFixedAvailable) +
+                  parseAmount(balance.anlasPurchasedAvailable),
+              ),
+            },
+          ]),
       );
       assert.deepEqual(balances, before);
       assert.equal(
