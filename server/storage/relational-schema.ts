@@ -543,10 +543,10 @@ CREATE TABLE idempotency_keys (
 
 CREATE TABLE generation_diagnostics (
   id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL REFERENCES generation_jobs(id),
+  job_id TEXT NOT NULL REFERENCES generation_jobs(id) DEFERRABLE INITIALLY DEFERRED,
   detail TEXT NOT NULL,
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^a-f0-9]*'),
-  created_at INTEGER NOT NULL
+  created_at INTEGER
 ) STRICT;
 
 ${['INSERT', 'UPDATE']

@@ -120,6 +120,7 @@ function appendOpening(f, options = {}) {
         ...(options.request ?? {}),
       }),
       event('OpeningJobRecorded', {
+        diagnosticId: null,
         sourceOrder: null,
         displayCost: null,
         jobId: original.job.id,

@@ -42,7 +42,9 @@ const adminJobs = `WITH summary_jobs AS (
           AND json_extract(opening.payload,'$.requestId')=r.id) END AS displayCost,
     (SELECT json_extract(failure.payload,'$.diagnosticId') FROM domain_events failure
       WHERE failure.stream_id='request:'||r.id AND failure.member_id=r.member_id
-        AND failure.event_type='JobFailed' AND json_extract(failure.payload,'$.jobId')=j.id) AS diagnosticId,
+        AND failure.event_type IN ('JobFailed','OpeningJobRecorded')
+        AND json_extract(failure.payload,'$.jobId')=j.id
+        ORDER BY failure.commit_seq DESC,failure.event_index DESC LIMIT 1) AS diagnosticId,
     EXISTS(SELECT 1 FROM domain_events cancelled JOIN json_each(cancelled.payload,'$.jobIds') item
       WHERE cancelled.stream_id='request:'||r.id AND cancelled.member_id=r.member_id
         AND cancelled.event_type='WaitingJobsCancelled' AND item.value=j.id) AS serverCancellation
@@ -548,7 +550,7 @@ export class RelationalReportStore {
           .prepare<unknown[], ErrorRow>(
             `SELECT j.id,r.source,a.account_id AS accountId,j.status,j.error_code AS error,
             origin.created_at AS createdAt,${relationalFailureTimeSql} AS failedAt,e.event_id AS eventId,
-            CASE WHEN e.event_type='JobFailed' THEN json_extract(e.payload,'$.diagnosticId') END AS diagnosticId
+            json_extract(e.payload,'$.diagnosticId') AS diagnosticId
             FROM domain_events e INDEXED BY idx_job_failure_time
             JOIN generation_jobs j ON j.id=json_extract(e.payload,'$.jobId')
             JOIN generation_requests r ON r.id=j.request_id

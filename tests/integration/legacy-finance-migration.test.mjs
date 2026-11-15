@@ -411,6 +411,7 @@ function command(finance) {
       eventType: 'OpeningJobRecorded',
       memberId: 'm1',
       payload: {
+        diagnosticId: null,
         jobId: 'failed-review',
         requestId: 'retained-failed-request',
         createdAt: NOW,

@@ -107,6 +107,7 @@ async function history(
           event.occurredAt = headerAt;
           event.eventType = 'OpeningJobRecorded';
           Object.assign(event.payload, {
+            diagnosticId: null,
             sourceOrder: null,
             displayCost: null,
             createdAt,
@@ -645,6 +646,7 @@ function openingJob(
           eventType: 'OpeningJobRecorded',
           streamId: 'request:' + id,
           payload: {
+            diagnosticId: null,
             sourceOrder,
             displayCost,
             jobId: id + '-0',
@@ -731,6 +733,7 @@ test('OpeningJob原始顺序先于ID/失败时间/queueSeq且limit先于第51个
       sourceOrder = index === 50 ? Number.MAX_VALUE : index - 25 + (index === 30 ? 0.5 : 0);
     known.push({ id: id + '-0', sourceOrder });
     openingJob(f, id, {
+      diagnosticId: null,
       sourceOrder,
       queueSeq: String(200 - index),
       completedAt: NOW + 1000 - index,

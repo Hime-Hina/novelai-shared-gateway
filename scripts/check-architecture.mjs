@@ -8,6 +8,8 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 // Shared transport guards contain no database or command assembly.
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
+  'migrateLegacyDatabase',
+  'migrateLegacyPrivate',
   'JsonStore',
   'emitStoreEvent',
   'relationalStateNotificationsFor',
@@ -40,6 +42,7 @@ const mutations = new Set([
   'stageGenerationDiagnostic',
   'stageOpeningInput',
   'stageOpeningContext',
+  'stageOpeningDiagnostic',
   'initializeGatewayConfiguration',
   'stageNormalizationDefaultsProfile',
   'createNormalizationDefaultsProjector',
@@ -180,6 +183,16 @@ export function checkSource(filename, text) {
     const target = specifier.startsWith('.')
       ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier))
       : specifier;
+    if (
+      /^(?:server|web|executor)\//.test(filename) &&
+      /(?:^|\/)scripts\/migrate-legacy-(?:database|finance|private|artifacts)\.mjs$/.test(target)
+    ) {
+      report(
+        node,
+        `offline migration runtime dependency ${specifier}`,
+        'the independent offline tool',
+      );
+    }
     if (pure.has(filename) && !pure.has(target)) {
       report(
         node,

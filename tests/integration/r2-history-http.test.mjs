@@ -406,6 +406,7 @@ async function historicalFixture(t) {
               event(
                 'OpeningJobRecorded',
                 {
+                  diagnosticId: null,
                   sourceOrder: null,
                   displayCost: null,
                   jobId: record.jobId,
@@ -866,8 +867,8 @@ test(
     t.diagnostic(
       'Original checksum declarations e/f each reject Ready after one actual mocked transport GET; Ready=6 (five valid original rows and one separate synthetic archive); four cases/16 exact-byte deliveries plus two recovery reads; two post-install corrupt responses; original undeclared-PikPak rejection; zero business writes; graceful close/public replay verified.',
     );
-    // Keep the old assertion until the API change is explicitly reviewed. Its known 503/500
-    // difference is deliberately last, so it cannot mask the source/auth/content checks above.
-    assert.equal(missing.status, 500, 'retain the existing local storage failure contract');
+    // The approved temporary-unavailability status stays last so it cannot mask the
+    // original source/auth/content checks above.
+    assert.equal(missing.status, 503, 'original result bytes are temporarily unavailable');
   },
 );

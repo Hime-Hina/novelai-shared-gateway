@@ -114,6 +114,10 @@ interface RequestRow {
   confirmation: string | null;
   retired_at: number | null;
 }
+type DiagnosticEvent = Extract<
+  RelationalEvent,
+  { eventType: 'DiagnosticRecorded' | 'OpeningDiagnosticRecorded' }
+>;
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
 }
@@ -618,6 +622,9 @@ export class RelationalInputStore {
     if (!detail) {
       return null;
     }
+    if (!this.sqlite.prepare('SELECT 1 FROM generation_jobs WHERE id=?').get(jobId)) {
+      diagnosticUnavailable();
+    }
     // SQLite TEXT 与摘要必须使用同一有效 UTF-8 表示，保留公共错误 owner 的原截断语义。
     detail = Buffer.from(detail, 'utf8').toString('utf8');
     const sha256 = createHash('sha256').update(detail).digest('hex'),
@@ -631,6 +638,109 @@ export class RelationalInputStore {
     return { diagnosticId, jobId, sha256, byteLength, createdAt };
   }
 
+  // 原正文只作保护内容；不能经过正常失败链的 trim、截断或重新结算。
+  stageOpeningDiagnostic(
+    input: Omit<RelationalPayloads['OpeningDiagnosticRecorded'], 'byteLength'> & {
+      detail: string;
+    },
+  ) {
+    this.assertOpeningStage();
+    const { detail, ...original } = input;
+    if (
+      typeof detail !== 'string' ||
+      Buffer.byteLength(detail) > 16000 ||
+      Buffer.from(detail, 'utf8').toString('utf8') !== detail ||
+      createHash('sha256').update(detail).digest('hex') !== input.sha256
+    ) {
+      diagnosticUnavailable();
+    }
+    const payload = { ...original, byteLength: Buffer.byteLength(detail) };
+    parseRelationalFact({ eventType: 'OpeningDiagnosticRecorded', payload });
+    this.sqlite
+      .prepare(
+        'INSERT INTO generation_diagnostics(id,job_id,detail,sha256,created_at) VALUES(?,?,?,?,?)',
+      )
+      .run(payload.diagnosticId, payload.jobId, detail, payload.sha256, payload.createdAt);
+    return payload;
+  }
+
+  private assertOpeningDiagnosticSource(
+    event: Extract<DiagnosticEvent, { eventType: 'OpeningDiagnosticRecorded' }>,
+  ) {
+    assertRelationalOpeningSource(this.sqlite, event);
+    const stored = readRelationalCommit(this.sqlite, event.commitSeq),
+      jobs = stored.events.filter(
+        (e) =>
+          e.eventType === 'OpeningJobRecorded' &&
+          e.payload.diagnosticId === event.payload.diagnosticId,
+      ),
+      diagnostics = stored.events.filter(
+        (e) =>
+          e.eventType === 'OpeningDiagnosticRecorded' && e.payload.jobId === event.payload.jobId,
+      ),
+      job = jobs[0];
+    if (
+      stored.command.actorKind !== 'system' ||
+      stored.command.actorId !== null ||
+      jobs.length !== 1 ||
+      diagnostics.length !== 1 ||
+      job.eventType !== 'OpeningJobRecorded' ||
+      job.payload.jobId !== event.payload.jobId ||
+      job.memberId !== event.memberId ||
+      job.accountId !== event.accountId ||
+      job.streamId !== event.streamId ||
+      job.eventIndex >= event.eventIndex ||
+      job.payload.origin.sourceId !== event.payload.origin.sourceId
+    ) {
+      diagnosticUnavailable();
+    }
+    assertRelationalOpeningSource(this.sqlite, job);
+  }
+
+  private diagnosticContent(event: DiagnosticEvent): string {
+    const p = event.payload,
+      row = this.sqlite
+        .prepare<
+          [string, string],
+          {
+            sha256: string;
+            createdAt: number | null;
+            byteLength: number;
+          }
+        >(
+          `SELECT sha256,created_at AS createdAt,length(CAST(detail AS BLOB)) AS byteLength
+        FROM generation_diagnostics WHERE id=? AND job_id=?`,
+        )
+        .get(p.diagnosticId, p.jobId);
+    if (
+      !row ||
+      !Number.isSafeInteger(row.byteLength) ||
+      row.byteLength < 0 ||
+      row.byteLength > 16000 ||
+      row.sha256 !== p.sha256 ||
+      row.createdAt !== p.createdAt ||
+      row.byteLength !== p.byteLength ||
+      (event.eventType === 'DiagnosticRecorded' &&
+        (row.byteLength < 1 || row.byteLength > 16000 || p.createdAt !== event.occurredAt))
+    ) {
+      diagnosticUnavailable();
+    }
+    const body = this.sqlite
+      .prepare<[string, string], { detail: string }>(
+        'SELECT detail FROM generation_diagnostics WHERE id=? AND job_id=?',
+      )
+      .get(p.diagnosticId, p.jobId);
+    if (
+      !body ||
+      Buffer.byteLength(body.detail) !== p.byteLength ||
+      (event.eventType === 'DiagnosticRecorded' && body.detail.length > 4000) ||
+      createHash('sha256').update(body.detail).digest('hex') !== p.sha256
+    ) {
+      diagnosticUnavailable();
+    }
+    return body.detail;
+  }
+
   // 管理详情/离线恢复共用；先按小元数据限制正文，再核原事实及实际 UTF-8 字节。
   readGenerationDiagnostic(diagnosticId: string, jobId: string): string {
     return this.sqlite.transaction(() => {
@@ -641,7 +751,7 @@ export class RelationalInputStore {
             requestId: string;
             memberId: string;
             sha256: string;
-            createdAt: number;
+            createdAt: number | null;
             byteLength: number;
           }
         >(
@@ -651,13 +761,13 @@ export class RelationalInputStore {
         WHERE d.id=? AND d.job_id=?`,
         )
         .get(diagnosticId, jobId);
-      if (!row || row.byteLength < 1 || row.byteLength > 16000) {
+      if (!row) {
         diagnosticUnavailable();
       }
       const matches = this.sqlite
         .prepare<[string, string], { eventId: string; seq: string }>(
           `SELECT event_id AS eventId,CAST(commit_seq AS TEXT) AS seq FROM domain_events
-        WHERE stream_id=? AND event_type='DiagnosticRecorded'
+        WHERE stream_id=? AND event_type IN ('DiagnosticRecorded','OpeningDiagnosticRecorded')
           AND json_extract(payload,'$.diagnosticId')=? LIMIT 2`,
         )
         .all(`request:${row.requestId}`, diagnosticId);
@@ -667,29 +777,23 @@ export class RelationalInputStore {
       const event = readRelationalCommit(this.sqlite, matches[0].seq).events.find(
         (e) => e.eventId === matches[0].eventId,
       );
-      if (event?.eventType !== 'DiagnosticRecorded') {
-        diagnosticUnavailable();
-      }
-      const p = event.payload,
-        body = this.sqlite
-          .prepare<[string, string], { detail: string }>(
-            'SELECT detail FROM generation_diagnostics WHERE id=? AND job_id=?',
-          )
-          .get(diagnosticId, jobId);
       if (
-        event.memberId !== row.memberId ||
-        p.jobId !== jobId ||
-        p.sha256 !== row.sha256 ||
-        p.createdAt !== row.createdAt ||
-        p.createdAt !== event.occurredAt ||
-        p.byteLength !== row.byteLength ||
-        !body ||
-        body.detail.length > 4000 ||
-        createHash('sha256').update(body.detail).digest('hex') !== p.sha256
+        event?.eventType !== 'DiagnosticRecorded' &&
+        event?.eventType !== 'OpeningDiagnosticRecorded'
       ) {
         diagnosticUnavailable();
       }
-      return body.detail;
+      if (
+        event.memberId !== row.memberId ||
+        (event.accountId !== null && event.eventType === 'OpeningDiagnosticRecorded') ||
+        event.payload.jobId !== jobId
+      ) {
+        diagnosticUnavailable();
+      }
+      if (event.eventType === 'OpeningDiagnosticRecorded') {
+        this.assertOpeningDiagnosticSource(event);
+      }
+      return this.diagnosticContent(event);
     })();
   }
 
@@ -712,17 +816,23 @@ export class RelationalInputStore {
     }
     const diagnostics = new Map(
       stored.events
-        .filter((e) => e.eventType === 'DiagnosticRecorded')
-        .map((event) => [
-          event.eventId,
-          {
-            event,
-            detail: source.readGenerationDiagnostic(
+        .filter(
+          (e) =>
+            e.eventType === 'DiagnosticRecorded' || e.eventType === 'OpeningDiagnosticRecorded',
+        )
+        .map((event) => {
+          let detail: string;
+          if (event.eventType === 'OpeningDiagnosticRecorded') {
+            source.assertOpeningDiagnosticSource(event);
+            detail = source.diagnosticContent(event);
+          } else {
+            detail = source.readGenerationDiagnostic(
               event.payload.diagnosticId,
               event.payload.jobId,
-            ),
-          },
-        ]),
+            );
+          }
+          return [event.eventId, { event, detail }] as const;
+        }),
     );
     return (event: RelationalEvent) => {
       if (!this.sqlite.inTransaction) {
@@ -731,7 +841,8 @@ export class RelationalInputStore {
       const original = diagnostics.get(event.eventId);
       if (
         !original ||
-        event.eventType !== 'DiagnosticRecorded' ||
+        (event.eventType !== 'DiagnosticRecorded' &&
+          event.eventType !== 'OpeningDiagnosticRecorded') ||
         canonicalJson(event) !== canonicalJson(original.event)
       ) {
         diagnosticUnavailable();

@@ -27,6 +27,7 @@ test('OpeningJob原始顺序和displayCost只接受有限原number或明确NULL'
   const payload = {
     jobId: 'j',
     requestId: 'r',
+    diagnosticId: null,
     sourceOrder: null,
     displayCost: null,
     createdAt: null,
@@ -101,6 +102,7 @@ test('job与OpeningJob的公共seed基型保留有限Number/NULL，Native范围�
         ? base
         : {
             ...base,
+            diagnosticId: null,
             sourceOrder: null,
             displayCost: null,
             createdAt: null,

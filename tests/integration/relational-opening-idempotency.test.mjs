@@ -191,6 +191,7 @@ function opened(f, id, count = 2, requestChanges = {}, jobChanges = {}) {
       streamId: `request:opened-${id}`,
       memberId: 'm1',
       payload: {
+        diagnosticId: null,
         sourceOrder: null,
         displayCost: null,
         jobId: `opened-${id}-${i}`,

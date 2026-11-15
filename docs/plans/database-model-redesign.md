@@ -386,6 +386,8 @@ B 承诺从新开账点重放；更早逐时点状态由原归档审计。新服
 
 ### 6.4 路线选择与旧键
 
+2026-11-15，维护者依据[盘点和决策报告](../history/database-model-migration-decision.md)确认 B：薄在线历史与独立完整归档；13 个首次意图无法证明的原键返回 410 且永不重执行，只保留切点仍有效的当前代次会话，原图暂不可读统一 503 及原安全文案。实现只沿 B 开账，生产迁移、删除及切换仍需具体授权；下述 A/B 评估过程保留为选择依据。
+
 先用代表性副本评估 A 的可证明性、运行时间、峰值内存/磁盘和未能转换的类别。若历史只能依赖缺失信息、或者成本和风险不合适，可以选择 B；不为维持 A 引入永久旧解释器。选择报告附保留清单、接口变化、归档恢复演练和截止点，由维护者据此确定切换方案。
 
 两条路线都不能只复制旧 fingerprint 就宣称旧 POST 完全可重放。可以证明的新旧意图转换继续精确比较；无法证明时保留旧键禁止再次执行，并明确返回原查询入口和冲突/不可重放语义。已有结果确实缺失仍返回既有不可用语义。错误码与接口变化在实施契约评审中确定，本草案不擅自更改生产返回值。
@@ -2817,6 +2819,18 @@ Direct 原夹具在真实上游开始后还经 5ms 轮询和 SQL 才 abort；应
 在 9.116 的 GET 超时原件保持不变的前提下，另一次获准的根 Depth1 PROPFIND 实际 207、完整 EOF：7,241,232 B XML，7881 项含 self 与 7880 个直接文件，声明 stored 合计 12,346,320,402 B。原 cut16509 的 **6766 个明确 Pik locator 全部唯一匹配，未见 0**，当前声明 stored 10,648,766,516 B；原记录没有压缩 stored 长度，不能拿原 decoded logical 长度比较或宣称内容 SHA 已验。另 2646 个无 Pik 承诺对象中，1113 个当前同名候选不补旧承诺，1533 个未见不当作丢失；230 个 Local-only 不扩查。配额字段未返回，quota/free 仍未知。
 
 该动作没有 GET、R2、写入或删除；报告 `H:/TEMP/novelai-pik-depth1-inventory-20261115/ACTUAL-HANDOFF.md`（SHA `3f5e5436…23c`），纯文件配对 `H:/TEMP/novelai-pik-depth1-followup-20261115/REPORT.md`（SHA `37edfd04…5a26`）。静态核对还发现旧两个 GET 探针额外注入 Range，而原 owner 没有；两次均未取得响应头，不能据此认定超时原因。根清单不是原图实读、原始配额、原子盘点或全外存容量性能验收，源释放继续禁止。
+
+### 9.121 维护者确认 B 与后继实际验证
+
+维护者已明确确认第 6.4 节四项建议。`9266c989` 仅将 Native/R2 两处旧 500 期望改为已批准的 503 并更新 API 契约，产品无修改；当前基线已有 `be871c0` 的安全 mapper，原 Native 后继中文正文、17 次调用、费用、重启、回放和期限断言全部保留。非作者静态复审无确认问题，报告 `H:/TEMP/novelai-artifact-unavailable-http-independent-9266-20261115/STATIC-REVIEW.md`（SHA `d07e610d…4c45`）。Root 已合入，下一轮完整 CI 单列，不从旧红扣减推绿。
+
+此前固定 `6466c9b7` 的[真实 CI43726119811](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43726119811) 实际 merge `c78d5ec1` 与 head tree 相同，完整后端 **2917 = 2911 pass / 3 fail / 0 cancelled / 3 skip**、292.196 秒；Direct 原 100ms 组无私有 counter 实际 3/3。三 fail 仅剩上述 Native/R2 旧状态差异及 Native 父汇总。Web 默认 16/16、三镜像、镜像 executor4/4、解包 normal6/6 和上传完成；backend 后续 legacy 步骤仍跳过，offline 是依赖汇总失败。新 artifact 只保存上传元数据，未另行下载冒充已验；安全结果见 `H:/TEMP/novelai-pr72-ci-6466c9b-20261115/RESULT.md`（SHA `2e4e2b95…b8c7`）。
+
+实际消费先前官方 1293 发行物的后继仅修验证 loader 的原临时 guard 识别和日志持久化；原七 harness/payload 不变。官方 executor **4/4**、Web **15/15**、92.453 秒，均零失败/取消/跳过，Linux SIGTERM 实际到场，原13场景/449断言/期限保持。实际 Node 全从 /release，零 builder 加载；全部5008文件、模式及链接前后相同，四容器和控制进程已退出。报告 `H:/TEMP/novelai-pr72-official-runtime-v2-1293-20261115/ACTUAL-RESULT.md`（SHA `3c533796…1180`），首 loader 红保留。
+
+独立 Linux 原 legacy-tools 整文件实际 Node exit0、**29/29**、172.924 秒；外壳末额外 git-clean 资格 exit1 原样保留，原 status 路径未保存，不能追认整组退出0。tracked618字节/native前后相同，容器已关闭，报告 `H:/TEMP/novelai-pr72-legacy-step8-environment-20261115/run-once/REPORT.md`（SHA `37754fe6…5365`）；不为外壳重复长测试，最终原 CI gate 另验。
+
+同一选定 Pik 样本的新无 Range GET 实际11.703秒、fetch/socket/TLS各1、guard拒绝0，但未取得headers/body，`OWNER_READ_REJECTED`，原图未验证；这次没有SDK/内外deadline abort事件，不能称30秒timeout或归因Range。报告 `H:/TEMP/novelai-pik-unranged-get-20261115/ACTUAL-HANDOFF.md`（SHA `cb40596f…10a4ff`），旧记录不改，外存整体仍未验收。
 
 ## 10. 事实依据与修订
 

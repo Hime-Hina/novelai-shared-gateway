@@ -83,7 +83,11 @@ export class RelationalCommitReplayer {
       assertSupported(stored.events);
       this.quotas.assertFundingReceipt(result);
       const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
-      const hasDiagnostic = stored.events.some((event) => event.eventType === 'DiagnosticRecorded');
+      const hasDiagnostic = stored.events.some(
+        (event) =>
+          event.eventType === 'DiagnosticRecorded' ||
+          event.eventType === 'OpeningDiagnosticRecorded',
+      );
       const hasConfiguration = stored.events.some((event) =>
         relationalConfigurationFacts.has(event.eventType),
       );
@@ -109,7 +113,10 @@ export class RelationalCommitReplayer {
           }
         }
         for (const event of stored.events) {
-          if (event.eventType === 'DiagnosticRecorded') {
+          if (
+            event.eventType === 'DiagnosticRecorded' ||
+            event.eventType === 'OpeningDiagnosticRecorded'
+          ) {
             applyDiagnostic!(event);
           }
         }
@@ -139,7 +146,10 @@ export class RelationalCommitReplayer {
         } else if (relationalInputFacts.has(event.eventType)) {
           applyInput!(event);
         } else if (relationalGenerationFacts.has(event.eventType)) {
-          if (event.eventType === 'DiagnosticRecorded') {
+          if (
+            event.eventType === 'DiagnosticRecorded' ||
+            event.eventType === 'OpeningDiagnosticRecorded'
+          ) {
             applyDiagnostic!(event);
           }
           applyGeneration(event);
