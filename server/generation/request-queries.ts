@@ -24,6 +24,8 @@ export interface GenerationRequestState {
     completedAt: string | null;
     error: string | null;
     errorCode?: string | null;
+    // 取消事实可已知而时点未知；独立旧格式 caller 仍只提供 cancelledAt。
+    cancelled?: boolean;
     cancelledAt: string | null;
     lateResultAvailable: boolean | number | null;
     imageId: string | null;
@@ -211,7 +213,7 @@ export function publicGenerationRequest(
       classifiedGenerationFailureMessage(job.error) ||
       (job.error ? '生成失败，请查看任务状态。' : ''),
     errorCode: 'errorCode' in job ? job.errorCode || null : null,
-    cancelled: Boolean(job.cancelledAt),
+    cancelled: job.cancelled ?? Boolean(job.cancelledAt),
     lateResultAvailable: Boolean(job.lateResultAvailable),
     charge: job.fairCharge
       ? {
