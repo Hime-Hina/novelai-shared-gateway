@@ -52,12 +52,24 @@ import {
   completeGenerationCommand,
 } from '../../server/generation/execution.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
-import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+const { RelationalCommitReplayer } = await import(
+  entry
+    ? new URL('../server/storage/relational-replay.js', pathToFileURL(entry)).href
+    : new URL('../../server/storage/relational-replay.ts', import.meta.url).href
+);
 import { RelationalConfigurationStore } from '../../server/storage/relational-configuration-store.ts';
-import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+const { RelationalInputStore } = await import(
+  entry
+    ? new URL('../server/storage/relational-input-store.js', pathToFileURL(entry)).href
+    : new URL('../../server/storage/relational-input-store.ts', import.meta.url).href
+);
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
-import { assertLegacyDatabaseProjection } from '../../scripts/reconcile-legacy-database.mjs';
+const { assertLegacyDatabaseProjection } = await import(
+  entry
+    ? new URL('./reconcile-legacy-database.mjs', pathToFileURL(entry)).href
+    : new URL('../../scripts/reconcile-legacy-database.mjs', import.meta.url).href
+);
 import { databaseState } from '../helpers/relational-generation.mjs';
 import { readStreamProjection } from '../../server/events/event-store.ts';
 import { relationalPrivateStateEmpty } from '../../server/storage/relational-private-restore.ts';
