@@ -173,7 +173,7 @@ type Ticket = {
 };
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
 const unboundQuotaStatus = 'pending_opus';
-function initialAccountQuota(accountId: string): AccountQuota {
+export function initialAccountQuota(accountId: string): AccountQuota {
   return {
     accountId,
     status: 'inactive_opus',
