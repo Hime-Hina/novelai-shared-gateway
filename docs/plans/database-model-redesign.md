@@ -2466,6 +2466,18 @@ PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/pl
 
 根从 `04b172e` 整合整个282 lineage，实际共同基线为 `a87f9279`，三份 CLI/helper/deployment 技术文件逐字等于独审固定源，API 为真实并集，原9.87–9.93.1及回滚验证规范保持。根只复用同字节正式包与独审证据，不冒称另跑第三次245秒整套；产品范围不扩到在线历史兼容、新格式 converter 或生产迁移。保留证明与根静态检查结果见 `H:/TEMP/novelai-legacy-native-root-preservation.json`；下一步仍是当前格式的历史来源精度、完整 Native/故障恢复以及同候选最终发布验收。
 
+### 9.97 R2与历史图片 HTTP 来源夹具
+
+原 `r2-history-http.test.mjs` 实际只有一个 top-level test，20 秒总期限、15 秒启动等待和每请求3秒期限；七条记录是 Local、R2、PikPak、old_snapshot、两条坏内容和一条缺图。原断言覆盖四类成功图的 view/签名 URL/Raw Key/Cookie 原字节与归属、无凭据/另一成员/篡签拒绝、秘密和文件路径不泄漏、坏内容503与缺图500；没有执行旧快照恢复、原POST幂等、重启、收费或公共重放。old_snapshot 行没有已保存的 PikPak 来源，原200来自旧读取器按当前PikPak配置盲查同SHA，不能把这个标签当成历史来源已证明。
+
+本片基于固定 `5e62968`，接入含完整909 lineage的固定 `f0e9096`，只迁移该测试和本契约说明。复用 childFixture 的真实 bootstrap/四成员保护凭据，再完整公回放到新building、按原同cut恢复私有快照；显式保存独立合成manifest的原身份/操作/未知数量/零时点/目标namespace/原副本location与上传确认，再走唯一 installer 校验真实Local原字节。合成manifest的来源路由只服务反例，不代表已批准A/B路线，也不是对原七行或真实封存旧库的等价转换。模型/输入/context/seed/费用未知不补值，child ID保留，公共回放不恢复秘密。
+
+HTTP 使用实际sole、启动后密码登录及同一稳定成员Key、管理员凭据和真实Replica读取owner。R2/PikPak仅替换HTTP transport；不调用真实云端、不上传或删除源。坏内容与缺图只在合法Ready之后对本测试临时字节注入；新增有明确PikPak来源的Opening正例，以及没有声明PikPak来源但当前同SHA对象存在的503反例，防止盲找。原500断言继续保留在全部其它内容/授权/业务零写和关闭、公回放之后，待实际差异证据与维护者裁定，不能仅因现reader返回503就声明兼容。
+
+固定 `f0e9096` 上唯一首轮实际执行原20秒单文件，结果 **0通过、1失败、零跳过，TAP4.401秒**（case3.929秒，命令wall4.483秒）。失败精确为末尾保留的原缺图断言 **503≠500**，本片仍为 **NOTPASS**；此前diagnostic已实际到场：唯一Ready核8份Local原字节、四类来源/16次HTTP原图与全部ACL/签名/秘密检查、两种坏内容503、无声明PikPak同SHA拒绝、金融/commit/任务零写、正常stop及完整公共回放/私有为空。前置guard记录localhost fetch46/socket2，超自检的外联尝试0/0；child所有真实outbound socket前置拒绝且未触发，其云端HTTP均为mock。原20秒、15秒启动、3秒fetch及500断言未改，未自动重试，也未将此单项失败改称整体通过。
+
+首轮源及日志完整保留在 `H:/TEMP/novelai-r2-history-http-20261115/first-run-test-source.mjs`、`first-source.log/json`；测试前后SHA256均为 `5169e62bb37b72fe92136390397aea162c69c53664261c6a75c26df2d25fc7a8`，log SHA256为 `798b31e04905499915b9838f3c9239a7255888a7219f9e3d68fd1406eea892f9`。15个相连权威与35个历史SQL/snapshot/journal逐Git/raw相同，见authority-binding.json；backend类型、architecture、默认/可信88 migration、格式/语法/diff通过。此为作者局部证据；503/500兼容裁定和独立审查仍待后续。未改产品、schema、共享helper、CLI、CI或架构守卫，未做full/build/compiled/Node24、真实旧源转换、实云或生产验收。
+
 ### 9.98 终态 Opening 的未知元数据与原 parent 证据
 
 原公开合成历史的 child/image 行没有 parent、操作、受理/完成/发布时间和样本位置；job.createdAt 或 image.createdAt 不能补成这些角色。范围依据为固定 `5e629689` 的 result-recovery/r2-history 原件与 `H:/TEMP/novelai-opening-precision-scope-998/SCOPE.md`，不代表真实旧源已转换或迁移路线已验收。
