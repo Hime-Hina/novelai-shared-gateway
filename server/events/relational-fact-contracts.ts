@@ -693,6 +693,9 @@ export const relationalPayloadParsers = {
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
+    // 原来源的排序/显示值，不是 queueSeq 或收费资源金额。
+    sourceOrder: nullable(number),
+    displayCost: nullable(number),
     createdAt: nullable(integer),
     sampleIndex: nullable(integer),
     actualSeed: nullable(number),

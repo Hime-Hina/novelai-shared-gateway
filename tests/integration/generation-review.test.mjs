@@ -821,6 +821,8 @@ test(
               'OpeningJobRecorded',
               `request:${requestId}`,
               {
+                sourceOrder: null,
+                displayCost: null,
                 jobId: job.id,
                 requestId,
                 createdAt: stamp(job.createdAt),

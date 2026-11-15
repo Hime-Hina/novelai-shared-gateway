@@ -103,6 +103,8 @@ function open(f, options = {}) {
         buffer: image,
       }),
       job = event('OpeningJobRecorded', {
+        sourceOrder: null,
+        displayCost: null,
         jobId: 'old-job',
         requestId: 'old-request',
         createdAt: null,
