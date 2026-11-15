@@ -522,6 +522,64 @@ function partialInput(request) {
   return Object.keys(body).length ? body : null;
 }
 
+function originalDiagnostic(source, job, originalRequestId) {
+  const state = readStreamProjection(
+      source,
+      `request:${originalRequestId || `legacy-${job.id}`}`,
+    )?.projection,
+    ids = new Set(
+      [job.diagnosticRef, state?.jobs?.[job.id]?.diagnosticRef].filter(
+        (value) => value !== undefined && value !== null,
+      ),
+    );
+  if (ids.size > 1) {
+    reject();
+  }
+  if (!ids.size) {
+    return null;
+  }
+  const [id] = ids,
+    row = source
+      .prepare('SELECT * FROM generation_diagnostics WHERE diagnostic_id=? AND job_id=?')
+      .get(id, job.id);
+  if (
+    !row ||
+    typeof row.detail !== 'string' ||
+    hash(Buffer.from(row.detail)) !== row.detail_sha256
+  ) {
+    reject();
+  }
+  let createdAt = null;
+  if (row.created_at !== null) {
+    if (typeof row.created_at !== 'string' || !row.created_at) {
+      reject();
+    }
+    if (/^(?:0|[1-9][0-9]*)$/.test(row.created_at)) {
+      const exact = BigInt(row.created_at);
+      if (exact > BigInt(Number.MAX_SAFE_INTEGER)) {
+        reject();
+      }
+      createdAt = Number(exact);
+    } else {
+      createdAt = Date.parse(row.created_at);
+      if (
+        !Number.isSafeInteger(createdAt) ||
+        createdAt < 0 ||
+        new Date(createdAt).toISOString() !== row.created_at
+      ) {
+        reject();
+      }
+    }
+  }
+  return {
+    diagnosticId: id,
+    jobId: job.id,
+    sha256: row.detail_sha256,
+    detail: row.detail,
+    createdAt,
+  };
+}
+
 function sourceRequestGroups(source, references) {
   const groups = new Map();
   for (const row of source
@@ -616,7 +674,12 @@ function planLegacyRequests(source, references, findings) {
         const row = source
           .prepare('SELECT id,data,request_id,order_value FROM jobs WHERE id=?')
           .get(id);
-        return { row, value: JSON.parse(row.data) };
+        const value = JSON.parse(row.data);
+        return {
+          row,
+          value,
+          diagnostic: originalDiagnostic(source, value, group.originalRequestId),
+        };
       }),
       first = jobs[0],
       originalRow = group.originalRequestId
@@ -772,7 +835,7 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
         },
       },
     );
-    for (const { row, value: job } of jobs) {
+    for (const { row, value: job, diagnostic } of jobs) {
       const seed =
         typeof job.request?.seed === 'number'
           ? job.request.seed
@@ -811,6 +874,7 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
               : null,
           cacheKey: typeof job.cacheKey === 'string' && job.cacheKey ? job.cacheKey : null,
           completedAt: time(job.completedAt),
+          diagnosticId: diagnostic?.diagnosticId ?? null,
           errorCode: typeof job.errorCode === 'string' && job.errorCode ? job.errorCode : null,
           errorStatus:
             Number.isSafeInteger(job.errorStatus) && job.errorStatus > 0 ? job.errorStatus : null,
@@ -827,6 +891,21 @@ function appendLegacyRequest(target, references, at, plan, financial, artifacts)
       });
     }
 
+    for (const { diagnostic } of jobs) {
+      if (diagnostic) {
+        const payload = inputs.stageOpeningDiagnostic({
+          ...diagnostic,
+          origin: references.origin(diagnostic.diagnosticId),
+        });
+        events.push({
+          eventId: references.eventId('OpeningDiagnosticRecorded', diagnostic.diagnosticId),
+          eventType: 'OpeningDiagnosticRecorded',
+          streamId: `request:${group.requestId}`,
+          memberId,
+          payload,
+        });
+      }
+    }
     const ids = new Set(jobs.map(({ row }) => row.id));
     for (const fact of financial.facts) {
       if (fact.eventType === 'OpeningAttemptRecorded' && ids.has(fact.payload.jobId)) {

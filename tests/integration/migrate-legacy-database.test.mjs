@@ -38,7 +38,14 @@ import { relationalPrivateStateEmpty } from '../../server/storage/relational-pri
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex'),
   sourceCommit = '3caba3dfa0b5d9f582acabfc02e36e7db4af038f';
 
-async function fixture(t, status = 'failed', parent = null, artifact = null, memberPatch = {}) {
+async function fixture(
+  t,
+  status = 'failed',
+  parent = null,
+  artifact = null,
+  memberPatch = {},
+  jobPatch = {},
+) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
     store = new JsonStore(path.join(directory, 'old'));
   t.after(async () => {
@@ -69,6 +76,7 @@ async function fixture(t, status = 'failed', parent = null, artifact = null, mem
         source: 'novelai-native',
         createdAt: 0,
         request: { model: 'nai-diffusion-4-5-full', prompt: '', scale: 0 },
+        ...jobPatch,
       },
     ],
   });
@@ -174,7 +182,8 @@ async function fixture(t, status = 'failed', parent = null, artifact = null, mem
   if (!parent?.running) {
     await store.enableEventAuthority();
   }
-  const source = path.join(directory, 'source.sqlite');
+  const source = path.join(directory, 'source.sqlite'),
+    captureStartedAt = Date.now();
   await store.sqlite.backup(source);
   const db = new Database(source);
   db.pragma('journal_mode=DELETE');
@@ -302,6 +311,7 @@ async function fixture(t, status = 'failed', parent = null, artifact = null, mem
     sourceBytes,
     originalReceipt,
     acceptedAt,
+    captureStartedAt,
     options: {
       source,
       sourceSha256,
@@ -565,7 +575,7 @@ async function selectedCutConfiguration(f, localOriginal = null) {
     await writeFile(file, bytes);
     proofs[name] = { file, sha256: hash(bytes) };
   }
-  const captured = Date.now(),
+  const captured = f.captureStartedAt,
     value = {
       format: 'novelai-legacy-cut-config-v1',
       sourceSha256: f.options.sourceSha256,
@@ -1036,4 +1046,54 @@ test('真实active alias按其原外层身份/独立首次context导入，不借
     }
     assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
   }
+});
+
+test('原Opening诊断按真实pointer/原UTF8/hash/createdAt0冷读与完整提交回放，不重写失败或复活auth', async (t) => {
+  const detail = 'original diagnostic\n尾部保留空白 ',
+    f = await fixture(
+      t,
+      'failed',
+      null,
+      null,
+      {},
+      { errorDetail: detail, completedAt: '1970-01-01T00:00:00.000Z' },
+    ),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite')),
+    rebuilt = new Database(':memory:');
+  try {
+    const row = target
+        .prepare('SELECT id,job_id,sha256,created_at FROM generation_diagnostics')
+        .get(),
+      owner = new RelationalInputStore(target);
+    assert.equal(row.job_id, 'job');
+    assert.equal(row.created_at, 0);
+    assert.equal(row.sha256, hash(Buffer.from(detail)));
+    assert.equal(owner.readGenerationDiagnostic(row.id, 'job'), detail);
+    assert.equal(
+      target
+        .prepare(
+          "SELECT count(*) AS n FROM domain_events WHERE event_type IN ('JobFailed','DiagnosticRecorded','GenerationRefunded')",
+        )
+        .get().n,
+      0,
+    );
+    initializeRelationalStorage(
+      rebuilt,
+      target.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    const replayer = new RelationalCommitReplayer(rebuilt);
+    for (const { seq } of target
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      rebuilt.transaction(() => replayer.replayCommit(readRelationalCommit(target, seq), owner))();
+    }
+    assert.equal(new RelationalInputStore(rebuilt).readGenerationDiagnostic(row.id, 'job'), detail);
+    assert.equal(relationalPrivateStateEmpty(rebuilt), true);
+    assert.equal(result.readyInstalled, false);
+  } finally {
+    target.close();
+    rebuilt.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
 });
