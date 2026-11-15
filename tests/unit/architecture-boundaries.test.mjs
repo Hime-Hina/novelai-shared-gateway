@@ -2,6 +2,52 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkArchitecture, checkSource } from '../../scripts/check-architecture.mjs';
 
+test('online runtime rejects offline migration imports and re-exports', () => {
+  for (const [filename, prefix] of [
+    ['server/index.ts', '../scripts/'],
+    ['server/generation/request-queries.ts', '../../scripts/'],
+    ['executor/gateway-handler.ts', '../scripts/'],
+    ['web/server/api/example.ts', '../../../scripts/'],
+  ]) {
+    for (const [module, name] of [
+      ['database', 'migrateLegacyDatabase'],
+      ['finance', 'mapLegacyFinance'],
+      ['private', 'migrateLegacyPrivate'],
+      ['artifacts', 'mapLegacyArtifacts'],
+    ]) {
+      const specifier = `${prefix}migrate-legacy-${module}.mjs`;
+      for (const source of [
+        `import { ${name} as run } from '${specifier}';`,
+        `import * as tool from '${specifier}';`,
+        `import '${specifier}';`,
+        `export { ${name} as run } from '${specifier}';`,
+        `export * from '${specifier}';`,
+        `const tool = await import('${specifier}');`,
+        `const tool = require('${specifier}');`,
+      ]) {
+        assert.ok(
+          checkSource(filename, source).some((error) => error.includes('offline migration')),
+          `${filename}: ${source}`,
+        );
+      }
+    }
+  }
+  assert.deepEqual(
+    checkSource(
+      'scripts/migrate-legacy-database.mjs',
+      "import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';",
+    ),
+    [],
+  );
+  for (const name of ['migrateLegacyDatabase', 'migrateLegacyPrivate']) {
+    assert.ok(
+      checkSource('server/generation/request-queries.ts', `${name}(input);`).some((error) =>
+        error.includes('write call'),
+      ),
+    );
+  }
+});
+
 const writerFactories = [
   ['createRelationalAccountQuotaRefresh', '../quota/relational-account-refresh.ts'],
   ['createRelationalMemberGenerationHttp', '../generation/relational-member-http.ts'],
