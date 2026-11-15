@@ -61,6 +61,16 @@ jobs:
           fi
           test "$(git rev-parse --verify "$legacy_source^{commit}")" = "$legacy_source"
           node --test tests/deployment/legacy-tools.test.mjs
+      - name: Verify independent compiled migration tools
+        env:
+          MIGRATION_TOOLS_TEST_OUTPUT: ${{ runner.temp }}/verified-migration-tools
+        run: node --test tests/deployment/migration-tools.test.mjs
+      - name: Retain verified offline migration tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-tools-${{ github.sha }}-linux-x64
+          path: ${{ runner.temp }}/verified-migration-tools/*
+          if-no-files-found: error
 
   web-and-package:
     needs: classify-changes
