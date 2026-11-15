@@ -2498,3 +2498,15 @@ OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，
 事实解析与唯一 DDL 保存真实未知；InputStore 维护原 parent/定义/seed 来源；GenerationStore 在活动和执行入口共用已知执行条件。新增 `relational-opening-precision.test.mjs` 直接从独立原行形状断言缺失字段，覆盖 NULL/0 投影、parentless 授权隔离、公共原序回放无网络或私有认证、第二 owner SQL 故障的外层捕获回滚/健康重试/重复，以及实际旧 DDL 正确 hash 零写拒绝。五个既有合成 Opening fixture 仅显式声明其本来已知的原 parent，不给产品 parser 默认填值。静态技术点和实际运行证据分别记录；这些测试当前未运行，未标 PASS。
 
 静态读组复核指出首检查点 `603df1c` 的 request 投影核对仍经旧 registeredFact 扫描整个公共 request stream。后继改为复用唯一原接受角色 helper，保留原字段 compare，新增禁止整 stream 展开的薄读断言；不复制 source 规则或读取正文。此为同一未验收片的静态修正，不把旧检查点称为薄读验收通过。
+
+#### 9.98.3 历史查询、统计与公开 DTO
+
+RequestStore 复用 InputStore 的唯一原 parent 证明；非持久 origin view 的列表 JOIN 同时绑定 `request:<当前ID>` 和 requestId，以既有 stream 索引限定来源，不逐页展开正文、附件或 child。原 parent 缺失的 child 公开 requestId 为 NULL，原 FK 容器不能出现在成员批次列表或取得 detail/cancel/input/live replay 权限；原单 child 内容权限仍由原 owner 核对。已知 parent 的分页先按真实受理时间和 ID 倒序，再进入 NULL 时间的稳定 ID 阶段，不用导入日、0 或数组位置补未知。
+
+公开批次保留 source、operation、createdAt、sampleIndex、model 与终态时间的原 NULL；已知时间和位置 0 保留。正常未完成任务的 completedAt 仍为空串，终态未知则为 NULL。model 原来经空串缺省时，本片明确改为 NULL DTO/type；当前真实辅助操作 producer 有规范化模型的，仍逐字返回该真实值，纯 formatter 的 NULL 对照不冒充 producer 产生了缺失模型。Report 原统计 owner 不重写：未知 operation 不计 generate，无 charge 不当作免费或金融 0。Web 只将原批次位置文案改为 NULL 显示“原位置未知”，已知 0 仍显示“第 1 张”，未新增 DOM、样式或状态。
+
+两个新历史检查先保存显式原行形状和来源/映射 SHA，再经受保护 InputStore 与完整 common replay 构造事实；断言原字段缺失、真正原 parent、已知 0、未知操作/费用、NULL 分页及 query_only 全表/total_changes 零写。原历史 helper 的手写四表投影改用同一 common owner，不 SQL 改 ready/epoch/cooldown。这是代表性合成原行验证，不是原 503 条旧源的迁移、真实图片或 installer 验收。
+
+联合技术点 `190ee618` 的 Core 与读组定向由 Core 作者实际运行 **11/11、零跳过，2.226 秒**；其中读组三项与随后 whole 范围重叠，不累加为独立审查。读组随后同源串行运行三个完整文件：member-history **8/8**、reports **18/19**、member-read 实际 localhost HTTP **21/21**，共 **47/48、零跳过**。唯一失败是旧 reports 断言把历史终态 updatedAt 的 NULL 期待为空串；首日志保留，后继 `a7ce00c` 仅对齐该断言并补同源 completedAt 已知 0/未知 NULL 两对照，产品逐字未改。原精确失败 case 随后实际 **1/1、零跳过，TAP 1.128 秒**，case 本体 0.301 秒；不把它称为后继全 48 项重跑。命令、源/15 个权威文件 Git/raw 前后绑定、首日志与后继控制在 `H:/TEMP/novelai-opening-reads-998-20261115/whole-three-{argv,result}.json`、`whole-*.log` 和 `terminal-focused-{argv,result}.json`。
+
+同后继 backend 类型、architecture 和默认 migration 检查通过；未跑全后端、Nuxt mount、Web 类型、编译发布物、Node24、真实云或生产，不将此前 source 部分通过称为整体验收或非作者 PASS。Modern Web Guidance 已按批准范围读取和检索，原代理失败后的离线检索无适用 guide，未改代理或套用无关规则；一处条件文本尚待最终同候选 UI 矩阵。类似新历史展示继续在原 Request/Report/formatter owner 与上述唯一 origin 能力维护，不新增影子状态或格式兼容分支。
