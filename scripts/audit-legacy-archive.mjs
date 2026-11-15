@@ -80,7 +80,8 @@ async function verifyPackage() {
   }
   if (
     (await digest(path.join(root, 'SOURCE_PACKAGE.json'))) !== manifest.sourcePackageSha256 ||
-    (await digest(path.join(root, 'SOURCE_LOCK.yaml'))) !== manifest.sourceLockSha256
+    (await digest(path.join(root, 'SOURCE_LOCK.yaml'))) !== manifest.sourceLockSha256 ||
+    !/^[a-f0-9]{64}$/.test(manifest.files['scripts/audit-legacy-archive.mjs']?.sha256)
   ) {
     fail();
   }
@@ -260,11 +261,14 @@ function assertOutputFile(output, empty = false) {
     fail();
   }
 }
-function createOutputFile(requested) {
+function createOutputFile(requested, readBack = false) {
   const filename = newOutputPath(requested),
     handle = openSync(
       filename,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+      (readBack ? constants.O_RDWR : constants.O_WRONLY) |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        (constants.O_NOFOLLOW || 0),
       0o600,
     );
   const output = { filename, handle };
@@ -664,6 +668,7 @@ try {
     ]);
     const db = new Database(source, { readonly: true, fileMustExist: true });
     const handles = [];
+    const exportProof = {};
     let report;
     let selected;
     let exportDirectory;
@@ -759,6 +764,7 @@ try {
         const result = {
           format: 'legacy-archive-audit-v1',
           sourceCommit,
+          toolSha256: manifest.files['scripts/audit-legacy-archive.mjs'].sha256,
           sourceSha256: originalHash,
           openingSha256: sha256(opening.value),
           lastCommitSeq: '0',
@@ -781,12 +787,31 @@ try {
           mkdirSync(exportDirectory, { mode: 0o700 });
           const files = Object.fromEntries(
             ['inputs', 'artifacts'].map((kind) => {
-              const output = createOutputFile(path.join(exportDirectory, kind + '.jsonl'));
+              const output = {
+                ...createOutputFile(path.join(exportDirectory, kind + '.jsonl'), true),
+                kind,
+                byteLength: 0,
+                rowCount: 0,
+                hash: createHash('sha256'),
+              };
               handles.push(output);
               return [kind, output];
             }),
           );
-          emit = (kind, value) => writeFileSync(files[kind].handle, JSON.stringify(value) + '\n');
+          emit = (kind, value) => {
+            const output = files[kind],
+              bytes = Buffer.from(JSON.stringify(value) + '\n');
+            if (
+              !Number.isSafeInteger(output.byteLength + bytes.length) ||
+              !Number.isSafeInteger(output.rowCount + 1)
+            ) {
+              fail();
+            }
+            writeFileSync(output.handle, bytes);
+            output.byteLength += bytes.length;
+            output.rowCount++;
+            output.hash.update(bytes);
+          };
         }
         const input = db.prepare('SELECT member_id,payload FROM generation_requests WHERE id=?');
         const context = db.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?');
@@ -946,6 +971,44 @@ try {
         for (const output of handles) {
           try {
             assertOutputFile(output);
+            const before = fstatSync(output.handle, { bigint: true });
+            if (before.size !== BigInt(output.byteLength)) {
+              fail();
+            }
+            const actualHash = createHash('sha256'),
+              buffer = Buffer.alloc(64 * 1024);
+            let position = 0;
+            while (position < output.byteLength) {
+              const bytes = readSync(
+                output.handle,
+                buffer,
+                0,
+                Math.min(buffer.length, output.byteLength - position),
+                position,
+              );
+              if (!bytes) {
+                fail();
+              }
+              actualHash.update(buffer.subarray(0, bytes));
+              position += bytes;
+            }
+            const after = fstatSync(output.handle, { bigint: true }),
+              actualSha256 = actualHash.digest('hex');
+            assertOutputFile(output);
+            if (
+              after.size !== before.size ||
+              after.mtimeNs !== before.mtimeNs ||
+              after.ctimeNs !== before.ctimeNs ||
+              actualSha256 !== output.hash.digest('hex')
+            ) {
+              fail();
+            }
+            exportProof[output.kind] = {
+              basename: path.basename(output.filename),
+              byteLength: position,
+              rowCount: output.rowCount,
+              sha256: actualSha256,
+            };
           } catch {
             invalidOutput = true;
           } finally {
@@ -978,6 +1041,7 @@ try {
       };
     }
     if (values.export) {
+      report.exports = exportProof;
       writeOutputFile(
         path.join(exportDirectory, 'audit.json'),
         JSON.stringify(report, null, 2) + '\n',

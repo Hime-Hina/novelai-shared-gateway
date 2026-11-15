@@ -24,6 +24,7 @@ import { spawnSync } from 'node:child_process';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import {
+  assertLegacyArchiveExports,
   verifyLegacyInlineArchive,
   verifyLegacyNativeArchive,
 } from '../helpers/legacy-inline-archive.mjs';
@@ -181,6 +182,7 @@ seal.close();
   assert.equal(report.networkCalls, 0);
   assert.equal(report.dispatches, 0);
   assert.equal(report.externalObjectBytesVerified, false);
+  await assertLegacyArchiveExports(bundle, exported, report);
   const inputs = await readFile(path.join(exported, 'inputs.jsonl'), 'utf8');
   const descriptors = await readFile(path.join(exported, 'artifacts.jsonl'), 'utf8');
   for (const text of [result.stdout, inputs, descriptors]) {
@@ -193,6 +195,115 @@ seal.close();
   assert.deepEqual(await readdir(sourceDirectory), sourceEntries);
   assert.notEqual(audit('--export=' + exported).status, 0);
   assert.deepEqual(await readFile(sourcePath), before);
+  for (const mode of ['same-size', 'late-source']) {
+    await t.test(`导出 ${mode} 在实际写入后拒绝且不发布证明`, async () => {
+      const output = path.join(directory, 'proof-refused-' + mode),
+        fault = path.join(directory, 'export-proof-' + mode + '.mjs');
+      await writeFile(
+        fault,
+        `
+import fs from 'node:fs';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { syncBuiltinESMExports } from 'node:module';
+const source = path.resolve(${JSON.stringify(sourcePath)}), requestedOutput = ${JSON.stringify(output)}, mode = ${JSON.stringify(mode)};
+const output = path.join(fs.realpathSync(path.dirname(requestedOutput)), path.basename(requestedOutput));
+const open = fs.openSync, write = fs.writeFileSync, close = fs.closeSync, stream = fs.createReadStream;
+const active = new Map();
+let outputs = 0, closed = 0, writes = 0, changed = false, sourceReads = 0;
+fs.openSync = function(filename, ...args) {
+  const handle = open.call(this, filename, ...args);
+  if (typeof filename === 'string' && path.dirname(path.resolve(filename)) === output &&
+      ['inputs.jsonl', 'artifacts.jsonl'].includes(path.basename(filename))) {
+    active.set(handle, path.basename(filename)); outputs++;
+  }
+  return handle;
+};
+fs.writeFileSync = function(handle, ...args) {
+  const result = write.call(this, handle, ...args);
+  if (active.has(handle)) {
+    writes++;
+    if (mode === 'same-size' && !changed) {
+      fs.writeSync(handle, Buffer.from('!'), 0, 1, 0);
+      changed = true;
+      console.error('EXPORT-PROOF-MUTATED');
+    }
+  }
+  return result;
+};
+fs.closeSync = function(handle) {
+  const tracked = active.has(handle), result = close.call(this, handle);
+  if (tracked) { active.delete(handle); closed++; }
+  return result;
+};
+fs.createReadStream = function(filename, ...args) {
+  if (typeof filename === 'string' && path.resolve(filename) === source) {
+    sourceReads++;
+    if (mode === 'late-source' && sourceReads === 2) {
+      if (outputs !== 2 || closed !== 2 || !writes) throw new Error('fault stage not reached');
+      console.error('EXPORT-PROOF-LATE');
+      return Readable.from([Buffer.from('synthetic late source digest fault')]);
+    }
+  }
+  return stream.call(this, filename, ...args);
+};
+syncBuiltinESMExports();
+process.on('exit', () => console.error('EXPORT-PROOF-FINAL ' + JSON.stringify({outputs, closed, writes, changed, sourceReads})));
+`,
+      );
+      const refused = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(guard).href,
+          '--import',
+          pathToFileURL(fault).href,
+          script,
+          '--source=' + sourcePath,
+          '--source-sha256=' + sha256(before),
+          '--export=' + output,
+        ],
+        {
+          cwd: directory,
+          encoding: 'utf8',
+          env: { ...process.env, NODE_PATH: '' },
+          timeout: 15000,
+          windowsHide: true,
+        },
+      );
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.equal(refused.error, undefined);
+      assert.equal(refused.stdout, '');
+      assert.match(
+        refused.stderr,
+        mode === 'same-size' ? /EXPORT-PROOF-MUTATED/ : /EXPORT-PROOF-LATE/,
+      );
+      const final = refused.stderr.match(/EXPORT-PROOF-FINAL (\{[^\n]+\})/);
+      assert.ok(final, 'actual output handle lifecycle must reach process exit');
+      const observed = JSON.parse(final[1]);
+      assert.equal(observed.outputs, 2);
+      assert.equal(observed.closed, 2);
+      assert.ok(observed.writes > 0);
+      assert.equal(observed.changed, mode === 'same-size');
+      assert.equal(observed.sourceReads, mode === 'same-size' ? 1 : 2);
+      await assert.rejects(lstat(path.join(output, 'audit.json')), { code: 'ENOENT' });
+      assert.deepEqual((await readdir(output)).sort(), ['artifacts.jsonl', 'inputs.jsonl']);
+      if (mode === 'same-size') {
+        const bytes = await readFile(path.join(output, 'inputs.jsonl'));
+        assert.equal(bytes.length, report.exports.inputs.byteLength);
+        assert.notEqual(sha256(bytes), report.exports.inputs.sha256);
+      } else {
+        for (const kind of ['inputs', 'artifacts']) {
+          assert.equal(
+            sha256(await readFile(path.join(output, kind + '.jsonl'))),
+            report.exports[kind].sha256,
+          );
+        }
+      }
+      assert.deepEqual(await readFile(sourcePath), before);
+      assert.deepEqual(await readdir(sourceDirectory), sourceEntries);
+    });
+  }
   const imageBefore = await readFile(path.join(sourceDirectory, 'images/artifact.webp'));
   const job = audit('--job=job');
   assert.equal(job.status, 0, job.stderr);
