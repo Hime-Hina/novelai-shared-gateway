@@ -63,7 +63,7 @@ export function query(fixture, sql, ...parameters) {
   }
 }
 
-export async function launchGateway(fixture, upstreamOrigin, env = {}) {
+export async function launchGateway(fixture, upstreamOrigin, env = {}, startupTimeoutMs = 15000) {
   const origin = new URL(upstreamOrigin);
   assert.equal(origin.protocol, 'http:');
   assert.equal(origin.hostname, '127.0.0.1');
@@ -125,7 +125,7 @@ export async function launchGateway(fixture, upstreamOrigin, env = {}) {
     assert.equal(state.exit.code, 0, state.output);
   };
   fixture.children.push(state);
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + startupTimeoutMs;
   while (!state.origin && !state.exit && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
