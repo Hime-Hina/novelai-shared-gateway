@@ -133,7 +133,11 @@ test('当前凭据 401/403 同笔失效并退款，abort/200 不停用；原观�
           statusCode: 503,
         });
         assert.equal(databaseState(f.db), rejected);
-        assert.throws(() => f.dispatch('next-0', NOW + 11000), /额度基线不可用/);
+        assert.throws(() => f.dispatch('next-0', NOW + 11000), {
+          statusCode: 503,
+          message: '共享 Opus 额度暂不可用：quota_sync_error',
+        });
+        assert.equal(databaseState(f.db), rejected);
       } else {
         assert.ok(f.dispatch('next-0', NOW + 11000).dispatch);
       }
