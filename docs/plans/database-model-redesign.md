@@ -240,6 +240,16 @@ erDiagram
 
 验收沿用 `owner-management`、`relational-members`、`relational-generation` 和 `relational-quota` 的真实事务入口，至少覆盖：当前 owner 撤销后重领拒绝；同键重领零查询/零写入与不同意图冲突；凭据 A→B→A 后旧 A 的成功/失败和旧尝试均无效；查询中暂停/轮换或更新观察后旧核验不能启用；只有物理占用、只有预扣以及退款但物理未结束时均拒绝轮换；SQL 故障和外层捕获后全表及私有状态不变。合法首次核验、暂停、轮换后重新核验继续通过，在线与原完整提交回放的业务状态和安全回执一致，PST 始终不进入 replay。
 
+#### 3.3.4 B 切点的金融来源与独立历史观察
+
+旧 v4 的各 account 流金融投影是对应账户的开账来源，不仅是当前共享绑定账户。钱包三池、原预扣/冷热终态、fallback 缓冲/待匹配消费/共享负债、运营余额和待到账收据不重新分配；金额复用原 12 位 amount owner，不能经 DTO number 绕行。旧归档保留已消费来源、完整人工资金收据、核销和原历史组成；缺少新在线防重或后续处理所需角色时，converter 报告阻塞并保持 building，不能因样本为 0 而丢弃类别。
+
+旧 `quota.snapshot` 金融基线与账户最后官方观察可不同时。`OpeningQuotaObservationRecorded` 只保存该次开账引用的不可变原值、原观察时间（未知 NULL）及原来源；不更新金融投影，不构成在线查询、启用、同步或派发票据。v4 没有原凭据代次/查询序号，因此该事实的 `credentialEpoch` 与 `sequence` 显式 NULL，不能借本次安装账户的首代 1 补造。`OpeningQuotaRecorded` 的 latest/baseline 分别引用同笔先行、同账户、同 ImportSource 的观察；原值和时点相同可共用。latest 字段须与所引事实逐项一致；原金融游标及未决余额只开账一次，不重演 `QuotaBaselineAdopted`。baseline 的金额只存在于其原观察，不另存一份供相互自证；converter reconciliation 仍须从封存旧源独立重建核对，来源事实的闭包验证不等于凭公共事件反推出未提供的旧库字节。
+
+新事实随未发布 event 7→8，writer 5/reducer 1 不变；唯一 DDL 的事件 CHECK 与 hash 由常量自然改变，不修改旧 SQL/journal或保留兼容开关。旧格式在读、写、监听前拒绝。回放仍按原完整提交顺序、同一保存点消费事实，不查询外部额度或恢复私有认证。
+
+金融 mapper 仅接收主 converter 已盘点的 readonly/query_only 单一快照事务和统一 ID resolver，返回事实草稿、核对期望与安全 blocking findings；不另建 CLI、目标 SQL 写入器或迁移模式。观察与额度须在同一基线提交，运行态 Job→Attempt→Charge 须在原请求的同一完整开账提交；主 converter 负责组装并阻止含 finding 的结果安装 ready。免费滚动窗的原 succeeded_at/warning_threshold 交给同一个 Job mapper，不推算当前政策或清空；缺少可保留原任务关系时明确阻塞。
+
 ### 3.4 命令、事件与幂等
 
 ```mermaid

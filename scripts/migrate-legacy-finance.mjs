@@ -1,0 +1,570 @@
+import { readStreamProjection } from '../server/events/event-store.ts';
+import { parseRelationalFact } from '../server/events/relational-events.ts';
+import { canonicalJson } from '../server/events/domain-events.ts';
+import {
+  generationChargeResources,
+  generationResponseEvidence,
+} from '../server/generation/accounting.ts';
+import { readOperatingAccount } from '../server/quota/operating-accounting.ts';
+import { parseAmount, formatAmount } from '../server/quota/resource-amounts.ts';
+import { fairQuotaSnapshot } from '../server/quota/fair-share.ts';
+import { quotaNumber, quotaTimestamp } from '../server/quota/eligibility.ts';
+import { financialObservedV5 } from '../server/storage/relational-quota-store.ts';
+
+const resources = ['v5', 'anlasFixed', 'anlasPurchased'];
+const object = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid legacy finance source.');
+  }
+  return value;
+};
+const amount = (value, signed = false) => {
+  if (typeof value !== 'string' || formatAmount(parseAmount(value)) !== value) {
+    throw new TypeError('Finance migration requires canonical current-v4 amounts.');
+  }
+  if (!signed && parseAmount(value) < 0n) {
+    throw new RangeError('Negative legacy liability amount.');
+  }
+  return value;
+};
+const amounts = (value, signed = false) =>
+  Object.fromEntries(
+    resources.map((resource) => [resource, amount(object(value)[resource], signed)]),
+  );
+const time = (value) => {
+  if (value == null) {
+    return null;
+  }
+  const result = typeof value === 'string' ? Date.parse(value) : value;
+  if (
+    !Number.isSafeInteger(result) ||
+    result < 0 ||
+    (typeof value === 'string' && new Date(result).toISOString() !== value)
+  ) {
+    throw new TypeError('Invalid known legacy finance time.');
+  }
+  return result;
+};
+const requiredTime = (value) => {
+  const result = time(value);
+  if (result === null) {
+    throw new TypeError('Missing required original finance time.');
+  }
+  return result;
+};
+const json = (value) => (value === null ? null : JSON.parse(value));
+
+// The caller owns one sealed readonly snapshot and the single complete import commit.
+// This mapper neither initializes/migrates the source nor appends or settles anything.
+export function mapLegacyFinance(source, references) {
+  if (
+    !source.readonly ||
+    !source.inTransaction ||
+    source.pragma('query_only', { simple: true }) !== 1
+  ) {
+    throw new Error(
+      'Finance mapping requires the owning readonly query-only snapshot transaction.',
+    );
+  }
+  const { memberIds, accountIds, jobIds, attemptIds, requestsByJob } = references;
+  if (
+    ![memberIds, accountIds, jobIds, attemptIds].every((value) => value instanceof Set) ||
+    !(requestsByJob instanceof Map) ||
+    typeof references.origin !== 'function' ||
+    typeof references.eventId !== 'function'
+  ) {
+    throw new TypeError('Finance mapping requires the shared original-identity references.');
+  }
+  const facts = [],
+    findings = new Map(),
+    charges = new Map(),
+    jobs = new Map(),
+    mappedAttempts = new Set(),
+    walletKeys = new Set(),
+    expected = {
+      wallets: [],
+      observations: [],
+      quotas: [],
+      operating: [],
+      funding: [],
+      charges: [],
+      attempts: [],
+      freeUsage: [],
+    };
+  const block = (code) => findings.set(code, (findings.get(code) ?? 0) + 1);
+  const collect = (code, run) => {
+    try {
+      run();
+    } catch {
+      // No raw rows, credentials, body, amount or source IDs enter public findings.
+      block(code);
+    }
+  };
+  const eventId = (eventType, originalId) => references.eventId(eventType, originalId);
+  const emit = (eventType, originalId, payload, memberId, accountId, originId = originalId) => {
+    const fact = parseRelationalFact({
+      eventType,
+      payload: { ...payload, origin: references.origin(originId) },
+    });
+    if (fact.payload.origin.sourceId !== references.sourceId) {
+      throw new Error('The financial origin is not the selected import source.');
+    }
+    const result = { ...fact, eventId: eventId(eventType, originalId), memberId, accountId };
+    facts.push(result);
+    return result;
+  };
+  const saveCharge = (jobId, charge, accountId) => {
+    object(charge);
+    if (
+      charge.accountId !== accountId ||
+      (charges.has(jobId) && canonicalJson(charges.get(jobId)) !== canonicalJson(charge))
+    ) {
+      throw new Error('Conflicting authoritative charge.');
+    }
+    charges.set(jobId, charge);
+  };
+
+  for (const row of source
+    .prepare("SELECT stream_id FROM event_streams WHERE stream_kind='account' ORDER BY stream_id")
+    .iterate()) {
+    collect('invalid_account_finance', () => {
+      const projection = readStreamProjection(source, row.stream_id)?.projection;
+      if (!projection?.quota) {
+        return;
+      }
+      const accountId = projection.id ?? row.stream_id.slice('account:'.length),
+        state = object(projection.quota);
+      if (row.stream_id !== `account:${accountId}` || !accountIds.has(accountId)) {
+        throw new Error('Financial account lacks its original public account.');
+      }
+      for (const [memberId, balance] of Object.entries(object(state.balances))) {
+        collect('invalid_wallet_source', () => {
+          if (!memberIds.has(memberId)) {
+            throw new Error('Wallet lacks its stable member.');
+          }
+          const available = Object.fromEntries(
+            resources.map((resource) => [resource, amount(balance[`${resource}Available`], true)]),
+          );
+          if (
+            Object.hasOwn(balance, 'anlasAvailable') &&
+            amount(balance.anlasAvailable, true) !==
+              formatAmount(
+                parseAmount(available.anlasFixed) + parseAmount(available.anlasPurchased),
+              )
+          ) {
+            throw new Error('Wallet aggregate disagrees with its original pools.');
+          }
+          const originalId = canonicalJson([accountId, memberId]);
+          emit(
+            'OpeningWalletRecorded',
+            originalId,
+            { accountId, memberId, available },
+            memberId,
+            accountId,
+          );
+          expected.wallets.push({ accountId, memberId, available });
+          walletKeys.add(originalId);
+        });
+      }
+      for (const [jobId, charge] of Object.entries(object(state.reservations))) {
+        collect('invalid_reserved_charge', () => {
+          if (charge.status !== 'reserved') {
+            throw new Error('Current-v4 active reservations contain a terminal.');
+          }
+          saveCharge(jobId, charge, accountId);
+        });
+      }
+      collect('invalid_quota_source', () => {
+        const snapshot = state.snapshot === null ? null : object(state.snapshot),
+          observedAt = time(projection.quotaCheckedAt),
+          official = fairQuotaSnapshot(projection),
+          latest = {
+            accountId,
+            credentialEpoch: null,
+            sequence: null,
+            observedAt,
+            v5UsagePercent: quotaNumber(projection.v5UsagePercent),
+            v5UsageIsNegative:
+              typeof projection.v5UsageIsNegative === 'boolean'
+                ? projection.v5UsageIsNegative
+                : null,
+            v5: financialObservedV5(projection, official),
+            anlasFixed: official.anlasFixed,
+            anlasPurchased: official.anlasPurchased,
+            secondsPerPercent: official.seconds,
+          },
+          hasLatest =
+            observedAt !== null ||
+            ['v5UsagePercent', 'quotaFixed', 'quotaPurchased'].some(
+              (field) => projection[field] != null,
+            ),
+          latestKey = canonicalJson([accountId, 'latest-observation']);
+        let observationEventId = null,
+          baselineEventId = null;
+        if (hasLatest) {
+          observationEventId = emit(
+            'OpeningQuotaObservationRecorded',
+            latestKey,
+            latest,
+            null,
+            accountId,
+            accountId,
+          ).eventId;
+          expected.observations.push({ eventId: observationEventId, ...latest });
+        }
+        if (snapshot !== null) {
+          const baseline = {
+            accountId,
+            credentialEpoch: null,
+            sequence: null,
+            observedAt: time(snapshot.at),
+            v5UsagePercent: null,
+            v5UsageIsNegative: null,
+            v5: snapshot.v5 === null ? null : amount(snapshot.v5),
+            anlasFixed: snapshot.anlasFixed === null ? null : amount(snapshot.anlasFixed),
+            anlasPurchased:
+              snapshot.anlasPurchased === null ? null : amount(snapshot.anlasPurchased),
+            secondsPerPercent: snapshot.seconds,
+          };
+          if (baseline.observedAt === null) {
+            throw new Error('Financial baseline lacks its original observed time.');
+          }
+          const {
+              v5UsagePercent: _percent,
+              v5UsageIsNegative: _negative,
+              ...baselineValues
+            } = baseline,
+            {
+              v5UsagePercent: _latestPercent,
+              v5UsageIsNegative: _latestNegative,
+              ...latestValues
+            } = latest;
+          if (hasLatest && canonicalJson(baselineValues) === canonicalJson(latestValues)) {
+            baselineEventId = observationEventId;
+          } else {
+            baselineEventId = emit(
+              'OpeningQuotaObservationRecorded',
+              canonicalJson([accountId, 'financial-baseline']),
+              baseline,
+              null,
+              accountId,
+              accountId,
+            ).eventId;
+            expected.observations.push({ eventId: baselineEventId, ...baseline });
+          }
+        }
+        const payload = {
+          accountId,
+          status: state.status,
+          observationEventId,
+          observedAt,
+          // A newly installed current credential epoch is not a historical observation epoch.
+          observedCredentialEpoch: null,
+          observedSequence: null,
+          quotaTier: quotaNumber(projection.quotaTier),
+          subscriptionActive: projection.subscriptionActive ?? null,
+          subscriptionExpiresAt: quotaTimestamp(projection.subscriptionExpiresAt),
+          quotaErrorCode: projection.quotaError || null,
+          v5UsagePercent: latest.v5UsagePercent,
+          v5UsageIsNegative: latest.v5UsageIsNegative,
+          observedV5: latest.v5,
+          observedAnlasFixed: latest.anlasFixed,
+          observedAnlasPurchased: latest.anlasPurchased,
+          secondsPerPercent: latest.secondsPerPercent,
+          baselineEventId,
+          refillCursorAt: time(state.lastRefillAt),
+          settlementCursorAt: time(state.lastSettlementAt),
+          unallocatedV5: amount(state.unallocatedV5),
+          fallbackFixed: amount(state.fallbackBuffer.fixed),
+          fallbackPurchased: amount(state.fallbackBuffer.purchased),
+          sharedV5Debt: amount(state.sharedV5Debt),
+          pendingV5Debit: amount(state.spent.v5),
+          pendingFixedDebit: amount(state.spent.anlasFixed),
+          pendingPurchasedDebit: amount(state.spent.anlasPurchased),
+          pendingFallbackV5: amount(state.spent.fallbackV5),
+          pendingFallbackFixed: amount(state.spent.fallbackFixed),
+          pendingFallbackPurchased: amount(state.spent.fallbackPurchased),
+        };
+        emit('OpeningQuotaRecorded', accountId, payload, null, accountId);
+        expected.quotas.push(payload);
+      });
+      collect('invalid_operating_source', () => {
+        const ops = readOperatingAccount(state);
+        if (Object.values(ops.gapEventIds).some((id) => id !== null) || ops.v5GapEventId !== null) {
+          block('operating_gap_source_requires_opening_role');
+          return;
+        }
+        const payload = {
+          accountId,
+          available: amounts(ops.available),
+          unfundedFixed: amount(ops.unfunded.anlasFixed),
+          unfundedPurchased: amount(ops.unfunded.anlasPurchased),
+          unattributedFixed: amount(ops.unattributedReturns.anlasFixed),
+          unattributedPurchased: amount(ops.unattributedReturns.anlasPurchased),
+          v5CapacityGap: amount(ops.v5CapacityGap),
+          fixedGapEventId: null,
+          purchasedGapEventId: null,
+          v5GapEventId: null,
+        };
+        emit('OpeningOperatingRecorded', accountId, payload, null, accountId);
+        expected.operating.push(payload);
+      });
+      const ops = readOperatingAccount(state);
+      if (!Array.isArray(ops.pendingExternalFunding)) {
+        throw new Error('Pending funding is not an original ordered array.');
+      }
+      for (const funding of ops.pendingExternalFunding) {
+        collect('invalid_pending_funding', () => {
+          const payload = {
+            receipt: funding.receipt,
+            accountId,
+            resource: funding.resource,
+            destination: funding.destination,
+            remaining: amount(funding.remaining),
+            registeredAt: requiredTime(funding.registeredAt),
+            snapshotAt: time(funding.snapshotAt),
+          };
+          emit('OpeningFundingRecorded', funding.eventId, payload, null, accountId);
+          expected.funding.push(payload);
+        });
+      }
+    });
+  }
+
+  for (const row of source
+    .prepare('SELECT job_id,charge FROM fair_quota_settlements ORDER BY job_id')
+    .iterate()) {
+    collect('invalid_terminal_charge', () => {
+      const charge = json(row.charge);
+      if (!['settled', 'refunded'].includes(charge?.status)) {
+        throw new Error('Cold charge is not a terminal.');
+      }
+      saveCharge(row.job_id, charge, charge.accountId);
+    });
+  }
+  const refundResponses = new Map();
+  for (const row of source
+    .prepare(
+      `SELECT json_extract(data,'$.jobId') AS job_id,
+    json_extract(data,'$.response') AS response FROM ledger
+    WHERE source='generation_refunded' ORDER BY order_value,id`,
+    )
+    .iterate()) {
+    if (row.response !== null) {
+      refundResponses.set(row.job_id, json(row.response));
+    }
+  }
+  for (const row of source
+    .prepare(
+      `SELECT id,status,
+    json_extract(data,'$.generationAttempt') AS attempt,
+    json_extract(data,'$.generationReview') AS review,
+    json_extract(data,'$.generationRefund') AS refund,
+    json_extract(data,'$.resultPending') AS prepared,
+    json_extract(data,'$.upstreamStartedAt') AS started,
+    json_extract(data,'$.upstreamHeadersAt') AS headers,
+    json_extract(data,'$.upstreamCompletedAt') AS completed,
+    json_extract(data,'$.upstreamHttpStatus') AS http_status
+    FROM jobs ORDER BY id`,
+    )
+    .iterate()) {
+    jobs.set(row.id, row);
+    if (row.attempt === null) {
+      if (row.review !== null || row.refund !== null || row.prepared !== null) {
+        block('missing_original_attempt');
+      }
+      continue;
+    }
+    collect('invalid_attempt_source', () => {
+      const attempt = object(json(row.attempt)),
+        review = json(row.review),
+        prepared = json(row.prepared),
+        charge = charges.get(row.id);
+      if (
+        !jobIds.has(row.id) ||
+        !requestsByJob.has(row.id) ||
+        !attemptIds.has(attempt.id) ||
+        !accountIds.has(attempt.accountId) ||
+        !memberIds.has(attempt.memberId) ||
+        attempt.jobId !== row.id ||
+        !charge ||
+        charge.accountId !== attempt.accountId ||
+        charge.userId !== attempt.memberId ||
+        canonicalJson(amounts(attempt.localReserved)) !==
+          canonicalJson(amounts(generationChargeResources(charge)))
+      ) {
+        throw new Error('Attempt/charge/job/account/member original identities disagree.');
+      }
+      const upstreamCandidates = attempt.upstreamCandidates.map((candidate) => ({
+        resources: Object.fromEntries(
+          Object.entries(object(candidate.resources)).map(([resource, value]) => [
+            resource,
+            amount(value),
+          ]),
+        ),
+        amountSource: candidate.amountSource,
+      }));
+      const originalResponse = refundResponses.get(row.id),
+        originalJob = {
+          status: row.status,
+          upstreamStartedAt: row.started,
+          upstreamHeadersAt: row.headers,
+          upstreamCompletedAt: row.completed,
+          upstreamHttpStatus: row.http_status,
+        };
+      for (const field of [
+        'upstreamStartedAt',
+        'upstreamHeadersAt',
+        'upstreamCompletedAt',
+        'upstreamHttpStatus',
+      ]) {
+        if (originalJob[field] == null && originalResponse?.[field] != null) {
+          originalJob[field] = originalResponse[field];
+        } else if (
+          originalJob[field] != null &&
+          originalResponse?.[field] != null &&
+          originalJob[field] !== originalResponse[field]
+        ) {
+          throw new Error('Original response facts conflict.');
+        }
+      }
+      if (originalResponse?.dispatchState === 'not_sent' && originalJob.upstreamStartedAt != null) {
+        throw new Error('Original not-sent evidence conflicts with an actual start.');
+      }
+      const response = generationResponseEvidence(originalJob, {
+          requestStarted: originalResponse?.dispatchState === 'not_sent' ? false : undefined,
+        }),
+        payload = {
+          attemptId: attempt.id,
+          jobId: row.id,
+          accountId: attempt.accountId,
+          credentialEpoch: attempt.credentialEpoch ?? null,
+          connectionSourceEventId: null,
+          authorizedAt: time(attempt.dispatchIntentAt),
+          response: {
+            dispatchState:
+              response.dispatchState === 'unknown' &&
+              originalResponse?.dispatchState === 'request_started'
+                ? 'request_started'
+                : response.dispatchState,
+            upstreamStartedAt: time(response.upstreamStartedAt),
+            upstreamHeadersAt: time(response.upstreamHeadersAt),
+            upstreamCompletedAt: time(response.upstreamCompletedAt),
+            upstreamHttpStatus: response.upstreamHttpStatus,
+          },
+          candidateMode: attempt.candidateMode,
+          upstreamCandidates,
+          actualConsumption:
+            attempt.actualConsumption == null ? null : amounts(attempt.actualConsumption),
+          lossCoverageRemaining: Object.fromEntries(resources.map((resource) => [resource, null])),
+          reviewStatus: review?.status ?? null,
+          firstUnknownAt: time(review?.firstUnknownAt),
+          reviewDeadlineAt: time(review?.deadlineAt),
+          reviewClosedAt: time(review?.closedAt),
+          originalLossEventId: review?.lossEventId ?? null,
+          originalClosureEventId: review?.closureEventId ?? null,
+          preparedArtifactId: prepared?.imageId ?? null,
+          preparedFile: prepared?.file ?? null,
+          preparedMimeType: prepared?.mimeType ?? null,
+          preparedByteLength: prepared?.byteLength ?? null,
+          preparedSha256: prepared?.sha256 ?? null,
+        };
+      if (prepared !== null && prepared.attemptId !== attempt.id) {
+        throw new Error('Prepared bytes belong to another original attempt.');
+      }
+      emit('OpeningAttemptRecorded', attempt.id, payload, attempt.memberId, attempt.accountId);
+      expected.attempts.push(payload);
+      mappedAttempts.add(attempt.id);
+    });
+  }
+  for (const [jobId, charge] of charges) {
+    collect('invalid_charge_source', () => {
+      const knownJob = jobIds.has(jobId),
+        live = knownJob && walletKeys.has(canonicalJson([charge.accountId, charge.userId])),
+        attempt = jobs.get(jobId)?.attempt ? json(jobs.get(jobId).attempt) : null;
+      if (
+        charge.status === 'reserved' &&
+        (!live ||
+          !attempt ||
+          !mappedAttempts.has(attempt.id) ||
+          jobs.get(jobId).status !== 'running')
+      ) {
+        throw new Error('An unresolved reservation cannot be archived or lose its real attempt.');
+      }
+      const originalAmount = amount(charge.amount),
+        originalFixed = amount(charge.fixed),
+        originalPurchased = amount(charge.purchased);
+      if (
+        !['free', 'v5', 'anlas'].includes(charge.resource) ||
+        (charge.resource === 'free' &&
+          [originalAmount, originalFixed, originalPurchased].some((value) => value !== '0')) ||
+        (charge.resource === 'v5' && (originalFixed !== '0' || originalPurchased !== '0')) ||
+        (charge.resource === 'anlas' &&
+          parseAmount(originalAmount) !==
+            parseAmount(originalFixed) + parseAmount(originalPurchased)) ||
+        (attempt !== null && charge.attemptId != null && charge.attemptId !== attempt.id)
+      ) {
+        throw new Error('Original charge pools disagree.');
+      }
+      const id = eventId('OpeningChargeRecorded', jobId),
+        payload = {
+          originalJobId: jobId,
+          originalMemberId: charge.userId,
+          originalAccountId: charge.accountId,
+          jobId: knownJob ? jobId : null,
+          walletAccountId: live ? charge.accountId : null,
+          walletMemberId: live ? charge.userId : null,
+          attemptId: live && mappedAttempts.has(attempt?.id) ? attempt.id : null,
+          status: charge.status,
+          resolution: live ? 'live' : 'archived',
+          originRef: charge.attemptId ?? jobId,
+          resources: amounts(generationChargeResources(charge)),
+          billingMode: charge.billingMode ?? charge.resource,
+          estimated: typeof charge.estimated === 'boolean' ? charge.estimated : null,
+          v5Equivalent: charge.billingMode === 'anlas_fallback' ? amount(charge.v5Equivalent) : '0',
+          sharedV5Reserved:
+            charge.billingMode === 'anlas_fallback' ? amount(charge.sharedV5Reserved) : '0',
+          configVersion: charge.configVersion,
+          reservedAt: requiredTime(charge.reservedAt),
+          terminalAt: charge.status === 'reserved' ? null : requiredTime(charge.settledAt),
+          reservationEventId: id,
+          terminalEventId: charge.status === 'reserved' ? null : id,
+        };
+      emit('OpeningChargeRecorded', jobId, payload, charge.userId, charge.accountId);
+      expected.charges.push(payload);
+    });
+  }
+  for (const row of source
+    .prepare(
+      'SELECT job_id,member_id,succeeded_at,warning_threshold FROM free_image_usage ORDER BY job_id',
+    )
+    .iterate()) {
+    if (!jobIds.has(row.job_id) || !memberIds.has(row.member_id)) {
+      block('free_usage_missing_original_job');
+      continue;
+    }
+    collect('invalid_free_usage', () => {
+      expected.freeUsage.push({
+        jobId: row.job_id,
+        memberId: row.member_id,
+        succeededAt: requiredTime(row.succeeded_at),
+        warningThreshold: row.warning_threshold,
+      });
+    });
+  }
+  const receipts = source
+    .prepare(
+      `SELECT COUNT(*) AS count FROM ledger WHERE source IN (
+    'operating_funding_registered','operating_funding_received','operating_loss_covered',
+    'resource_gap_reconciled','operating_debits_confirmed')`,
+    )
+    .get().count;
+  if (receipts) {
+    findings.set('funding_receipt_history_requires_opening_decision', receipts);
+  }
+  return {
+    facts,
+    findings: [...findings].map(([code, count]) => ({ code, count, blocking: true })),
+    expected,
+  };
+}
