@@ -14,7 +14,12 @@ import { readProjectedFairQuota } from '../server/events/event-store.ts';
 import { freeImagePolicy } from '../server/quota/free-image-policy.ts';
 import { lossAlertPolicy } from '../server/quota/failure-accounting.ts';
 import { parseAmount, formatAmount } from '../server/quota/resource-amounts.ts';
-import { inputAssetSlots } from '../server/generation/member-contract.ts';
+import { inputAssetSlots, decodeInputAsset } from '../server/generation/member-contract.ts';
+import { generationRequestFingerprint } from '../server/generation/request-fingerprint.ts';
+import {
+  parseRelationalNormalizationContext,
+  prepareRelationalInput,
+} from '../server/generation/relational-input.ts';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const reject = () => {
@@ -38,6 +43,7 @@ export function migrationReferences(sourceSha256) {
   }
   const sourceId = `legacy:${sourceSha256}`;
   return {
+    sourceSha256,
     sourceId,
     origin: (originalId) => ({ sourceId, originalId }),
     eventId: (eventType, originalId) =>
@@ -48,7 +54,65 @@ export function migrationReferences(sourceSha256) {
     attemptIds: new Set(),
     requestsByJob: new Map(),
     credentialEpochByAccount: new Map(),
+    inputsByJob: new Map(),
+    inputsByArtifact: new Map(),
+    requestProofs: new Map(),
   };
+}
+
+// 原键逐份证明，不按盘点数量给一批键标 live；缺定义不能调用当前 defaults 补齐。
+export function proveLegacyGenerationIntent(request, originalContext, mapping) {
+  if (!originalContext?.native) {
+    return { reason: 'FIRST_DEFINITION_UNPROVEN' };
+  }
+  let context;
+  try {
+    const keys = Object.keys(originalContext);
+    if (keys.length === 1 && keys[0] === 'native') {
+      context = parseRelationalNormalizationContext({
+        kind: 'native',
+        native: originalContext.native,
+      });
+    } else {
+      return { reason: 'FIRST_DEFINITION_KIND_UNPROVEN' };
+    }
+    if (
+      !request ||
+      (request.operation !== undefined && request.operation !== mapping.operation) ||
+      (mapping.operation === 'generate' &&
+        (!Number.isSafeInteger(request.sampleCount) || request.sampleCount < 1))
+    ) {
+      return { reason: 'FIRST_INTENT_FIELDS_UNPROVEN' };
+    }
+    const original = {
+        ...request,
+        operation: mapping.operation,
+        normalizationContext: { native: context.native },
+      },
+      matches = new Map();
+    for (const noCache of [false, true]) {
+      for (const randomSeed of [false, true]) {
+        if (
+          generationRequestFingerprint(original, { noCache, randomSeed }) !== mapping.fingerprint
+        ) {
+          continue;
+        }
+        let seedMode = 'not_applicable';
+        if (mapping.operation === 'generate') {
+          seedMode = randomSeed ? 'random' : 'fixed';
+        }
+        matches.set(`${seedMode}:${noCache}`, { seedMode, noCache });
+      }
+    }
+    if (matches.size !== 1) {
+      return { reason: 'FIRST_INTENT_FINGERPRINT_UNPROVEN' };
+    }
+    const prepared = prepareRelationalInput(original, context),
+      [intent] = matches.values();
+    return { prepared, context, ...intent };
+  } catch {
+    return { reason: 'FIRST_DEFINITION_UNSUPPORTED' };
+  }
 }
 
 function append(target, references, at, key, drafts) {
@@ -67,6 +131,9 @@ function append(target, references, at, key, drafts) {
           break;
         case 'import':
           owner = references.sourceId;
+          break;
+        case 'context':
+          owner = draft.payload.contextId;
           break;
         default:
           owner = draft.payload.requestId ?? draft.payload.inputId;
@@ -317,114 +384,252 @@ function partialInput(request) {
   return Object.keys(body).length ? body : null;
 }
 
-// 先交付可证的终态困难切片；活动、附件、产物和金融责任不能被当作空历史吞掉。
-function appendTerminalSlice(source, target, references, at, findings) {
-  const inputs = new RelationalInputStore(target);
+function sourceRequestGroups(source, references) {
+  const groups = new Map();
   for (const row of source
-    .prepare('SELECT id,data,request_id FROM jobs ORDER BY order_value DESC')
+    .prepare('SELECT id,request_id FROM jobs ORDER BY order_value DESC')
     .iterate()) {
-    const job = JSON.parse(row.data),
-      inputRef = row.request_id || job.legacyInputRef || job.requestId,
-      originalInput = inputRef
+    const requestId = row.request_id || `legacy-job-anchor:${row.id}`;
+    let group = groups.get(requestId);
+    if (!group) {
+      group = { requestId, originalRequestId: row.request_id, jobIds: [] };
+      groups.set(requestId, group);
+    } else if (group.originalRequestId !== row.request_id) {
+      reject();
+    }
+    group.jobIds.push(row.id);
+    references.requestsByJob.set(row.id, requestId);
+  }
+  return groups;
+}
+
+function openingInput(original, proof) {
+  if (proof?.prepared) {
+    const { body, assets, logicalBytes } = proof.prepared;
+    return { body, assets, logicalBytes, completeness: 'complete' };
+  }
+  const body = partialInput(original),
+    assets = [];
+  if (body === null) {
+    return { body: null, assets, logicalBytes: 0, completeness: 'unavailable' };
+  }
+  const logicalBytes = Buffer.byteLength(canonicalJson(body));
+  for (const slot of inputAssetSlots(body)) {
+    const decoded = decodeInputAsset(slot),
+      sha256 = hash(decoded.bytes);
+    let asset = assets.find(
+      (entry) => entry.sha256 === sha256 && entry.bytes.equals(decoded.bytes),
+    );
+    if (!asset) {
+      asset = {
+        assetId: `a${assets.length + 1}`,
+        sha256,
+        mimeType: decoded.mimeType,
+        byteLength: decoded.bytes.length,
+        bytes: decoded.bytes,
+      };
+      assets.push(asset);
+    }
+    slot.owner[slot.key] = { assetId: asset.assetId };
+  }
+  return { body, assets, logicalBytes, completeness: 'partial' };
+}
+
+function sourceContextProof(original, mappings) {
+  const proofs = mappings.map((mapping) => ({
+      mapping,
+      proof: proveLegacyGenerationIntent(
+        original,
+        JSON.parse(mapping.normalization_context),
+        mapping,
+      ),
+    })),
+    proven = proofs.filter(({ proof }) => proof.prepared),
+    definitions = new Set(proven.map(({ proof }) => domainDigest(proof.context)));
+  if (definitions.size === 1 && proven.length) {
+    return { proof: proven[0].proof, proofs };
+  }
+  return { proof: null, proofs };
+}
+
+// 每个真实 parent 的正文与 child 共用原来源；没有 parent 的 FK 容器不授予公开原请求身份。
+function appendLegacyRequests(source, target, references, at, findings) {
+  const inputs = new RelationalInputStore(target),
+    groups = sourceRequestGroups(source, references);
+  for (const group of groups.values()) {
+    const jobs = group.jobIds.map((id) => {
+        const row = source
+          .prepare('SELECT id,data,request_id,order_value FROM jobs WHERE id=?')
+          .get(id);
+        return { row, value: JSON.parse(row.data) };
+      }),
+      first = jobs[0],
+      originalRow = group.originalRequestId
         ? source
-            .prepare('SELECT member_id,payload FROM generation_requests WHERE id=?')
-            .get(inputRef)
+            .prepare('SELECT * FROM generation_requests WHERE id=?')
+            .get(group.originalRequestId)
         : null,
-      memberId = memberOwner(job, originalInput);
+      legacyRef = first.value.legacyInputRef || `legacy-input:${first.row.id}`,
+      protectedRow =
+        originalRow ??
+        source.prepare('SELECT * FROM generation_requests WHERE id=?').get(legacyRef),
+      saved = protectedRow ? JSON.parse(protectedRow.payload) : null,
+      original = saved?.legacyInline === true ? saved.request : (saved ?? first.value.request),
+      members = new Set(jobs.map(({ value }) => memberOwner(value, protectedRow))),
+      memberId = members.size === 1 ? [...members][0] : null;
     if (
-      job.id !== row.id ||
       !memberId ||
       !references.memberIds.has(memberId) ||
-      !['failed', 'done'].includes(job.status) ||
-      job.imageId ||
-      job.generationAttempt ||
-      job.resultPending ||
-      row.request_id
+      jobs.some(({ row, value }) => row.id !== value.id)
     ) {
-      findings.push({ code: 'JOB_REQUIRES_COMPLETE_OPENING_MAPPING', originalId: row.id });
+      findings.push({ code: 'REQUEST_MEMBER_SOURCE_UNPROVEN', originalId: group.requestId });
       continue;
     }
-    const original = originalInput ? JSON.parse(originalInput.payload).request : job.request,
-      body = partialInput(original),
-      inputId = `legacy-job-input:${row.id}`,
-      requestId = `legacy-job-anchor:${row.id}`;
-    if (body !== null && inputAssetSlots(body).length) {
-      findings.push({ code: 'INPUT_ATTACHMENTS_REQUIRE_MAPPING', originalId: row.id });
+    const mappings = group.originalRequestId
+        ? source
+            .prepare(
+              'SELECT * FROM generation_idempotency WHERE request_id=? ORDER BY created_at,key_hash',
+            )
+            .all(group.originalRequestId)
+        : source
+            .prepare(
+              'SELECT * FROM generation_idempotency WHERE job_id=? ORDER BY created_at,key_hash',
+            )
+            .all(first.row.id),
+      { proof, proofs } = sourceContextProof(original, mappings),
+      content = openingInput(original, proof),
+      operation =
+        originalRow?.operation ??
+        proof?.prepared.body.operation ??
+        (['generate', 'upscale', 'encode-vibe'].includes(original?.operation)
+          ? original.operation
+          : null),
+      model = typeof original?.model === 'string' ? original.model : null,
+      count =
+        Number.isSafeInteger(original?.sampleCount) && original.sampleCount > 0
+          ? original.sampleCount
+          : null,
+      hasActive = jobs.some(({ value }) => ['queued', 'pending', 'running'].includes(value.status));
+    if (
+      jobs.some(
+        ({ value }) =>
+          !['queued', 'pending', 'running', 'failed', 'done'].includes(value.status) ||
+          value.imageId ||
+          value.generationAttempt ||
+          value.resultPending,
+      ) ||
+      (hasActive && (!proof?.prepared || count === null))
+    ) {
+      findings.push({ code: 'JOB_REQUIRES_COMPLETE_OPENING_MAPPING', originalId: group.jobIds[0] });
       continue;
     }
+    const inputId = group.originalRequestId || `legacy-job-input:${first.row.id}`;
     target.transaction(() => {
-      const input = inputs.stageOpeningInput({
-        inputId,
-        memberId,
-        completeness: body === null ? 'unavailable' : 'partial',
-        body,
-        logicalBytes: body === null ? 0 : Buffer.byteLength(canonicalJson(body)),
-        assets: [],
-      });
-      append(target, references, at, `job:${row.id}`, [
+      const input = inputs.stageOpeningInput({ inputId, memberId, ...content }),
+        events = [];
+      let contextId = null;
+      if (proof?.prepared) {
+        contextId = proof.prepared.contextId;
+        if (!target.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(contextId)) {
+          const context = inputs.stageOpeningContext(contextId, proof.context);
+          events.push({
+            eventId: references.eventId('ContextRegistered', contextId),
+            eventType: 'ContextRegistered',
+            payload: context,
+          });
+        }
+      }
+      events.push(
         {
           eventId: references.eventId('OpeningInputRecorded', inputId),
           eventType: 'OpeningInputRecorded',
           memberId,
-          payload: { ...input, origin: references.origin(inputRef || row.id) },
+          payload: { ...input, origin: references.origin(protectedRow?.id || first.row.id) },
         },
         {
-          eventId: references.eventId('OpeningRequestRecorded', requestId),
+          eventId: references.eventId('OpeningRequestRecorded', group.requestId),
           eventType: 'OpeningRequestRecorded',
           memberId,
           payload: {
-            requestId,
-            originalRequestId: null,
+            requestId: group.requestId,
+            originalRequestId: group.originalRequestId,
             memberId,
             inputId,
-            contextId: null,
-            source: typeof job.source === 'string' ? job.source : null,
-            operation: ['generate', 'upscale', 'encode-vibe'].includes(original?.operation)
-              ? original.operation
-              : null,
-            model: typeof original?.model === 'string' ? original.model : null,
-            sampleCount: null,
-            seedMode: 'unknown',
-            confirmation: null,
-            acceptedAt: null,
+            contextId,
+            source:
+              originalRow?.source ??
+              (typeof first.value.source === 'string' ? first.value.source : null),
+            operation,
+            model,
+            sampleCount: count,
+            seedMode: proof?.seedMode ?? 'unknown',
+            confirmation: original?.confirmation ?? null,
+            acceptedAt: originalRow ? time(originalRow.created_at) : null,
             retiredAt: null,
-            origin: references.origin(row.id),
+            origin: references.origin(group.originalRequestId || first.row.id),
           },
         },
-        {
+      );
+      for (const { row, value: job } of jobs) {
+        const seed =
+          typeof job.request?.seed === 'number'
+            ? job.request.seed
+            : group.originalRequestId
+              ? null
+              : original?.seed;
+        events.push({
           eventId: references.eventId('OpeningJobRecorded', row.id),
           eventType: 'OpeningJobRecorded',
           memberId,
           payload: {
             jobId: row.id,
-            requestId,
+            requestId: group.requestId,
             createdAt: time(job.createdAt),
-            sampleIndex: null,
-            actualSeed: typeof original?.seed === 'number' ? original.seed : null,
+            sampleIndex:
+              Number.isSafeInteger(job.sampleIndex) && job.sampleIndex >= 0
+                ? job.sampleIndex
+                : null,
+            actualSeed: typeof seed === 'number' ? seed : null,
             status: job.status,
-            queueSeq: null,
-            queueExpiresAt: null,
-            deadlineAt: null,
-            admissionEpoch: null,
+            queueSeq:
+              Number.isSafeInteger(job.queueSeq) && job.queueSeq > 0 ? String(job.queueSeq) : null,
+            queueExpiresAt: time(job.queueExpiresAt),
+            deadlineAt: time(job.deadlineAt),
+            admissionEpoch:
+              Number.isSafeInteger(job.jobAdmissionVersion) && job.jobAdmissionVersion >= 0
+                ? job.jobAdmissionVersion
+                : null,
             artifactId: null,
-            cacheKey: typeof job.cacheKey === 'string' ? job.cacheKey : null,
+            cacheKey: typeof job.cacheKey === 'string' && job.cacheKey ? job.cacheKey : null,
             completedAt: time(job.completedAt),
-            errorCode: typeof job.errorCode === 'string' ? job.errorCode : null,
+            errorCode: typeof job.errorCode === 'string' && job.errorCode ? job.errorCode : null,
             errorStatus:
               Number.isSafeInteger(job.errorStatus) && job.errorStatus > 0 ? job.errorStatus : null,
             cancellationReason:
-              typeof job.cancellationReason === 'string' ? job.cancellationReason : null,
+              typeof job.cancellationReason === 'string' && job.cancellationReason
+                ? job.cancellationReason
+                : null,
             lateResultAt: null,
             freeSucceededAt: null,
             freeWarningThreshold: null,
             retiredAt: null,
             origin: references.origin(row.id),
           },
-        },
-      ]);
+        });
+      }
+      append(target, references, at, `request:${group.requestId}`, events);
+      for (const { row } of jobs) {
+        references.jobIds.add(row.id);
+        references.inputsByJob.set(row.id, { inputId, memberId, operation });
+      }
+      references.requestProofs.set(group.requestId, {
+        inputId,
+        memberId,
+        contextId,
+        proofs,
+        originalRequestId: group.originalRequestId,
+      });
     })();
-    references.jobIds.add(row.id);
-    references.requestsByJob.set(row.id, requestId);
   }
 }
 
@@ -461,7 +666,17 @@ export async function migrateLegacyDatabase(options) {
     reject();
   }
   const audit = JSON.parse(await readFile(options.audit, 'utf8'));
-  if (audit.sourceCommit !== options.sourceCommit) {
+  if (
+    audit.sourceCommit !== options.sourceCommit ||
+    audit.openingSha256 !== inventory.cut.openingSha256 ||
+    audit.protectedInputs !== inventory.tables.generation_requests.rows ||
+    audit.protectedInputBytes !== inventory.tables.generation_requests.logicalContentBytes ||
+    audit.contexts !== inventory.tables.generation_contexts.rows ||
+    audit.artifactInputs !== inventory.tables.artifact_inputs.rows ||
+    audit.diagnostics !== inventory.tables.generation_diagnostics.rows ||
+    audit.artifacts !== inventory.tables.images.rows ||
+    audit.commits !== inventory.tables.event_commits.rows
+  ) {
     reject();
   }
   const inputBytes = await readFile(path.join(path.dirname(options.artifacts), 'inputs.jsonl')),
@@ -535,7 +750,7 @@ export async function migrateLegacyDatabase(options) {
         append(target, references, at, 'sharing', sharing.facts);
       }
     })();
-    appendTerminalSlice(source, target, references, at, findings);
+    appendLegacyRequests(source, target, references, at, findings);
     findings.push({ code: 'FINANCIAL_PRIVATE_AND_REMAINING_PUBLIC_MAPPING_PENDING' });
     const report = {
       status: 'building',
