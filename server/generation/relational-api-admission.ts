@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { domainDigest } from '../events/domain-events.ts';
-import { withAuthenticatedMemberApiKey } from '../members/authentication.ts';
+import {
+  authorizeRelationalMemberApiKey,
+  type RelationalMemberApiKeyAuthorization,
+} from '../members/relational-api-key-access.ts';
 import type { RelationalMemberStore } from '../storage/relational-member-store.ts';
 import type { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
 import type { RelationalInputStore } from '../storage/relational-input-store.ts';
@@ -60,7 +63,10 @@ export function createRelationalApiGenerationAdmission(deps: {
   env?: NodeJS.ProcessEnv;
   now?(): number;
 }) {
-  return async (options: RelationalApiAdmissionOptions) => {
+  return async (
+    options: RelationalApiAdmissionOptions,
+    current?: RelationalMemberApiKeyAuthorization,
+  ) => {
     const claim = options.claim ?? deps.payloadBudget.claim();
     type Search = {
       memberId: string;
@@ -71,168 +77,168 @@ export function createRelationalApiGenerationAdmission(deps: {
     };
     type Candidate = Awaited<ReturnType<RelationalGenerationStore['findReusableGeneration']>>;
     try {
+      const authorize =
+        current ??
+        (await authorizeRelationalMemberApiKey({
+          sqlite: deps.sqlite,
+          members: deps.members,
+          token: options.token,
+          env: deps.env,
+        }));
       const execute = async (search?: Search, candidate?: Candidate) => {
-        const authorized = await withAuthenticatedMemberApiKey(
-          deps.members,
-          options.token,
-          (member) => {
-            // 正文和缓存资格 IO 后都回到同一当前凭据事务；工厂曾 ready 不代表此刻仍可写。
-            assertRelationalStorageReady(deps.sqlite);
-            if (search && search.memberId !== member.id) {
-              fail(401, 'invalid_token', 'invalid token.');
-            }
-            const keyHash = options.key ? generationIdempotencyKeyHash(options.key) : null;
-            const mapping = keyHash
-              ? deps.inputs.readGenerationIdempotency(member.id, options.operation, keyHash)
-              : null;
-            if (
-              mapping &&
-              (mapping.resolution !== 'live' || !mapping.requestId || !mapping.contextId)
-            ) {
-              throw Object.assign(
-                new Error('原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键'),
-                {
-                  statusCode: 410,
-                  code: 'result_unavailable',
-                  requestId: mapping.originalRequestId,
-                },
-              );
-            }
-            const context = mapping
-              ? deps.inputs.readGenerationIdempotencyContext(member.id, options.operation, keyHash!)
-              : (search?.context ?? options.context());
-            const request = mapping
-              ? options.normalize(context)
-              : (search?.request ?? options.normalize(context));
-            const fingerprint = generationRequestFingerprint(request, {
-              randomSeed: options.seedMode === 'random',
-              noCache: options.noCache,
-            });
-            const identity = {
-              commandId:
-                mapping?.originalCommandId ??
-                (keyHash
-                  ? `generation:${domainDigest([member.id, options.operation, keyHash])}`
-                  : (search?.commandId ?? randomUUID())),
-              fingerprint,
-              actorKind: 'member' as const,
-              actorId: member.id,
-            };
-            if (mapping) {
-              if (mapping.intentFingerprint !== fingerprint) {
-                fail(409, 'idempotency_conflict', '相同 Idempotency-Key 对应的请求参数不同');
-              }
-              try {
-                return {
-                  kind: 'accepted' as const,
-                  result: deps.generations.readAcceptedGenerationReceipt(identity, mapping),
-                };
-              } catch (error) {
-                if ((error as { statusCode?: number }).statusCode === 410) {
-                  Object.assign(error as object, { requestId: mapping.originalRequestId });
-                }
-                throw error;
-              }
-            }
-            // 原回执仍可领取；所有新 accept/reuse（含缓存 IO 返回）都在此原授权事务核当前运行期。
-            deps.runtime.assertAccepting();
-            const current = deps.members.readMember(member.id);
-            if (!current || current.status !== 'active') {
-              fail(401, 'invalid_token', 'invalid token.');
-            }
-            assertMemberAcceptsJobs(
+        const authorized = await authorize((memberId) => {
+          // 正文和缓存资格 IO 后都回到同一当前凭据事务；工厂曾 ready 不代表此刻仍可写。
+          assertRelationalStorageReady(deps.sqlite);
+          if (search && search.memberId !== memberId) {
+            fail(401, 'invalid_token', 'invalid token.');
+          }
+          const keyHash = options.key ? generationIdempotencyKeyHash(options.key) : null;
+          const mapping = keyHash
+            ? deps.inputs.readGenerationIdempotency(memberId, options.operation, keyHash)
+            : null;
+          if (
+            mapping &&
+            (mapping.resolution !== 'live' || !mapping.requestId || !mapping.contextId)
+          ) {
+            throw Object.assign(
+              new Error('原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键'),
               {
-                acceptingJobs: current.acceptingJobs === 1,
-                jobAdmissionVersion: current.admissionEpoch,
+                statusCode: 410,
+                code: 'result_unavailable',
+                requestId: mapping.originalRequestId,
               },
-              options.admissionVersion,
             );
-            claim.resize(prepareRelationalInput(request, context, deps.env).logicalBytes);
-            if (!options.noCache && options.seedMode !== 'not_applicable' && !search) {
+          }
+          const context = mapping
+            ? deps.inputs.readGenerationIdempotencyContext(memberId, options.operation, keyHash!)
+            : (search?.context ?? options.context());
+          const request = mapping
+            ? options.normalize(context)
+            : (search?.request ?? options.normalize(context));
+          const fingerprint = generationRequestFingerprint(request, {
+            randomSeed: options.seedMode === 'random',
+            noCache: options.noCache,
+          });
+          const identity = {
+            commandId:
+              mapping?.originalCommandId ??
+              (keyHash
+                ? `generation:${domainDigest([memberId, options.operation, keyHash])}`
+                : (search?.commandId ?? randomUUID())),
+            fingerprint,
+            actorKind: 'member' as const,
+            actorId: memberId,
+          };
+          if (mapping) {
+            if (mapping.intentFingerprint !== fingerprint) {
+              fail(409, 'idempotency_conflict', '相同 Idempotency-Key 对应的请求参数不同');
+            }
+            try {
               return {
-                kind: 'search' as const,
-                search: {
-                  memberId: member.id,
-                  commandId: identity.commandId,
-                  request,
-                  context,
-                  seedMode: options.seedMode,
-                },
+                kind: 'accepted' as const,
+                result: deps.generations.readAcceptedGenerationReceipt(identity, mapping),
               };
+            } catch (error) {
+              if ((error as { statusCode?: number }).statusCode === 410) {
+                Object.assign(error as object, { requestId: mapping.originalRequestId });
+              }
+              throw error;
             }
-            const versions = deps.generations.readMemberGenerationCapabilities(member.id).versions;
-            const metadata = {
-              ...identity,
-              recordedAt: deps.now?.() ?? Date.now(),
-              correlationId: options.correlationId ?? null,
-              causationId: null,
-              policyVersion: versions.billingPolicy,
-              pricingVersion: versions.pricing,
-            };
-            let accepted:
-              | ReturnType<RelationalGenerationStore['acceptGeneration']>
-              | ReturnType<RelationalGenerationStore['reuseGeneration']>;
-            if (candidate && search) {
-              accepted = deps.generations.reuseGeneration(metadata, {
-                memberId: member.id,
+          }
+          // 原回执仍可领取；所有新 accept/reuse（含缓存 IO 返回）都在此原授权事务核当前运行期。
+          deps.runtime.assertAccepting();
+          const current = deps.members.readMember(memberId);
+          if (!current || current.status !== 'active') {
+            fail(401, 'invalid_token', 'invalid token.');
+          }
+          assertMemberAcceptsJobs(
+            {
+              acceptingJobs: current.acceptingJobs === 1,
+              jobAdmissionVersion: current.admissionEpoch,
+            },
+            options.admissionVersion,
+          );
+          claim.resize(prepareRelationalInput(request, context, deps.env).logicalBytes);
+          if (!options.noCache && options.seedMode !== 'not_applicable' && !search) {
+            return {
+              kind: 'search' as const,
+              search: {
+                memberId: memberId,
+                commandId: identity.commandId,
                 request,
                 context,
-                seedMode: search.seedMode,
-                noCache: false,
-                ...(keyHash ? { idempotency: { keyHash, noCache: false } } : {}),
-                sourceJobId: candidate.sourceJobId,
-                ...(candidate.kind === 'artifact'
-                  ? {
-                      cached: {
-                        requestId: randomUUID(),
-                        jobId: randomUUID(),
-                        inputId: randomUUID(),
-                        source: options.source,
-                        artifactId: candidate.artifactId,
-                      },
-                    }
-                  : {}),
-              });
-            } else {
-              const cacheKey =
-                options.source !== 'novelai-native'
-                  ? deps.inputs.generationInputIntent(
-                      member.id,
-                      request,
-                      context,
-                      options.seedMode,
-                      options.noCache,
-                    ).cacheKey
-                  : null;
-              accepted = deps.generations.acceptGeneration(metadata, {
-                inputId: randomUUID(),
-                requestId: randomUUID(),
-                memberId: member.id,
-                source: options.source,
                 seedMode: options.seedMode,
-                confirmation: null,
-                request,
-                context,
-                ...(keyHash ? { idempotency: { keyHash, noCache: options.noCache } } : {}),
-                jobs: Array.from({ length: request.sampleCount ?? 1 }, () => ({
-                  jobId: randomUUID(),
-                  status: 'pending' as const,
-                  queueSeq: null,
-                  queueExpiresAt: null,
-                  deadlineAt: null,
-                  admissionEpoch: 0,
-                  cacheKey,
-                })),
-              });
-            }
-            claim.release();
-            return { kind: 'accepted' as const, result: accepted };
-          },
-          deps.env,
-        );
-        if (!authorized) {
-          fail(401, 'invalid_token', 'invalid token.');
-        }
+              },
+            };
+          }
+          const versions = deps.generations.readMemberGenerationCapabilities(memberId).versions;
+          const metadata = {
+            ...identity,
+            recordedAt: deps.now?.() ?? Date.now(),
+            correlationId: options.correlationId ?? null,
+            causationId: null,
+            policyVersion: versions.billingPolicy,
+            pricingVersion: versions.pricing,
+          };
+          let accepted:
+            | ReturnType<RelationalGenerationStore['acceptGeneration']>
+            | ReturnType<RelationalGenerationStore['reuseGeneration']>;
+          if (candidate && search) {
+            accepted = deps.generations.reuseGeneration(metadata, {
+              memberId: memberId,
+              request,
+              context,
+              seedMode: search.seedMode,
+              noCache: false,
+              ...(keyHash ? { idempotency: { keyHash, noCache: false } } : {}),
+              sourceJobId: candidate.sourceJobId,
+              ...(candidate.kind === 'artifact'
+                ? {
+                    cached: {
+                      requestId: randomUUID(),
+                      jobId: randomUUID(),
+                      inputId: randomUUID(),
+                      source: options.source,
+                      artifactId: candidate.artifactId,
+                    },
+                  }
+                : {}),
+            });
+          } else {
+            const cacheKey =
+              options.source !== 'novelai-native'
+                ? deps.inputs.generationInputIntent(
+                    memberId,
+                    request,
+                    context,
+                    options.seedMode,
+                    options.noCache,
+                  ).cacheKey
+                : null;
+            accepted = deps.generations.acceptGeneration(metadata, {
+              inputId: randomUUID(),
+              requestId: randomUUID(),
+              memberId: memberId,
+              source: options.source,
+              seedMode: options.seedMode,
+              confirmation: null,
+              request,
+              context,
+              ...(keyHash ? { idempotency: { keyHash, noCache: options.noCache } } : {}),
+              jobs: Array.from({ length: request.sampleCount ?? 1 }, () => ({
+                jobId: randomUUID(),
+                status: 'pending' as const,
+                queueSeq: null,
+                queueExpiresAt: null,
+                deadlineAt: null,
+                admissionEpoch: 0,
+                cacheKey,
+              })),
+            });
+          }
+          claim.release();
+          return { kind: 'accepted' as const, result: accepted };
+        });
         return authorized;
       };
       let completed = await execute();

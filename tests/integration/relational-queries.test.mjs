@@ -21,6 +21,9 @@ import {
   replayRelationalCommit,
 } from '../../server/events/relational-event-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import { RelationalReportStore } from '../../server/storage/relational-report-store.ts';
+import { relationalPrivateStateEmpty } from '../../server/storage/relational-private-restore.ts';
+import { domainDigest } from '../../server/events/domain-events.ts';
 
 const hasCode = (code) => (error) => error.code === code;
 
@@ -63,6 +66,185 @@ test('关系状态与分页复用现有 DTO，查询不读取正文/BLOB、不�
     const table = column === 'model' ? 'generation_requests' : 'charges';
     assert.throws(() => f.db.prepare(`UPDATE ${table} SET ${column}=NULL`).run(), /immutable/);
   }
+});
+
+test('历史取消事实不依赖完成时间，父请求/列表与统计一致，NULL及真实0完整回放不补值', async (t) => {
+  const f = await fixture(t),
+    originals = [
+      { id: 'cancel-unknown', reason: 'request_cancelled', completedAt: null, createdAt: NOW - 1 },
+      { id: 'cancel-zero', reason: 'request_cancelled', completedAt: 0, createdAt: 0 },
+      { id: 'failed-unknown', reason: null, completedAt: null, createdAt: NOW - 1 },
+    ],
+    sourceId = 'cancelled-history-source',
+    replayer = new RelationalCommitReplayer(f.db);
+  for (const [index, original] of originals.entries()) {
+    f.db.transaction(() => {
+      const requestId = `request-${original.id}`,
+        inputId = `input-${original.id}`,
+        origin = { sourceId, originalId: original.id },
+        event = (eventType, streamId, payload, memberId = 'm1') => ({
+          eventType,
+          streamId,
+          payload,
+          memberId,
+          accountId: null,
+          occurredAt: NOW,
+          policyVersion: 'source-policy',
+          pricingVersion: 'source-price',
+        }),
+        events = [];
+      if (index === 0) {
+        events.push(
+          event(
+            'ImportSourceRegistered',
+            `import:${sourceId}`,
+            {
+              sourceId,
+              sourceSha256: domainDigest(originals),
+              sourceCommit: 'independent-source-shape',
+              cutoffSeq: '0',
+              cutoffAt: NOW,
+              manifestSha256: domainDigest({ originals }),
+              route: 'B',
+            },
+            null,
+          ),
+        );
+      }
+      events.push(
+        event('OpeningInputRecorded', `input:${inputId}`, {
+          ...f.inputs.stageOpeningInput({
+            inputId,
+            memberId: 'm1',
+            completeness: 'unavailable',
+            body: null,
+            logicalBytes: 0,
+            assets: [],
+          }),
+          origin,
+        }),
+        event('OpeningRequestRecorded', `request:${requestId}`, {
+          requestId,
+          originalRequestId: requestId,
+          memberId: 'm1',
+          inputId,
+          contextId: null,
+          source: null,
+          operation: 'generate',
+          model: null,
+          sampleCount: null,
+          seedMode: 'unknown',
+          confirmation: null,
+          acceptedAt: null,
+          retiredAt: null,
+          origin: { sourceId, originalId: requestId },
+        }),
+        event('OpeningJobRecorded', `request:${requestId}`, {
+          jobId: original.id,
+          requestId,
+          createdAt: original.createdAt,
+          sampleIndex: null,
+          actualSeed: null,
+          status: 'failed',
+          queueSeq: null,
+          queueExpiresAt: null,
+          deadlineAt: null,
+          admissionEpoch: null,
+          artifactId: null,
+          cacheKey: null,
+          completedAt: original.completedAt,
+          errorCode: 'request_cancelled',
+          errorStatus: null,
+          cancellationReason: original.reason,
+          lateResultAt: null,
+          freeSucceededAt: null,
+          freeWarningThreshold: null,
+          retiredAt: null,
+          origin,
+        }),
+      );
+      const {
+        policyVersion: _policy,
+        pricingVersion: _pricing,
+        ...metadata
+      } = meta(`opening-${original.id}`);
+      replayer.appendCommit(
+        {
+          ...metadata,
+          fingerprint: domainDigest(original),
+          events,
+          expectedVersions: Object.fromEntries(events.map((event) => [event.streamId, '0'])),
+          receipt: { imported: original.id },
+        },
+        f.inputs,
+      );
+    })();
+  }
+  f.db.pragma('query_only=ON');
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    store = new RelationalRequestStore(f.db),
+    page = store.readMemberRequests('m1', 20),
+    range = {
+      since: new Date(0).toISOString(),
+      until: new Date(NOW + 1).toISOString(),
+      memberId: 'm1',
+      operation: 'generate',
+      dates: null,
+    };
+  for (const original of originals) {
+    const state = store.readMemberRequest(`request-${original.id}`, 'm1'),
+      dto = publicGenerationRequest(state);
+    assert.deepEqual(
+      page.requests.find((row) => row.id === state.id),
+      state,
+    );
+    assert.equal(dto.jobs[0].cancelled, original.reason !== null);
+    assert.equal(
+      dto.jobs[0].completedAt,
+      original.completedAt === null ? null : new Date(0).toISOString(),
+    );
+    assert.equal(dto.status, original.reason === null ? 'failed' : 'cancelled');
+    assert.equal(dto.counts.failed, 1, '原counts.failed仍包含取消项');
+    assert.throws(() => store.readMemberRequest(state.id, 'm2'), hasCode('request_not_found'));
+  }
+  const activity = await new RelationalReportStore(f.db).readActivityDays(range);
+  assert.equal(
+    activity.reduce((sum, row) => sum + row.cancelled, 0),
+    2,
+  );
+  assert.equal(
+    activity.reduce((sum, row) => sum + row.failed, 0),
+    1,
+  );
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(databaseState(f.db), before);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(
+    target,
+    f.db.prepare('SELECT history_id FROM projection_state').get().history_id,
+  );
+  const replay = new RelationalCommitReplayer(target);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
+  }
+  target.pragma('query_only=ON');
+  const targetBefore = databaseState(target);
+  assert.deepEqual(
+    target.prepare('SELECT * FROM generation_jobs ORDER BY id').all(),
+    f.db.prepare('SELECT * FROM generation_jobs ORDER BY id').all(),
+  );
+  assert.deepEqual(await new RelationalReportStore(target).readActivityDays(range), activity);
+  assert.equal(relationalPrivateStateEmpty(target), true);
+  assert.throws(
+    () => new RelationalRequestStore(target).readMemberRequest('request-cancel-unknown', 'm1'),
+    hasCode('session_expired'),
+  );
+  assert.equal(databaseState(target), targetBefore);
+  assert.equal(databaseState(f.db), before);
 });
 
 test('当前 Key/Cookie 认证与稳定归属保持，换 Key 和停止接单不改变旧请求读取', async (t) => {

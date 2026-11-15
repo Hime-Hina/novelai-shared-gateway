@@ -8,6 +8,8 @@ import {
 } from './authentication.ts';
 import { requireDiscordMembership, type DiscordDependencies } from './discord-auth.ts';
 
+export type RelationalMemberApiKeyAuthorization = <T>(read: (memberId: string) => T) => Promise<T>;
+
 function fail(): never {
   throw Object.assign(new Error('invalid token.'), { statusCode: 401 });
 }
@@ -25,7 +27,7 @@ export async function authorizeRelationalMemberApiKey({
   token: string;
   env?: NodeJS.ProcessEnv;
   discordFetch?: DiscordDependencies['discordFetch'];
-}) {
+}): Promise<RelationalMemberApiKeyAuthorization> {
   const authentication: MemberApiKeyStore = {
     memberApiKeyTransaction: (hash, authorized) =>
       members.memberApiKeyTransaction(hash, (member) => {
