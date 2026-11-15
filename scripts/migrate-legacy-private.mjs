@@ -62,6 +62,7 @@ function legacyProxy(account) {
  * effectiveAt is an explicitly selected validity check later than the capture window,
  * NOT the public commit time or a claim about the exact private snapshot instant.
  * configuredOwner comes from the selected environment; sessionOwner is only the stored revocation ack.
+ * discordLoginEnabled is the selected old owner's Boolean(guild || clientId || secret), never current env.
  * Apply only to a new building staging DB. The CLI owns one savepoint around public + private conversion,
  * then seals that new-format source; public rebuild + the existing unique installer restore its private cut.
  */
@@ -77,6 +78,10 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       Array.isArray(normalized.sessions),
   );
   const configured = owner(normalized.configuredOwner);
+  requireValue(
+    typeof normalized.discordLoginEnabled === 'boolean' &&
+      (!configured.guildId || normalized.discordLoginEnabled),
+  );
   const previous = normalized.sessionOwner === null ? null : owner(normalized.sessionOwner);
   const environment = {
     OWNER_USER_ID: configured.ownerUserId,
@@ -146,7 +151,9 @@ export function migrateLegacyPrivate(target, normalized, refs) {
       .get(row.id);
     requireValue(event.payload.memberId === row.id && current?.source_event_id === event.eventId);
     const active =
-      current.status === 'active' && user.enabled !== false && user.discord?.member !== false;
+      current.status === 'active' &&
+      user.enabled !== false &&
+      (!normalized.discordLoginEnabled || user.discord?.member !== false);
     const originalEpoch =
       text(user.memberAuth?.version) && user.memberAuth.version ? user.memberAuth.version : null;
     const key = user.token;

@@ -21,6 +21,10 @@ import {
   authenticateMemberApiKey,
   authenticateMemberSession,
 } from '../../server/members/authentication.ts';
+import {
+  discordLoginEnabled,
+  requireDiscordMembership,
+} from '../../server/members/discord-auth.ts';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { databaseState, meta } from '../helpers/relational-generation.mjs';
 
@@ -58,6 +62,7 @@ function fixture(t, change = () => {}) {
   initializeFixtureConfiguration(db);
   const normalized = {
     effectiveAt: 1000,
+    discordLoginEnabled: true,
     configuredOwner: { ...configuredOwner },
     sessionOwner: { ...configuredOwner },
     users: [
@@ -297,6 +302,93 @@ test('旧owner ack/config变化不能留旧owner或新owner Cookie；无原versi
     members.loginMemberPassword('unproved-password', password),
     /用户名或密码错误/,
   );
+});
+
+test('原Discord关闭时忽略旧false缓存保当前Key和原Cookie；启用时含owner仍拒且不凭空bypass', async (t) => {
+  t.mock.method(Date, 'now', () => 1000);
+  const disabledEnvironment = { OWNER_USER_ID: configuredOwner.ownerUserId };
+  assert.equal(discordLoginEnabled(disabledEnvironment), false);
+  const disabled = fixture(t, (value) => {
+    value.discordLoginEnabled = false;
+    value.configuredOwner.guildId = '';
+    value.sessionOwner.guildId = '';
+    value.sessions.find((row) => row.user_id === 'revoked').token_hash = digest('r'.repeat(43));
+  });
+  const disabledUser = disabled.normalized.users.find((row) => row.id === 'revoked').data;
+  await requireDiscordMembership(disabledUser, {
+    env: disabledEnvironment,
+    store: { update: () => assert.fail('disabled Discord must return before any IO') },
+  });
+  disabled.db.transaction(() =>
+    migrateLegacyPrivate(disabled.db, disabled.normalized, disabled.refs),
+  )();
+  const members = new RelationalMemberStore(disabled.db);
+  assert.equal((await authenticateMemberApiKey(members, disabledUser.token))?.id, 'revoked');
+  const originalSession = await authenticateMemberSession(
+    members,
+    'r'.repeat(43),
+    disabledEnvironment,
+    1000,
+  );
+  assert.equal(originalSession.user.id, 'revoked');
+  assert.equal(originalSession.expiresAt, 5000);
+  assert.equal(
+    await authenticateMemberSession(members, 'r'.repeat(43), disabledEnvironment, 5000),
+    null,
+  );
+  const enabled = fixture(t, (value) => {
+    value.users.find((row) => row.id === 'owner').data.discord.member = false;
+  });
+  const enabledEnvironment = {
+    OWNER_USER_ID: configuredOwner.ownerUserId,
+    DISCORD_GUILD_ID: configuredOwner.guildId,
+    DISCORD_CLIENT_ID: '323456789012345678',
+    DISCORD_CLIENT_SECRET: 'synthetic-discord-secret',
+    PUBLIC_BASE_URL: 'https://gateway.example',
+  };
+  assert.equal(discordLoginEnabled(enabledEnvironment), true);
+  for (const id of ['owner', 'revoked']) {
+    await assert.rejects(
+      requireDiscordMembership(enabled.normalized.users.find((row) => row.id === id).data, {
+        env: enabledEnvironment,
+        store: { update: () => assert.fail('cached false must reject before IO') },
+      }),
+      (error) => error.statusCode === 403 && /不在指定 Discord/.test(error.message),
+    );
+  }
+  enabled.db.transaction(() =>
+    migrateLegacyPrivate(enabled.db, enabled.normalized, enabled.refs),
+  )();
+  const enabledMembers = new RelationalMemberStore(enabled.db);
+  for (const key of ['STA1N-current-owner', 'STA1N-revoked'])
+    assert.equal(await authenticateMemberApiKey(enabledMembers, key), null);
+  const partial = fixture(t, (value) => {
+    value.configuredOwner.guildId = '';
+    value.sessionOwner.guildId = '';
+    value.discordLoginEnabled = true;
+  });
+  assert.equal(discordLoginEnabled({ DISCORD_CLIENT_ID: 'configured-without-guild' }), true);
+  partial.db.transaction(() =>
+    migrateLegacyPrivate(partial.db, partial.normalized, partial.refs),
+  )();
+  assert.equal(
+    await authenticateMemberApiKey(new RelationalMemberStore(partial.db), 'STA1N-revoked'),
+    null,
+  );
+  for (const enabled of [undefined, false]) {
+    const invalid = fixture(t, (value) => {
+      value.discordLoginEnabled = enabled;
+    });
+    const before = databaseState(invalid.db);
+    assert.throws(
+      () =>
+        invalid.db.transaction(() =>
+          migrateLegacyPrivate(invalid.db, invalid.normalized, invalid.refs),
+        )(),
+      /Selected legacy private/,
+    );
+    assert.equal(databaseState(invalid.db), before);
+  }
 });
 
 test('原source/origin/current token错配拒绝；真实私有尾INSERT失败外catch回滚全部私有且可健康重试', (t) => {
