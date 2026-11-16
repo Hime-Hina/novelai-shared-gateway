@@ -56,6 +56,7 @@
 - [数据模型迁移前置盘点](history/database-model-preflight.md)：固定线上副本的聚合盘点、终态开账类别试验、实际回放覆盖及待决定的恢复范围；不代表正式迁移或切换验收。
 - [真实旧归档恢复验证](history/database-model-archive-recovery-20261114.md)：固定旧包的真实源审计、从零事件重建、资源测量及历史查询/审计来源缺口；不代表完整归档或新格式 ready。
 - [数据模型迁移选择](history/database-model-migration-decision.md)：已确认的 B、旧键、会话、缺图四项选择、保留范围及执行顺序。
+- [真实 B 转换与联合恢复](history/database-model-b-migration-acceptance-20261116.md)：固定实际迁移包的完整来源核对、34 表联合恢复、原生 SQL 故障、重复零写和资源测量；目标仍为 building，后续 ready 与整体验收分别记录。
 - [数据模型完整源码验证](history/database-model-full-source-20261115.md)：固定 df0、b9、0094243 与 147aabd 四轮完整后端的实际失败阶段、封存证据与各轮环境资格；不是最终验收。
 - [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 
