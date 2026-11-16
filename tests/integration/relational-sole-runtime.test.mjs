@@ -373,7 +373,7 @@ function replicaClockHook(f, hold = false, ignoreGenerationAbort = false, releas
     mock.timers.enable({apis:['setTimeout','Date'],now:${NOW + 2 * 86400000}});
     if(${releaseSources})registerHooks({load(url,context,next){
       const result=next(url,context);if(!url.endsWith('/server/gateway-runtime.ts'))return result;
-      let source=result.source;
+      let source=typeof result.source==='string'?result.source:new TextDecoder().decode(result.source);
       for(const [marker,observation] of [
         ['replicaCopy = (async () => {','process.send?.({replicaRoundStarted:true});'],
         ['scheduleReplicaCopy(progress ? 1000 : 60000);','process.send?.({replicaRoundDone:true,replicaProgress:progress});'],
@@ -422,6 +422,66 @@ function replicaMessages(server) {
   server.child.on('message', (message) => messages.push(message));
   return messages;
 }
+
+test(
+  'replica round hook accepts the real Node gateway loader source',
+  { timeout: 15000 },
+  async (t) => {
+    const preload = `
+    import { registerHooks } from 'node:module';
+    registerHooks({load(url,context,next){
+      const result=next(url,context);
+      if(url.endsWith('/server/gateway-runtime.ts'))console.log(JSON.stringify({
+        gatewaySourceType:typeof result.source,
+        gatewaySourceConstructor:result.source?.constructor?.name,
+      }));
+      return result;
+    }});
+    ${replicaClockHook({ filename: 'unused-load-only.sqlite' }, false, false, true)}
+  `;
+    const child = spawn(
+      process.execPath,
+      [
+        '--import',
+        `data:text/javascript,${encodeURIComponent(preload)}`,
+        '--input-type=module',
+        '-e',
+        `await import(${JSON.stringify(new URL('../../server/gateway-runtime.ts', import.meta.url).href)}); console.log('replica hook gateway loaded');`,
+      ],
+      {
+        cwd: root,
+        env: {
+          PATH: process.env.PATH,
+          SystemRoot: process.env.SystemRoot,
+          WINDIR: process.env.WINDIR,
+          TEMP: process.env.TEMP,
+          TMP: process.env.TMP,
+          NODE_OPTIONS: process.env.NODE_OPTIONS,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    const stdout = [],
+      stderr = [];
+    child.stdout.on('data', (bytes) => stdout.push(bytes));
+    child.stderr.on('data', (bytes) => stderr.push(bytes));
+    const finished = once(child, 'exit');
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await finished;
+      }
+    });
+    const [code, signal] = await finished,
+      output = Buffer.concat(stdout).toString();
+    t.diagnostic(output.trim());
+    assert.equal(code, 0, Buffer.concat(stderr).toString());
+    assert.equal(signal, null);
+    assert.match(output, /"gatewaySourceType":"(?:string|object)"/);
+    assert.match(output, /replica hook gateway loaded/);
+  },
+);
 
 async function tickReplicaClock(server, messages, n) {
   const previous = messages.filter((m) => m.tick === n).length;
