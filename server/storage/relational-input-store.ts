@@ -1447,37 +1447,39 @@ export class RelationalInputStore {
         this.insertContext(prepared.contextId, prepared.context);
       }
       this.stagePreparedInput(accepted.inputId, accepted.memberId, prepared);
-      this.applyAcceptedEvents(result.events);
+      const applyAccepted = this.createAcceptedProjector();
+      for (const event of result.events) {
+        applyAccepted(event);
+      }
       return result;
     })();
   }
 
-  private applyAcceptedEvents(events: RelationalEvent[]): void {
-    for (const event of events) {
+  private createAcceptedProjector() {
+    const insertRequest = this.sqlite.prepare(
+      `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    return (event: RelationalEvent): void => {
       if (event.eventType === 'RequestAccepted' || event.eventType === 'OpeningRequestRecorded') {
         const p = event.payload;
-        this.sqlite
-          .prepare(
-            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          )
-          .run(
-            p.requestId,
-            p.memberId,
-            p.inputId,
-            p.contextId,
-            p.source,
-            p.operation,
-            p.model,
-            p.sampleCount,
-            p.seedMode,
-            p.confirmation === null ? null : canonicalJson(p.confirmation),
-            event.eventType === 'OpeningRequestRecorded'
-              ? event.payload.acceptedAt
-              : event.occurredAt,
-            event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
-            event.eventId,
-          );
+        insertRequest.run(
+          p.requestId,
+          p.memberId,
+          p.inputId,
+          p.contextId,
+          p.source,
+          p.operation,
+          p.model,
+          p.sampleCount,
+          p.seedMode,
+          p.confirmation === null ? null : canonicalJson(p.confirmation),
+          event.eventType === 'OpeningRequestRecorded'
+            ? event.payload.acceptedAt
+            : event.occurredAt,
+          event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
+          event.eventId,
+        );
       } else if (event.eventType === 'JobAccepted') {
         const p = event.payload;
         this.sqlite
@@ -1552,7 +1554,7 @@ export class RelationalInputStore {
             event.eventId,
           );
       }
-    }
+    };
   }
 
   createInputProjector(
@@ -1577,6 +1579,10 @@ export class RelationalInputStore {
         event.eventType === 'OpeningInputRecorded' ||
         event.eventType === 'OpeningRequestRecorded' ||
         event.eventType === 'OpeningIdempotencyRecorded',
+    );
+    const inputRegistrations = stored.events.filter(
+      (event) =>
+        event.eventType === 'InputRegistered' || event.eventType === 'OpeningInputRecorded',
     );
     if (
       opening &&
@@ -1647,12 +1653,9 @@ export class RelationalInputStore {
           unavailable();
         }
         if (
-          stored.events.some(
+          inputRegistrations.some(
             (registered) =>
-              registered.eventIndex >= event.eventIndex &&
-              (registered.eventType === 'InputRegistered' ||
-                registered.eventType === 'OpeningInputRecorded') &&
-              registered.payload.inputId === p.inputId,
+              registered.eventIndex >= event.eventIndex && registered.payload.inputId === p.inputId,
           )
         ) {
           unavailable();
@@ -1748,11 +1751,16 @@ export class RelationalInputStore {
         this.insertContext(contextId, context);
       }
     };
-    const byInput = new Map(content.map((input) => [input.inputId, input]));
+    const byInput = new Map(content.map((input) => [input.inputId, input])),
+      verifiedInputs = new Set<string>();
     const copyInput = (inputId: string, existingOnly = false) => {
       const input = byInput.get(inputId);
       if (!input) {
         unavailable();
+      }
+      // 原事实和不可变约束限定保护内容；同笔多次引用只核一遍同一目标正文/附件。
+      if (verifiedInputs.has(inputId)) {
+        return;
       }
       if (replayed || existingOnly || source.sqlite === this.sqlite) {
         const existing = this.input(input.inputId, input.row.member_id);
@@ -1771,10 +1779,13 @@ export class RelationalInputStore {
             unavailable();
           }
         }
+        verifiedInputs.add(inputId);
         return;
       }
       this.insertInput(input);
+      verifiedInputs.add(inputId);
     };
+    const applyAccepted = this.createAcceptedProjector();
     return (event: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Input projection requires the owning import transaction.');
@@ -1795,16 +1806,16 @@ export class RelationalInputStore {
         if (replayed) {
           this.request(p.requestId, p.memberId);
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'RequestAccepted') {
         copyContext(event.payload.contextId);
         if (!replayed) {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'JobAccepted') {
         if (!replayed) {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'OpeningIdempotencyRecorded') {
         if (replayed) {
@@ -1815,7 +1826,7 @@ export class RelationalInputStore {
             true,
           );
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'RequestAliasRegistered') {
         if (replayed) {
@@ -1836,7 +1847,7 @@ export class RelationalInputStore {
             unavailable();
           }
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else {
         throw new Error("Input projection cannot apply another owner's facts.");
