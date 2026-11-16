@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
+import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import {
   FAILURE_EVENT_PREDICATE,
@@ -24,6 +25,7 @@ import { recordGenerationFailure } from '../../server/generation/execution.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 import { lateResultsHttpFixture } from '../helpers/relational-late-results.mjs';
 import { launchGateway, assertChildPublicReplay } from '../helpers/relational-child.mjs';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 
 const day = 86400000,
   iso = (time) => new Date(time).toISOString();
@@ -487,6 +489,49 @@ test(
   '成员冷历史迟到结果只签发本人仍存在的图片，真实 HTTP 无 Cookie 领取签名链接',
   { timeout: 20000 },
   async (t) => {
+    const started = performance.now(),
+      inputReads = new Map(),
+      readInput = RelationalInputStore.prototype.input,
+      prepare = Database.prototype.prepare;
+    let openingJobPrepares = 0;
+    RelationalInputStore.prototype.input = function (inputId, ...args) {
+      if (inputId.startsWith('known-input-')) {
+        const count = (inputReads.get(inputId) || 0) + 1;
+        inputReads.set(inputId, count);
+        assert.ok(count <= 64, `Immutable input re-read per child: ${count}`);
+      }
+      return readInput.call(this, inputId, ...args);
+    };
+    Database.prototype.prepare = function (sql, ...args) {
+      if (sql.startsWith('INSERT INTO generation_jobs(')) {
+        openingJobPrepares++;
+        assert.ok(
+          openingJobPrepares <= 16,
+          `Opening job statement compiled ${openingJobPrepares} times`,
+        );
+      }
+      return prepare.call(this, sql, ...args);
+    };
+    t.after(() => {
+      RelationalInputStore.prototype.input = readInput;
+      Database.prototype.prepare = prepare;
+    });
+    const assertScopedWork = () => {
+      assert.equal(
+        inputReads.size,
+        2,
+        'Both known member inputs must reach the actual input owner',
+      );
+      assert.ok(openingJobPrepares > 0, 'Opening jobs must reach the actual SQL owner');
+      assert.ok(
+        openingJobPrepares <= 16,
+        `Opening job statement compiled ${openingJobPrepares} times`,
+      );
+      assert.ok(
+        [...inputReads.values()].every((count) => count <= 64),
+        `Immutable input re-read per child: ${JSON.stringify([...inputReads.values()])}`,
+      );
+    };
     const store = await fixture(t),
       png = Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -602,8 +647,9 @@ test(
       ],
       [['late-0', 'image-late-0']],
     );
-    const httpFixture = await lateResultsHttpFixture(t, png),
-      child = await launchGateway(
+    const httpFixture = await lateResultsHttpFixture(t, png);
+    assertScopedWork();
+    const child = await launchGateway(
         httpFixture,
         'http://127.0.0.1:1',
         { PUBLIC_HOST: 'gateway.example' },
@@ -651,5 +697,8 @@ test(
     assert.ok(!JSON.stringify(alice).includes('private-prompt'));
     await child.stop();
     assertChildPublicReplay(httpFixture);
+    assertScopedWork();
+    // 同步回放也须满足原期限，不能等事件循环超时回调被阻挡后仍报绿。
+    assert.ok(performance.now() - started < 20000, 'Complete cold-history acceptance exceeded 20s');
   },
 );

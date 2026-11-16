@@ -2810,6 +2810,32 @@ export class RelationalGenerationStore {
         fail('开账任务缺少同笔唯一原诊断');
       }
     }
+    // 同笔只编译一次 SQL；每个事件仍读取当前行并执行原约束。
+    const openingJobRequest = openingJobs.length
+        ? this.sqlite.prepare<
+            [string],
+            {
+              memberId: string;
+              operation: Publication['operation'] | null;
+              source: string | null;
+              acceptedAt: number | null;
+              retiredAt: number | null;
+            }
+          >(
+            'SELECT member_id AS memberId,operation,source,accepted_at AS acceptedAt,retired_at AS retiredAt FROM generation_requests WHERE id=?',
+          )
+        : null,
+      openingJobArtifact = openingJobs.length
+        ? this.sqlite.prepare<[string], { memberId: string; operation: string | null }>(
+            'SELECT member_id AS memberId,operation FROM artifacts WHERE id=?',
+          )
+        : null,
+      insertOpeningJob = openingJobs.length
+        ? this.sqlite.prepare(
+            `INSERT INTO generation_jobs(id,request_id,sample_index,actual_seed,status,queue_seq,queue_expires_at,deadline_at,admission_epoch,artifact_id,cache_key,completed_at,error_code,error_status,cancellation_reason,late_result_at,free_succeeded_at,free_warning_threshold,retired_at,source_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+        : null;
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Generation projection requires the owning transaction.');
@@ -2820,20 +2846,7 @@ export class RelationalGenerationStore {
       switch (e.eventType) {
         case 'OpeningJobRecorded': {
           const p = e.payload,
-            request = this.sqlite
-              .prepare<
-                [string],
-                {
-                  memberId: string;
-                  operation: Publication['operation'] | null;
-                  source: string | null;
-                  acceptedAt: number | null;
-                  retiredAt: number | null;
-                }
-              >(
-                'SELECT member_id AS memberId,operation,source,accepted_at AS acceptedAt,retired_at AS retiredAt FROM generation_requests WHERE id=?',
-              )
-              .get(p.requestId);
+            request = openingJobRequest!.get(p.requestId);
           if (
             !request ||
             e.memberId !== request.memberId ||
@@ -2885,11 +2898,7 @@ export class RelationalGenerationStore {
             }
           }
           if (p.artifactId !== null) {
-            const existing = this.sqlite
-                .prepare<[string], { memberId: string; operation: string | null }>(
-                  'SELECT member_id AS memberId,operation FROM artifacts WHERE id=?',
-                )
-                .get(p.artifactId),
+            const existing = openingJobArtifact!.get(p.artifactId),
               planned = openingArtifacts.get(p.artifactId),
               artifact = existing ?? planned?.payload;
             if (
@@ -2902,33 +2911,28 @@ export class RelationalGenerationStore {
               fail('开账任务缺少同成员/操作的唯一原产物');
             }
           }
-          this.sqlite
-            .prepare(
-              `INSERT INTO generation_jobs(id,request_id,sample_index,actual_seed,status,queue_seq,queue_expires_at,deadline_at,admission_epoch,artifact_id,cache_key,completed_at,error_code,error_status,cancellation_reason,late_result_at,free_succeeded_at,free_warning_threshold,retired_at,source_event_id)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-            )
-            .run(
-              p.jobId,
-              p.requestId,
-              p.sampleIndex,
-              p.actualSeed,
-              p.status,
-              p.queueSeq === null ? null : BigInt(p.queueSeq),
-              p.queueExpiresAt,
-              p.deadlineAt,
-              p.admissionEpoch,
-              p.artifactId,
-              p.cacheKey,
-              p.completedAt,
-              p.errorCode,
-              p.errorStatus,
-              p.cancellationReason,
-              p.lateResultAt,
-              p.freeSucceededAt,
-              p.freeWarningThreshold,
-              p.retiredAt,
-              e.eventId,
-            );
+          insertOpeningJob!.run(
+            p.jobId,
+            p.requestId,
+            p.sampleIndex,
+            p.actualSeed,
+            p.status,
+            p.queueSeq === null ? null : BigInt(p.queueSeq),
+            p.queueExpiresAt,
+            p.deadlineAt,
+            p.admissionEpoch,
+            p.artifactId,
+            p.cacheKey,
+            p.completedAt,
+            p.errorCode,
+            p.errorStatus,
+            p.cancellationReason,
+            p.lateResultAt,
+            p.freeSucceededAt,
+            p.freeWarningThreshold,
+            p.retiredAt,
+            e.eventId,
+          );
           this.inputs.readJobSeed(p.jobId);
           if (['pending', 'queued', 'running'].includes(p.status)) {
             this.inputs.readJobInput(p.jobId);
