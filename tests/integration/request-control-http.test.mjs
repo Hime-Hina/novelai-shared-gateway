@@ -30,7 +30,7 @@ function selectsProtectedContent(sql) {
   return (
     /\bselect\b/i.test(columns) &&
     /\b(?:generation_inputs|input_assets|normalization_contexts)\b/i.test(columns) &&
-    /\bbody\b|\bbytes\b|\*(?=\s*(?:,|from\b))/i.test(columns)
+    /\bbody\b|\bbytes\b|select\s+\*|\*(?=\s*(?:,|from\b))/i.test(columns)
   );
 }
 
@@ -49,6 +49,7 @@ test('查询spy按读取列区分logical-size元数据与保护正文/BLOB，不
     'SELECT bytes FROM input_assets LIMIT 1',
     'SELECT a.bytes AS metadata FROM input_assets a',
     'SELECT * FROM generation_inputs LIMIT 1',
+    'SELECT * /* ordinary comment */ FROM generation_inputs LIMIT 1',
     'SELECT i.* FROM generation_inputs i',
     'SELECT i.id,i.* FROM generation_inputs i',
     'SELECT body FROM normalization_contexts LIMIT 1',
