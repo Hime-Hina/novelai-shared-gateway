@@ -57,3 +57,21 @@
 新库小于原库属于该 B 结果的实际文件测量。旧完整归档仍必须保留；尚未完成同候选实际加密备份、独立归档、全外存、系统文件缓存和完整维护窗口的联合容量报告，不能只用两个数据库文件相减宣称总体节省。
 
 原始 argv、程序、stdout/stderr、进程 wait、前后 SHA、逐文件清单、完整来源核对和联合恢复记录封存在本地受保护证据目录 `novelai-B-real-47ea-6a3e192-20261116`；不提交真实实体、提示词、图片或认证内容。最终验收仍按[离线恢复](../operations/relational-recovery.md)及[重构计划](../plans/database-model-redesign.md)完成真实对象、唯一安装、同候选 HTTP/调度与切换演练。
+
+## 后继 Linux 包的两对象原图试验
+
+本节单独绑定后继 `669fc14050a161a85f0539f23aa8b1bf884ebc3f` 的实际 Linux 迁移包，不改变上文固定 6a 的转换与联合恢复含义。[CI43795003961](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43795003961) 的实际 checkout `fb48cbd2a917135568443b66b72b25ccf4f41755` 与 669 同 tree，编译迁移检查 53/53、零跳过后上传 [artifact14193879608](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43795003961/artifacts/14193879608)。
+
+| 固定对象或实测 | 依据 |
+| --- | --- |
+| 下载 ZIP | 9,786,431 B，SHA `2468fad937903dba46480a449689093cdaa0d22524ba4bfb1203408195f875cb`，匹配 API 和上传记录 |
+| 包内 tar | 9,807,391 B，SHA `9925ffc7b86672eccd0524db16e411064ddd3dfe9ffde6d0dcbc8b48a0cb6717`；4,085 条 manifest 与实际文件/链接完整一致，Linux x64 / Node 22.23.4 / ABI 127 |
+| 选定范围 | 两个不同的原对象：一个当前候选、一个原 Pik 声明；原成员、输入、导出行及含 LF 摘要绑定，原 fa727 配置和证明字节不改 |
+| 实际读取 | 原服务主机身份和 13 个代码 pin 前后不变；实际编译 materializer 复用默认 Pik owner，顺序两次逻辑 get，均成功；没有重试、R2 回退或外部写入/删除 |
+| 字节与耗时 | 原图合计 541,941 B；工具 12.742 s，外层 SSH 17.487 s，Node 自然退出 0；10 秒 RSS 样本 120,041,472 B，不是峰值 |
+| 返包 | 563,200 B，SHA `354663f538227c73bf3c77770fdb312dca18c72e88f15640797a0378599b0fd1`；固定六个普通文件，无链接或路径逃逸 |
+| 独立接收核验 | 两 PNG 的 MIME、全部 chunk CRC/IEND、SHA、长度、稳定归属、原导出行及 receipt 的 tool/selection/method 全部一致；新 Local 复用 manifest SHA `6f89e927e6ace75fbc5a1eaa756263bd74b771f2124d3cea9cee236d3001b6d6`，仅重绑传输路径，原 receipt 字节/SHA/方法保留 |
+
+五个本地 SSH/SCP 进程均记录实际 PID、开始时间及同句柄 wait，正常退出；远端 Node 也实际 wait 到退出。外层 110 秒、16 KiB 输出及 4 MiB 返包上限由独占控制执行；正常、输出超限与超时三项自有子进程反例通过。私有控制、原 stdout/stderr、返包与复用输入分别封存在 `novelai-pik-2item-pilot-control-669-20261116` 和 `novelai-pik-pilot-root-supervisor-20261116`。
+
+这两次实际云读取只证明所选字节及接收闭包。物理 HTTP 请求数、状态码和 wire 字节未单独观测，仍未知；其余原图、全外存容量、最终同候选 ready 与发布验收继续独立完成。原 229 份 R2 输入 e911 保持不变，本次没有生产迁移或切换。
