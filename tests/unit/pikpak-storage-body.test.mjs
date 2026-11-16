@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
-import { brotliCompressSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 
 const config = {
@@ -71,4 +71,69 @@ test('Pik get preserves the SDK error when destroying its body throws', async (t
   });
   await assert.rejects(storage.get(image), (actual) => actual === error);
   assert.equal(attempted, 1);
+});
+
+for (const method of ['get', 'put']) {
+  test(`Pik ${method} waits for the SDK HTTP error body close before rejecting`, async (t) => {
+    const storage = new PikPakStorage(config);
+    let closeObserved = false;
+    const body = new Readable({
+      read() {},
+      destroy(error, callback) {
+        setTimeout(() => callback(error), 20);
+      },
+    });
+    const closed = new Promise((resolve) =>
+      body.once('close', () => {
+        closeObserved = true;
+        resolve();
+      }),
+    );
+    t.after(async () => {
+      body.destroy();
+      await closed;
+    });
+    const error = Object.assign(new Error('synthetic HTTP failure'), {
+      status: 403,
+      response: { body },
+    });
+    t.mock.method(
+      storage.client,
+      method === 'get' ? 'customRequest' : 'putFileContents',
+      async (filename, data, options) => {
+        assert.equal(filename, `${sha256}.br`);
+        if (method === 'put') {
+          assert.deepEqual(brotliDecompressSync(data), original);
+          assert.ok(options.signal instanceof AbortSignal);
+        } else {
+          assert.equal(data.method, 'GET');
+        }
+        throw error;
+      },
+    );
+    await assert.rejects(
+      method === 'get' ? storage.get(image) : storage.put(image, original),
+      (actual) => actual === error,
+    );
+    assert.equal(body.destroyed, true);
+    assert.equal(closeObserved, true);
+  });
+}
+
+test('Pik put returns the actual compressed byte count after a confirmed upload', async (t) => {
+  const storage = new PikPakStorage(config);
+  let compressedBytes = 0;
+  const request = t.mock.method(
+    storage.client,
+    'putFileContents',
+    async (filename, data, options) => {
+      assert.equal(filename, `${sha256}.br`);
+      assert.deepEqual(brotliDecompressSync(data), original);
+      assert.ok(options.signal instanceof AbortSignal);
+      compressedBytes = data.length;
+      return true;
+    },
+  );
+  assert.equal(await storage.put(image, original), compressedBytes);
+  assert.equal(request.mock.callCount(), 1);
 });

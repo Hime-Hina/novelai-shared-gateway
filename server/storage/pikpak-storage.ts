@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import type { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
 import { createClient, type WebDAVClient } from 'webdav';
@@ -7,6 +9,18 @@ import { MAX_STORED_IMAGE_BYTES, type R2Image } from './r2-storage.ts';
 const compress = promisify(brotliCompress);
 const decompress = promisify(brotliDecompress);
 const maxArchiveBytes = MAX_STORED_IMAGE_BYTES + 1024 * 1024;
+
+async function rethrowPikPakError(error: unknown): Promise<never> {
+  // SDK 的 HTTP 错误仍持有 Node body；调用者的 inflight 必须覆盖它真正关闭。
+  try {
+    const body = (error as { response?: { body?: Readable } })?.response?.body;
+    if (body) {
+      body.destroy();
+      await finished(body, { cleanup: true });
+    }
+  } catch {}
+  throw error;
+}
 
 export interface PikPakConfig {
   url: string;
@@ -159,9 +173,11 @@ export class PikPakStorage {
       maxOutputLength: maxArchiveBytes,
     });
     // PikPak ignores conditional PUT; hash-named files make retries write the same original content.
-    const uploaded = await this.client.putFileContents(filename, compressed, {
-      signal: AbortSignal.timeout(30000),
-    });
+    const uploaded = await this.client
+      .putFileContents(filename, compressed, {
+        signal: AbortSignal.timeout(30000),
+      })
+      .catch(rethrowPikPakError);
     if (!uploaded) {
       throw new Error('PikPak upload was not confirmed');
     }
@@ -175,13 +191,7 @@ export class PikPakStorage {
         method: 'GET',
         signal: AbortSignal.timeout(30000),
       })
-      .catch((error) => {
-        // SDK 在交出响应前拒绝 HTTP 错误，未消费的 Node body 仍由本次读取关闭。
-        try {
-          error?.response?.body?.destroy?.();
-        } catch {}
-        throw error;
-      });
+      .catch(rethrowPikPakError);
     const body = (response as typeof response & { body: AsyncIterable<Uint8Array> }).body;
     if (!body) {
       throw new Error('PikPak object body is missing');
