@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { isDeepStrictEqual } from 'node:util';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
@@ -71,12 +72,14 @@ export class RelationalCommitReplayer {
     }
     return this.sqlite.transaction(() => {
       const stored = readRelationalCommit(this.sqlite, result.commitSeq);
+      // 原事实已实读；结构相等免去序列化，不等仍保留 -0/0 和省略字段的原 JSON 语义。
       if (
         typeof result.replayed !== 'boolean' ||
         canonicalJson(result.receipt) !== canonicalJson(stored.command.receipt) ||
         (result.replayed
           ? result.events.length !== 0
-          : canonicalJson(result.events) !== canonicalJson(stored.events))
+          : !isDeepStrictEqual(result.events, stored.events) &&
+            canonicalJson(result.events) !== canonicalJson(stored.events))
       ) {
         throw new Error('Business projection requires the saved complete original commit.');
       }

@@ -52,6 +52,7 @@ import {
   createMemberSession,
 } from '../../server/members/authentication.ts';
 import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import { canonicalJson } from '../../server/events/domain-events.ts';
 
 function target(t, f) {
   const db = new Database(':memory:');
@@ -632,6 +633,56 @@ test('退款仍可引用同一完整提交的 ReviewOpened；缺少原核对事�
     r.db.prepare('SELECT review_status FROM generation_attempts').get().review_status,
     'pending',
   );
+});
+
+test('已核完整提交相等不重复序列化事件数组，保原JSON表示和完整来源拒绝', async (t) => {
+  const f = await fixture(t);
+  await f.accept('equal-commit');
+  const stored = readRelationalCommit(f.db, '4'),
+    r = target(t, f),
+    originalMap = Array.prototype.map;
+  r.through(3);
+  let fullSerializations = 0;
+  Array.prototype.map = function (callback, thisArg) {
+    if (
+      callback === canonicalJson &&
+      this.length === stored.events.length &&
+      this[0]?.commitSeq === stored.events[0].commitSeq &&
+      this[0]?.eventId === stored.events[0].eventId
+    ) {
+      fullSerializations++;
+    }
+    return originalMap.call(this, callback, thisArg);
+  };
+  try {
+    r.replay(stored);
+    assert.equal(fullSerializations, 0, '已读取且相等的原提交不再排序拼接完整事件数组');
+  } finally {
+    Array.prototype.map = originalMap;
+  }
+  const compatible = structuredClone(stored),
+    accepted = compatible.events.find((event) => event.eventType === 'JobAccepted'),
+    other = target(t, f);
+  accepted.payload.sampleIndex = -0;
+  compatible.command.receipt.omitted = undefined;
+  compatible.events = compatible.events.map((event) =>
+    Object.fromEntries(Object.entries(event).reverse()),
+  );
+  other.through(3);
+  other.replay(compatible);
+  assert.equal(other.db.prepare('SELECT sample_index n FROM generation_jobs').get().n, 0);
+  const before = databaseState(other.db),
+    changes = other.db.prepare('SELECT total_changes() n').get().n;
+  other.replay(compatible);
+  assert.equal(databaseState(other.db), before);
+  assert.equal(other.db.prepare('SELECT total_changes() n').get().n, changes);
+  const corrupted = structuredClone(stored),
+    rejected = target(t, f);
+  corrupted.events.find((event) => event.eventType === 'JobAccepted').payload.sampleIndex = 1;
+  rejected.through(3);
+  const original = databaseState(rejected.db);
+  assert.throws(() => rejected.replay(corrupted), /原输入|上下文|source/);
+  assert.equal(databaseState(rejected.db), original);
 });
 
 test('输入来源必须匹配完整原提交，正文损坏或重复 checkpoint 缺少正文时拒绝且不修补', async (t) => {

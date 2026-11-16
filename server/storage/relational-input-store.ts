@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
@@ -1566,10 +1567,11 @@ export class RelationalInputStore {
       throw new Error('Input projection requires the owning import transaction.');
     }
     const commitSeq = stored.events[0]?.commitSeq;
-    if (
-      !commitSeq ||
-      canonicalJson(readRelationalCommit(source.sqlite, commitSeq)) !== canonicalJson(stored)
-    ) {
+    if (!commitSeq) {
+      unavailable();
+    }
+    const original = readRelationalCommit(source.sqlite, commitSeq);
+    if (!isDeepStrictEqual(original, stored) && canonicalJson(original) !== canonicalJson(stored)) {
       unavailable();
     }
     const contexts = new Map<string, RelationalNormalizationContext>();

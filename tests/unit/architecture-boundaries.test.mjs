@@ -568,6 +568,7 @@ for (const filename of [
       'recordArtifactReplica',
       'beginArtifactRelease',
       'recordArtifactRelease',
+      'createReplicaProjector',
       'applyReplicaEvents',
       'replayReplicaCommit',
       'copyRelationalArtifactReplica',
@@ -576,7 +577,7 @@ for (const filename of [
       'adoptRetainedInventory',
       'withRetainedArtifactRelease',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
-    ...['beginArtifactRelease', 'recordArtifactRelease'].map((name) => [
+    ...['beginArtifactRelease', 'recordArtifactRelease', 'createReplicaProjector'].map((name) => [
       `type-only replica release ${name}`,
       `import type { RelationalReplicaStore } from '../storage/relational-replica-store.ts'; type Writer = Pick<RelationalReplicaStore, '${name}'>; function run(store: Writer) { store['${name}'](command,input); }`,
     ]),

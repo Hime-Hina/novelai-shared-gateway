@@ -101,6 +101,7 @@ const mutations = new Set([
   'recordArtifactReplica',
   'beginArtifactRelease',
   'recordArtifactRelease',
+  'createReplicaProjector',
   'applyReplicaEvents',
   'replayReplicaCommit',
   'copyRelationalArtifactReplica',
