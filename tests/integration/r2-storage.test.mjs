@@ -414,6 +414,72 @@ test('R2 单次备份上传采用精确平台上限，图片限额仍为 64 MiB'
   );
 });
 
+test('cutover 备份沿原文件上传和回读校验，仍不取得 daily 删除资格', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'nai-r2-cutover-')),
+    source = path.join(directory, 'encrypted'),
+    downloaded = path.join(directory, 'downloaded'),
+    remote = new R2Storage(config),
+    object = {
+      bucket: config.bucket,
+      key: 'backups/cutover-20261116T212233.264493Z/' + digest(png),
+      byteLength: png.length,
+      sha256: digest(png),
+    },
+    calls = [],
+    timeouts = [],
+    timeout = AbortSignal.timeout;
+  await writeFile(source, png);
+  t.mock.method(AbortSignal, 'timeout', (milliseconds) => {
+    timeouts.push(milliseconds);
+    return timeout(milliseconds);
+  });
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(url.hostname, `${config.accountId}.r2.cloudflarestorage.com`);
+    assert.equal(url.pathname, '/' + config.bucket + '/' + object.key);
+    assert.equal(options.redirect, 'error');
+    calls.push(options.method);
+    if (options.method === 'PUT') {
+      const chunks = [];
+      for await (const chunk of options.body) {
+        chunks.push(chunk);
+      }
+      assert.deepEqual(Buffer.concat(chunks), png);
+      assert.equal(options.headers['if-none-match'], '*');
+      assert.equal(options.headers['content-length'], String(png.length));
+      assert.equal(options.headers['x-amz-content-sha256'], digest(png));
+      return new Response(null, { status: 200 });
+    }
+    assert.equal(options.method, 'GET');
+    return new Response(png, { headers: { 'content-length': String(png.length) } });
+  });
+  await remote.putFile(object, source);
+  await remote.getFile(object, downloaded);
+  assert.deepEqual(await readFile(downloaded), png);
+  assert.deepEqual(calls, ['PUT', 'GET']);
+  assert.deepEqual(timeouts, [600_000, 600_000]);
+  await assert.rejects(remote.removeBackup(object), /Only daily/);
+  for (const invalid of [
+    { ...object, bucket: 'another-bucket' },
+    { ...object, key: object.key.replace('cutover-', 'archive-') },
+    { ...object, key: object.key.replace('cutover-', 'cutover-/') },
+    { ...object, key: object.key.replace('20261116T212233.264493Z', 'invalid') },
+    { ...object, key: object.key + '/extra' },
+    { ...object, sha256: 'f'.repeat(64) },
+    { ...object, byteLength: 5 * 1024 ** 3 - 5 * 1024 ** 2 + 1 },
+  ]) {
+    await assert.rejects(remote.putFile(invalid, source), /descriptor/);
+    await assert.rejects(remote.getFile(invalid, downloaded), /descriptor/);
+  }
+  await assert.rejects(
+    remote.putFile(
+      { ...object, key: object.key.replace(object.sha256, 'f'.repeat(64)), sha256: 'f'.repeat(64) },
+      source,
+    ),
+    /checksum/,
+  );
+  assert.deepEqual(calls, ['PUT', 'GET']);
+});
+
 test('冷图与旧快照从 PikPak 领取时校验原图，无回执的 R2 损坏不会触发缺失回退', async (t) => {
   const f = await fixture(t);
   const image = await f.seed('img_archived');

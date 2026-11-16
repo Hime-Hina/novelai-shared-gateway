@@ -396,7 +396,7 @@ export class R2Storage {
     if (
       image.bucket !== this.config.bucket ||
       typeof image.key !== 'string' ||
-      !/^(?:images\/[A-Za-z0-9_-]{1,128}|backups\/daily-[0-9TZ.]+)\/[a-f0-9]{64}$/.test(
+      !/^(?:images\/[A-Za-z0-9_-]{1,128}|backups\/(?:daily|cutover)-[0-9TZ.]+)\/[a-f0-9]{64}$/.test(
         image.key,
       ) ||
       !/^[a-f0-9]{64}$/.test(image.sha256) ||
