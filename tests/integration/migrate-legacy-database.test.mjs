@@ -87,6 +87,7 @@ async function fixture(
   memberPatch = {},
   jobPatch = {},
   accounts = [],
+  privateState = null,
 ) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
     store = new JsonStore(path.join(directory, 'old')),
@@ -249,6 +250,18 @@ async function fixture(
   }
   if (!parent?.running && !parent?.completed) {
     await store.enableEventAuthority();
+  }
+  if (privateState) {
+    store.sqlite
+      .prepare('INSERT INTO app_meta(key,value) VALUES(?,?)')
+      .run('member_session_owner', JSON.stringify(privateState.owner));
+    for (const session of privateState.sessions) {
+      store.sqlite
+        .prepare(
+          'INSERT INTO member_sessions(token_hash,user_id,auth_version,created_at,expires_at,owner_binding) VALUES(?,?,?,?,?,?)',
+        )
+        .run(...session);
+    }
   }
   const source = path.join(directory, 'source.sqlite'),
     captureStartedAt = Date.now();
@@ -1205,6 +1218,158 @@ test('旧enabled缺失Raw-only成员沿原Key资格开账，不借公共active�
     target.close();
   }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('真实B入口独立核对私有原内容，合法同数量替换及owner ack遗漏在提交前整笔回滚', async (t) => {
+  const epoch = 'a'.repeat(32),
+    originalKey = 'STA1N-synthetic-current-key',
+    replacementKey = 'STA1N-synthetic-wrong-key',
+    owner = { ownerUserId: 'synthetic-discord-owner', guildId: 'synthetic-guild' };
+  for (const mode of [
+    'key',
+    'member-epoch',
+    'member-note',
+    'password',
+    'discord',
+    'invite',
+    'session-expiry',
+    'session-epoch',
+    'owner-ack',
+    'upstream',
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await fixture(
+          t,
+          'failed',
+          null,
+          null,
+          {
+            memberAuth: {
+              username: 'source-private-name',
+              salt: 'c'.repeat(48),
+              hash: 'd'.repeat(128),
+              version: epoch,
+            },
+            note: 'source private note',
+            ...(mode === 'invite'
+              ? { discordInvite: { hash: 'e'.repeat(64), expiresAt: 9000000000000 } }
+              : {
+                  discord: {
+                    id: 'source-discord-id',
+                    guildId: owner.guildId,
+                    member: true,
+                    accessToken: 'source-discord-access',
+                    refreshToken: 'source-discord-refresh',
+                    expiresAt: 9000000000000,
+                    checkedAt: 0,
+                  },
+                }),
+          },
+          {},
+          [{ id: 'source-account', token: 'pst-synthetic-private-upstream', enabled: false }],
+          {
+            owner,
+            sessions: [[hash('original-session'), 'member', epoch, 0, 9000000000000, null]],
+          },
+        ),
+        { file, bytes } = await selectedCutConfiguration(f),
+        options = { ...f.options, cutConfig: file, cutConfigSha256: hash(bytes) },
+        healthy = await migrateLegacyDatabase(options);
+      assert.equal(healthy.sourceReconciliation.status, 'complete');
+      assert.equal(healthy.private.sessions, 1);
+      const output = path.join(f.directory, 'wrong-private-target'),
+        prepare = TargetDatabase.prototype.prepare;
+      let changed = 0,
+        publicRows = 0;
+      const hook = t.mock.method(TargetDatabase.prototype, 'prepare', function (sql, ...args) {
+        const statement = Reflect.apply(prepare, this, [sql, ...args]);
+        const table = {
+          key: 'api_keys',
+          password: 'password_credentials',
+          discord: 'discord_bindings',
+          invite: 'discord_invites',
+          'session-expiry': 'member_sessions',
+          'session-epoch': 'member_sessions',
+          'owner-ack': 'member_auth_state',
+          upstream: 'upstream_credentials',
+        }[mode];
+        if (
+          this.name !== path.join(output, 'library.sqlite') ||
+          !(mode.startsWith('member-')
+            ? sql.startsWith('UPDATE members SET auth_epoch=')
+            : sql.startsWith(`INSERT INTO ${table}(`))
+        ) {
+          return statement;
+        }
+        const db = this;
+        return new Proxy(statement, {
+          get(target, name) {
+            if (name !== 'run') {
+              return Reflect.get(target, name);
+            }
+            return (...values) => {
+              assert.equal(db.inTransaction, true);
+              publicRows = Reflect.apply(prepare, db, [
+                'SELECT count(*) AS n FROM generation_jobs',
+              ]).get().n;
+              changed++;
+              if (mode === 'key') {
+                assert.deepEqual(values, ['member', hash(originalKey), originalKey]);
+                values = ['member', hash(replacementKey), replacementKey];
+              } else if (mode === 'session-expiry') {
+                values[5] += 1;
+              } else if (mode === 'session-epoch') {
+                values[2] = 'b'.repeat(32);
+              } else if (mode === 'member-epoch') {
+                values[0] = 'b'.repeat(32);
+              } else if (mode === 'member-note') {
+                values[1] = JSON.stringify('wrong private note');
+              } else if (mode === 'password') {
+                values[3] = 'e'.repeat(128);
+              } else if (mode === 'discord') {
+                values[1] = 'another-valid-discord-id';
+              } else if (mode === 'invite') {
+                values[2] += 1;
+              } else if (mode === 'upstream') {
+                values[1] = 'pst-synthetic-wrong-upstream';
+              }
+              const result = target.run(...values);
+              if (mode === 'owner-ack') {
+                Reflect.apply(prepare, db, ['DELETE FROM member_auth_state']).run();
+              }
+              return result;
+            };
+          },
+        });
+      });
+      try {
+        await assert.rejects(
+          migrateLegacyDatabase({ ...options, output }),
+          /Legacy source reconciliation mismatch: private_/,
+        );
+      } finally {
+        hook.mock.restore();
+      }
+      assert.equal(changed, 1);
+      assert.equal(publicRows, 1);
+      const failed = new Database(path.join(output, 'library.sqlite'));
+      try {
+        assert.equal(relationalPrivateStateEmpty(failed), true);
+        for (const table of [
+          'commits',
+          'domain_events',
+          'members',
+          'generation_inputs',
+          'generation_jobs',
+        ]) {
+          assert.equal(failed.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0, table);
+        }
+      } finally {
+        failed.close();
+      }
+      assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+    });
+  }
 });
 
 test('真实退休的完整旧键保原410不可领取，逐键仍证明其完整定义且不复活原child进历史', async (t) => {

@@ -1908,6 +1908,8 @@ export async function migrateLegacyDatabase(options) {
               descriptors,
               keyDecisions,
               privateResult,
+              cutConfiguration,
+              effectiveAt: at,
               readOriginalBaselines: () => {
                 const originalRefs = migrationReferences(options.sourceSha256);
                 return {

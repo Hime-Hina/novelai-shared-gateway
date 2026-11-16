@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto';
 import { mapLegacyArtifacts } from './migrate-legacy-artifacts.mjs';
+import { legacyProxy } from './migrate-legacy-private.mjs';
 import { canonicalJson, domainDigest } from '../server/events/domain-events.ts';
 import { readStreamProjection, readProjectedFairQuota } from '../server/events/event-store.ts';
 import { relationalInputDigest } from '../server/generation/relational-input.ts';
 import { requestNormalizationDefaults } from '../server/generation/request-fingerprint.ts';
 import { RelationalConfigurationStore } from '../server/storage/relational-configuration-store.ts';
+import { relationalPrivateTables } from '../server/storage/relational-private-restore.ts';
+import { isOwner } from '../server/members/authentication.ts';
 
 const fail = (category) => {
   throw new Error(`Legacy source reconciliation mismatch: ${category}.`);
@@ -33,6 +36,184 @@ const sqlValue = (value) => {
   }
   return value;
 };
+
+function assertOriginalPrivateState(source, target, configuration, effectiveAt) {
+  requireValue(
+    configuration && Number.isSafeInteger(effectiveAt) && effectiveAt >= 0,
+    'private_source',
+  );
+  const expected = Object.fromEntries(relationalPrivateTables.map(([table]) => [table, []])),
+    users = new Map(),
+    validText = (value) =>
+      typeof value === 'string' && Buffer.from(value).toString('utf8') === value,
+    validHash = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value),
+    validTime = (value) =>
+      typeof value === 'bigint' && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER),
+    environment = {
+      OWNER_USER_ID: configuration.configuredOwnerUserId,
+      DISCORD_GUILD_ID: configuration.configuredGuildId,
+    },
+    previous = source.prepare("SELECT value FROM app_meta WHERE key='member_session_owner'").get(),
+    owner = previous ? JSON.parse(previous.value) : null;
+  // 从封存旧源重新读取；mapper 的计数、草稿和目标私有快照都不能证明原来源内容。
+  for (const row of source.prepare('SELECT id,token,data FROM users ORDER BY id').iterate()) {
+    const user = JSON.parse(row.data),
+      originalEpoch =
+        validText(user.memberAuth?.version) && user.memberAuth.version
+          ? user.memberAuth.version
+          : null,
+      membershipPermits = !configuration.discordLoginEnabled || user.discord?.member !== false,
+      apiEligible = user.enabled !== false && membershipPermits,
+      key = user.token,
+      keyValid =
+        apiEligible &&
+        validText(key) &&
+        key.startsWith('STA1N-') &&
+        key.trim() === key &&
+        key.length <= 4096 &&
+        !key.includes('\0'),
+      member = target.prepare('SELECT auth_epoch,note_json FROM members WHERE id=?').get(row.id);
+    requireValue(member, 'private_member_identity');
+    if (apiEligible && !originalEpoch && keyValid) {
+      // 无旧版本的 API-only Key 允许新首代；它不能成为保留旧密码/Cookie 的依据。
+      requireValue(
+        typeof member.auth_epoch === 'string' && /^[a-f0-9]{32}$/.test(member.auth_epoch),
+        'private_member_epoch',
+      );
+    } else {
+      same(member.auth_epoch, apiEligible ? originalEpoch : null, 'private_member_epoch');
+    }
+    same(
+      member.note_json,
+      typeof user.note === 'string' ? JSON.stringify(user.note) : null,
+      'private_member_note',
+    );
+    users.set(row.id, {
+      user,
+      originalEpoch,
+      cookieEligible: user.enabled === true && membershipPermits,
+    });
+    const auth = user.memberAuth;
+    if (auth?.username !== undefined) {
+      const passwordEligible = user.enabled === true && originalEpoch !== null;
+      expected.password_credentials.push({
+        member_id: row.id,
+        username: auth.username,
+        salt: passwordEligible ? (auth.salt ?? null) : null,
+        password_hash: passwordEligible ? (auth.hash ?? null) : null,
+      });
+    }
+    if (keyValid) {
+      same(row.token, key, 'private_key_source');
+      expected.api_keys.push({ member_id: row.id, key_hash: sha(key), recoverable_key: key });
+    }
+    const discord = user.discord;
+    if (discord?.id) {
+      expected.discord_bindings.push({
+        member_id: row.id,
+        discord_id: discord.id,
+        guild_id: discord.guildId,
+        access_token: apiEligible ? (discord.accessToken ?? null) : null,
+        refresh_token: apiEligible ? (discord.refreshToken ?? null) : null,
+        expires_at: discord.expiresAt ?? null,
+        checked_at: discord.checkedAt ?? null,
+        eligible: discord.member == null ? null : Number(discord.member),
+      });
+    }
+    const invite = user.discordInvite;
+    if (
+      apiEligible &&
+      !discord?.id &&
+      validHash(invite?.hash) &&
+      Number.isSafeInteger(invite.expiresAt) &&
+      invite.expiresAt > effectiveAt
+    ) {
+      expected.discord_invites.push({
+        member_id: row.id,
+        code_hash: invite.hash,
+        expires_at: invite.expiresAt,
+      });
+    }
+  }
+  if (owner) {
+    expected.member_auth_state.push({
+      id: 1,
+      owner_member_id: owner.ownerUserId,
+      guild_id: owner.guildId,
+    });
+  }
+  const ownerChanged =
+    owner &&
+    (owner.ownerUserId !== environment.OWNER_USER_ID ||
+      owner.guildId !== environment.DISCORD_GUILD_ID);
+  for (const session of source
+    .prepare('SELECT * FROM member_sessions ORDER BY token_hash')
+    .safeIntegers()
+    .iterate()) {
+    const identity = users.get(session.user_id),
+      binding = isOwner(identity?.user, environment)
+        ? JSON.stringify([session.user_id, identity.user.discord.id, environment.DISCORD_GUILD_ID])
+        : null,
+      affected =
+        ownerChanged &&
+        (session.owner_binding !== null ||
+          session.user_id === owner.ownerUserId ||
+          session.user_id === environment.OWNER_USER_ID);
+    if (
+      owner &&
+      validHash(session.token_hash) &&
+      identity?.cookieEligible &&
+      identity.originalEpoch &&
+      session.auth_version === identity.originalEpoch &&
+      validTime(session.created_at) &&
+      validTime(session.expires_at) &&
+      session.expires_at > session.created_at &&
+      session.expires_at > BigInt(effectiveAt) &&
+      !affected &&
+      session.owner_binding === binding
+    ) {
+      expected.member_sessions.push({
+        token_hash: session.token_hash,
+        member_id: session.user_id,
+        auth_epoch: session.auth_version,
+        owner_binding: session.owner_binding,
+        created_at: Number(session.created_at),
+        expires_at: Number(session.expires_at),
+      });
+    }
+  }
+  for (const row of source.prepare('SELECT id,token,data FROM accounts ORDER BY id').iterate()) {
+    const account = JSON.parse(row.data);
+    same(
+      target.prepare('SELECT credential_epoch FROM upstream_accounts WHERE id=?').get(row.id)
+        ?.credential_epoch,
+      1,
+      'private_account_epoch',
+    );
+    if (account.token) {
+      same(row.token, account.token, 'private_upstream_source');
+      let proxyUrl;
+      try {
+        proxyUrl = legacyProxy(account);
+      } catch {
+        fail('private_upstream_proxy');
+      }
+      expected.upstream_credentials.push({
+        account_id: row.id,
+        pst: account.token,
+        proxy_url: proxyUrl,
+      });
+    }
+  }
+  for (const [table, primary] of relationalPrivateTables) {
+    const rows = expected[table];
+    same(
+      target.prepare(`SELECT * FROM ${table} ORDER BY ${primary}`).all(),
+      rows,
+      'private_' + table,
+    );
+  }
+}
 
 // Pure comparisons in the caller's existing source snapshot / target savepoint. No IO, new mapper,
 // price/normalization rules or persisted coverage state. The original owners supplied these plans.
@@ -1079,7 +1260,8 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     rows.size === 0 && retained.length === archive.audit.exports.inputs.rowCount,
     'archive_input_coverage',
   );
-  if (privateResult) {
+  if (proof.cutConfiguration) {
+    assertOriginalPrivateState(source, target, proof.cutConfiguration, proof.effectiveAt);
     for (const [count, table] of Object.entries({
       credentials: 'password_credentials',
       apiKeys: 'api_keys',
@@ -1090,7 +1272,7 @@ export function assertLegacyDatabaseProjection(source, target, proof) {
     })) {
       same(
         target.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
-        privateResult[count],
+        privateResult?.[count],
         'private_' + count,
       );
     }

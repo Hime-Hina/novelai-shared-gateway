@@ -137,7 +137,8 @@ export class RelationalCommitReplayer {
       this.members.assertMemberRemovalCommit(stored.events);
       this.accounts.assertAccountCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
-        applyQuota = this.quotas.createQuotaProjector(stored.events);
+        applyQuota = this.quotas.createQuotaProjector(stored.events),
+        applyReplica = this.replicas.createReplicaProjector(stored.events);
       for (const event of stored.events) {
         if (relationalConfigurationFacts.has(event.eventType)) {
           applyConfiguration!();
@@ -156,7 +157,7 @@ export class RelationalCommitReplayer {
         } else if (relationalQuotaFacts.has(event.eventType)) {
           applyQuota(event);
         } else if (relationalReplicaFacts.has(event.eventType)) {
-          this.replicas.applyReplicaEvents([event]);
+          applyReplica(event);
         } else {
           this.accounts.applyAccountEvent(event);
         }

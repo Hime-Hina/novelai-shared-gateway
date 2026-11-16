@@ -2,7 +2,7 @@
 
 本单用于 [#53](https://github.com/Hime-Hina/novelai-shared-gateway/issues/53) 的执行准备，**尚未批准或执行生产停机、迁移、外存写删及切换**。命令按执行顺序供维护者逐项复核，不是可以整段无人值守运行的脚本。任何 `SELECTED_*`、大写路径变量或未签收门禁尚未填写时，停止在该步。
 
-代码核对基线为 `c885e917a51182cc7e299ebd7782ac13eca95559`；第 7 节另核已冻结的 #49 候选 `0d16502ad005689a1adcc0bd64abb15279c2d5e3`，它尚未包含在该基线。最终包必须实际包含所用入口及其依赖，不能把源码或另一版本脚本临时补进包。当前正式业务仍是 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f`；实际版本、unit、端口和路由须在执行窗口重新核实并私有存证。
+核心已随 #72 合入 main，迁移与剩余验收由 #73 承接；最终代码、迁移包和普通发行包的固定 SHA 统一填写在下述 manifest。历史 #49 候选 `0d16502` 的失败与后继修复只作追溯，不能作为最终执行版本。最终包必须实际包含所用入口及其依赖，不能把源码或另一版本脚本临时补进包。原核实的正式业务为 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f`；实际版本、unit、端口和路由须在执行窗口重新核实并私有存证。
 
 [已确认的 B、原键 410、会话保原期限、缺图 503](../history/database-model-migration-decision.md) 继续执行。退出 D4 旧在线模式，D8 缩短留存暂缓；本单不引入另一条转换路线、双写或旧模型在线开关。
 
@@ -145,7 +145,7 @@ set -C
 
 ## 7. 旧归档保护、备份与容量
 
-本节命令来自已固定 #49 候选；须最终发行物实际纳入后执行。使用 `resolve-legacy-retained-dependencies.mjs` 九项 kebab 参数，原 source/audit/artifact 元组、namespace authority、完整 inventory 三个独立 pin 不得替换为当前配置：
+本节沿现有保留源 CLI，须在最终发行物实际纳入并验收后执行。使用 `resolve-legacy-retained-dependencies.mjs` 九项 kebab 参数，原 source/audit/artifact 元组、namespace authority、完整 inventory 三个独立 pin 不得替换为当前配置：
 
 ```sh
 "$NODE" "$MIGRATION/scripts/resolve-legacy-retained-dependencies.mjs" \

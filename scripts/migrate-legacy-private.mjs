@@ -44,7 +44,7 @@ function owner(value) {
 
 // Validate the fixed old accountProxyUrl syntax before using the current canonical URL owner.
 // Missing aliases meant an explicit direct connection in 3c; no current environment is consulted.
-function legacyProxy(account) {
+export function legacyProxy(account) {
   const value = String(account.proxyUrl || account.socksProxy || account.proxy || '').trim();
   if (!value) return '';
   try {

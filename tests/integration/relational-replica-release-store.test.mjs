@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { fixture, meta, NOW, image, databaseState } from '../helpers/relational-generation.mjs';
+import {
+  fixture,
+  meta,
+  NOW,
+  image,
+  databaseState,
+  installReady,
+} from '../helpers/relational-generation.mjs';
 import { createRetainedReleaseFixture } from '../helpers/retained-release.mjs';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { R2Storage } from '../../server/storage/r2-storage.ts';
@@ -13,6 +20,7 @@ import { RelationalInputStore } from '../../server/storage/relational-input-stor
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { relationalPrivateStateEmpty } from '../../server/storage/relational-private-restore.ts';
+import { releaseRelationalArtifactReplica } from '../../server/storage/relational-replica-io.ts';
 
 const DAY = 86400000,
   LATE = NOW + 8 * DAY,
@@ -172,6 +180,15 @@ test('副本释放保留原时点，必须真实lease/原票据，原回执零�
   )();
   assert.equal(databaseState(restored), state);
   assert.equal(restored.prepare('SELECT total_changes() n').get().n, total);
+  const legacy = readRelationalCommit(f.db, commit.commitSeq).command,
+    prefix = replay(t, f, String(BigInt(commit.commitSeq) - 1n));
+  delete legacy.receipt.release.references;
+  prefix.transaction(() => new RelationalCommitReplayer(prefix).appendCommit(legacy))();
+  assert.equal(
+    new RelationalReplicaStore(prefix).readArtifactReplica(ARTIFACT, f.target('local')).deletedAt,
+    LATE,
+    '历史单引用/单事件回执仍按原语义恢复',
+  );
 });
 
 test('释放必须保原24h/7d和同artifact双来源；专属delete失败1h后重试而不进入复制', async (t) => {
@@ -589,6 +606,199 @@ function appendPhysicalAlias(
       })),
     }),
   )();
+}
+
+test('一次共享物理删除给退休旧locator的完整引用记账，ready回放及重复零写保持一致', async (t) => {
+  const f = await setup(t);
+  appendPhysicalAlias(f, 'released-alias', { replacement: 'pikpak' });
+  const originalR2 = f.config.r2;
+  f.config.r2 = new R2Storage({ ...originalR2.config, bucket: 'different-release-bucket' });
+  f.db.transaction(() => f.store.registerStorageTarget(meta('different-release-target'), 'r2'))();
+  const otherSource = f.target('r2');
+  f.config.r2 = originalR2;
+  appendPhysicalAlias(f, 'different-namespace', { sourceTarget: otherSource });
+  await installReady(f);
+  const retained = await createRetainedReleaseFixture(t, f.db, f.dir, { r2: f.config.r2 }),
+    value = f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE);
+  let saved;
+  await withRetainedArtifactRelease(
+    retained.registry,
+    value.claim,
+    async (permit) => {
+      saved = f.db.transaction(() => release(f, 'shared-delete', value, permit))();
+      assert.equal(saved.events.length, 2);
+      for (const id of [ARTIFACT, 'released-alias']) {
+        assert.equal(f.store.readArtifactReplica(id, f.target('r2')).deletedAt, LATE);
+      }
+      assert.equal(f.store.r2Bytes(f.target('r2')), 0n);
+      assert.equal(f.store.readArtifactReplica('different-namespace', otherSource).deletedAt, null);
+      assert.equal(f.store.r2Bytes(otherSource), BigInt(image.length));
+      const state = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() n').get().n;
+      assert.equal(
+        f.db.transaction(() => release(f, 'shared-delete', value, permit))().replayed,
+        true,
+      );
+      assert.equal(databaseState(f.db), state);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+    },
+    { r2: f.config.r2 },
+  );
+  const target = replay(t, f);
+  assert.deepEqual(
+    target.prepare('SELECT * FROM artifact_replicas ORDER BY artifact_id,storage_target_id').all(),
+    f.db.prepare('SELECT * FROM artifact_replicas ORDER BY artifact_id,storage_target_id').all(),
+  );
+  const stored = readRelationalCommit(f.db, saved.commitSeq);
+  for (const mode of [
+    'omit',
+    'duplicate',
+    'wrong-source',
+    'wrong-object',
+    'wrong-target',
+    'legacy-proof',
+    'legacy-single',
+  ]) {
+    const prefix = replay(t, f, String(BigInt(saved.commitSeq) - 1n)),
+      state = databaseState(prefix),
+      command = structuredClone(stored.command);
+    if (mode === 'omit') {
+      command.events.pop();
+    } else if (mode === 'duplicate') {
+      command.events[1] = structuredClone(command.events[0]);
+    } else if (mode === 'wrong-source') {
+      command.receipt.release.references[1].sourceEventId = command.receipt.release.sourceEventId;
+    } else if (mode === 'wrong-object') {
+      command.events[1].payload.objectKey = 'images/different-object';
+    } else if (mode === 'wrong-target') {
+      command.events[1].payload.storageTargetId = otherSource;
+    } else {
+      delete command.receipt.release.references;
+      if (mode === 'legacy-single') {
+        command.events = command.events.filter((event) => event.payload.artifactId === ARTIFACT);
+      }
+    }
+    command.expectedVersions = Object.fromEntries(
+      [...new Set(command.events.map((event) => event.streamId))].map((id) => [
+        id,
+        stored.command.expectedVersions[id],
+      ]),
+    );
+    const prepare = prefix.prepare;
+    let projections = 0;
+    const hook = t.mock.method(prefix, 'prepare', function (sql) {
+      const statement = prepare.call(this, sql);
+      if (!sql.startsWith('INSERT INTO artifact_replicas')) {
+        return statement;
+      }
+      return new Proxy(statement, {
+        get(target, key) {
+          if (key === 'run') {
+            return (...parameters) => {
+              projections++;
+              return target.run(...parameters);
+            };
+          }
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    try {
+      prefix.transaction(() => {
+        assert.throws(() => new RelationalCommitReplayer(prefix).appendCommit(command), /删除/);
+        assert.equal(databaseState(prefix), state, mode);
+      })();
+      assert.equal(projections, 0, mode + '在第一条投影写入前拒绝');
+    } finally {
+      hook.mock.restore();
+    }
+  }
+});
+
+for (const failedArtifact of ['shared-alias-a', 'shared-alias-b']) {
+  test(`共享物理DELETE后${failedArtifact}原生SQL尾错全回滚，404重试一次确认完整集合`, async (t) => {
+    const f = await setup(t);
+    for (const id of ['shared-alias-a', 'shared-alias-b']) {
+      appendPhysicalAlias(f, id, { replacement: 'pikpak' });
+    }
+    await installReady(f);
+    const retained = await createRetainedReleaseFixture(t, f.db, f.dir, { r2: f.config.r2 });
+    f.config.retainedSources = retained.registry;
+    let exists = true;
+    const statuses = [];
+    t.mock.method(globalThis, 'fetch', async (_address, options) => {
+      assert.equal(f.db.inTransaction, false);
+      assert.equal(options.method, 'DELETE');
+      const status = exists ? 204 : 404;
+      exists = false;
+      statuses.push(status);
+      return new Response(null, { status });
+    });
+    f.db.exec(`CREATE TEMP TRIGGER shared_release_tail BEFORE INSERT ON main.artifact_replicas
+      WHEN NEW.deleted_at IS NOT NULL AND NEW.artifact_id='${failedArtifact}'
+      BEGIN SELECT RAISE(ABORT,'shared release projection tail'); END`);
+    const before = databaseState(f.db),
+      prepare = f.db.prepare;
+    let reached = false;
+    const fault = t.mock.method(f.db, 'prepare', function (sql) {
+      const statement = prepare.call(this, sql);
+      if (!sql.startsWith('INSERT INTO artifact_replicas')) {
+        return statement;
+      }
+      return new Proxy(statement, {
+        get(target, key) {
+          if (key === 'run') {
+            return (...parameters) => {
+              if (parameters[0] === failedArtifact && parameters[6] !== null) {
+                reached = true;
+                assert.equal(
+                  prepare
+                    .call(
+                      f.db,
+                      'SELECT deleted_at n FROM artifact_replicas WHERE artifact_id=? AND storage_target_id=?',
+                    )
+                    .get(ARTIFACT, f.target('r2')).n,
+                  LATE,
+                  '已真实投影第一条删除后才到原生SQL错误',
+                );
+              }
+              return target.run(...parameters);
+            };
+          }
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+    try {
+      await assert.rejects(
+        releaseRelationalArtifactReplica(f.db, ARTIFACT, 'r2', f.config, () => LATE),
+        (error) =>
+          error.code === 'SQLITE_CONSTRAINT_TRIGGER' &&
+          error.message === 'shared release projection tail',
+      );
+    } finally {
+      fault.mock.restore();
+      f.db.exec('DROP TRIGGER temp.shared_release_tail');
+    }
+    assert.equal(reached, true);
+    assert.equal(exists, false, '物理DELETE不会因SQL失败而恢复');
+    assert.deepEqual(statuses, [204]);
+    assert.equal(databaseState(f.db), before);
+    await releaseRelationalArtifactReplica(f.db, ARTIFACT, 'r2', f.config, () => LATE + 1);
+    assert.deepEqual(statuses, [204, 404], '重试只按原位置确认一次，不为每个别名重复DELETE');
+    for (const id of [ARTIFACT, 'shared-alias-a', 'shared-alias-b']) {
+      assert.equal(f.store.readArtifactReplica(id, f.target('r2')).deletedAt, LATE + 1);
+    }
+    assert.equal(f.store.r2Bytes(f.target('r2')), 0n);
+    const state = databaseState(f.db),
+      changes = f.db.prepare('SELECT total_changes() n').get().n;
+    await releaseRelationalArtifactReplica(f.db, ARTIFACT, 'r2', f.config, () => LATE + 2);
+    assert.equal(databaseState(f.db), state);
+    assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+    assert.deepEqual(statuses, [204, 404]);
+  });
 }
 
 test('物理源的退休/预留别名必须各有原下一层替代，等待后新增引用不靠主头检测', async (t) => {

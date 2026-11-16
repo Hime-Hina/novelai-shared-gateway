@@ -69,6 +69,8 @@ PikPak 上传确认并持久记录后才删除 R2 原件；上传后不立即回
 
 捕获前pin与释放共用registry lease，授权、有限删除IO与SQL确认期间不能开始新capture。每轮复核当前ready、queue phase、真实controls和queued/pending/running/未发布prepared责任；文件/云IO在SQL外。删除事实仍用ArtifactReplicaRecorded.deletedAt，完整回执绑定原源/目的事件及保留源证明；回放只核原决定，不执行GET/PUT/DELETE。外部已删而SQL尾错时只回滚SQL，保留原未确认行，重试以ENOENT/404完成同来源确认，不重新PUT或假称外部删除已回滚。DELETE回执不明沿原1h重试；保留pin的候选以(id,kind)游标继续，不能阻挡其他复制或释放。复制与释放共用原timer与真实inflight promise。
 
+一次物理删除的决定覆盖同 kind、namespace、objectKey 和 encoding 的全部当前引用，包括退休产物及旧 locator；每条引用必须有自身合格替代。回执绑定完整引用集合、各原来源事件和替代事件，一个完整业务提交记录全部删除事实，保留各产物的独立身份与所有权。共同回放在第一条副本投影前验证整笔集合，不缺项、不重复、不混入其他物理对象；仅经该决定验证的删除事实可确认退休或旧 locator，普通上传/验证仍沿原约束。任一后续投影失败整笔 SQL 回滚，一次外部删除不会因别名数量变成多次 IO。旧单源回执保留原解释，不把旧成功记录改写成新的完整集合验收。
+
 关闭先清timer、阻止新维护，再等真正inflight promise后结束HTTP和关库，不能以逻辑终态、清Map或fake cancel代替物理结束。错误仅输出安全类别。Win32没有同等目录fsync保证，后台只复制、不执行源释放；Windows合成IO检查不能替代Linux实际发布包与断电/恢复验收。人工退休继续只撤下展示/领取，不触发新D8期限或最终内容删除。
 
 失败 Opening 可以保存未知 parent/operation/不可执行输入的原 prepared 描述符。`readGenerationResultDependency()` 仅为 retained describe 声明真实 final/part 位置和原摘要，不读验文件、不执行/扣退/写账，不授予发布或 ready。它与严格 getter 共用唯一准备事实/完整 commit，Opening 核先行来源和 request/member/account/attempt 角色，已知保护输入与 seed 不降 NULL 绕过。未知操作只过 readable descriptor，file/MIME/hash/len 与投影逐字段一致；普通 ArtifactPrepared、结果恢复和唯一 installer 仍走严格完成条件。
