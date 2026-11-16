@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { fixture, meta, NOW, databaseState } from '../helpers/relational-generation.mjs';
+import { fixture, meta, NOW, image, databaseState } from '../helpers/relational-generation.mjs';
 import { createRetainedReleaseFixture } from '../helpers/retained-release.mjs';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { R2Storage } from '../../server/storage/r2-storage.ts';
@@ -11,6 +11,7 @@ import { initializeRelationalStorage } from '../../server/storage/relational-sto
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { relationalPrivateStateEmpty } from '../../server/storage/relational-private-restore.ts';
 
 const DAY = 86400000,
@@ -498,4 +499,267 @@ test('Opening verifiedAt/uploadedAt已知0可释放，未知NULL不能冒充持�
   assert.throws(() => f.store.beginArtifactRelease(pendingId, 'r2', LATE), /重试期限/);
   const incomplete = await setup(t, { cold: false });
   assert.throws(() => incomplete.store.beginArtifactRelease(ARTIFACT, 'r2', LATE), /持久目的/);
+});
+
+function appendPhysicalAlias(
+  f,
+  id,
+  {
+    kind = 'r2',
+    retiredAt = 0,
+    reserved = false,
+    replacement = null,
+    replacementTarget = null,
+    replacementAt = 0,
+    sourceTarget = null,
+  } = {},
+  db = f.db,
+) {
+  const store = new RelationalReplicaStore(db),
+    original = store.readArtifact(ARTIFACT),
+    targetId = sourceTarget ?? f.target(kind),
+    source = store.readArtifactReplica(ARTIFACT, f.target(kind)),
+    origin = { sourceId: 'synthetic-opening', originalId: id },
+    { policyVersion, pricingVersion, ...command } = meta('alias:' + id);
+  const facts = [
+    {
+      eventType: 'OpeningArtifactRecorded',
+      payload: {
+        artifactId: id,
+        memberId: original.memberId,
+        inputId: original.inputId,
+        originalAttemptId: null,
+        operation: original.operation,
+        mimeType: original.mimeType,
+        byteLength: original.byteLength,
+        sha256: original.sha256,
+        publishedAt: 0,
+        retiredAt,
+        origin,
+      },
+    },
+    {
+      eventType: 'OpeningReplicaRecorded',
+      payload: {
+        artifactId: id,
+        storageTargetId: targetId,
+        objectKey: source.objectKey,
+        encoding: 'identity',
+        uploadedAt: null,
+        verifiedAt: reserved ? null : 0,
+        deletedAt: null,
+        lastErrorCode: null,
+        origin,
+      },
+    },
+  ];
+  if (replacement) {
+    facts.push({
+      eventType: 'OpeningReplicaRecorded',
+      payload: {
+        artifactId: id,
+        storageTargetId: replacementTarget ?? f.target(replacement),
+        objectKey: {
+          pikpak: original.sha256 + '.br',
+          r2: 'images/' + id + '/' + original.sha256,
+          local: id + '.webp',
+        }[replacement],
+        encoding: replacement === 'pikpak' ? 'br' : 'identity',
+        uploadedAt: replacement === 'pikpak' ? replacementAt : null,
+        verifiedAt: replacement === 'pikpak' ? null : replacementAt,
+        deletedAt: null,
+        lastErrorCode: null,
+        origin,
+      },
+    });
+  }
+  return db.transaction(() =>
+    new RelationalCommitReplayer(db).appendCommit({
+      ...command,
+      expectedVersions: { ['artifact:' + id]: '0' },
+      receipt: { originalAlias: id },
+      events: facts.map((fact) => ({
+        ...fact,
+        streamId: 'artifact:' + id,
+        memberId: original.memberId,
+        accountId: null,
+        occurredAt: NOW,
+        policyVersion,
+        pricingVersion,
+      })),
+    }),
+  )();
+}
+
+test('物理源的退休/预留别名必须各有原下一层替代，等待后新增引用不靠主头检测', async (t) => {
+  for (const options of [
+    { retiredAt: 0 },
+    { retiredAt: null, reserved: true },
+    { replacement: 'pikpak', replacementAt: null },
+    { replacement: 'local' },
+  ]) {
+    const f = await setup(t),
+      issued = f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE),
+      sourceId = issued.source.replica.sourceEventId;
+    appendPhysicalAlias(f, 'pinned-alias', options);
+    assert.equal(f.store.readArtifactReplica(ARTIFACT, f.target('r2')).sourceEventId, sourceId);
+    const before = databaseState(f.db),
+      changes = f.db.prepare('SELECT total_changes() n').get().n;
+    f.db.pragma('query_only=ON');
+    try {
+      assert.throws(() => f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE), /自身已登记替代/);
+      assert.throws(
+        () => f.store.assertArtifactReleaseTicket(issued.ticket, LATE),
+        /自身已登记替代/,
+      );
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+    } finally {
+      f.db.pragma('query_only=OFF');
+    }
+  }
+  const f = await setup(t),
+    other = new PikPakStorage({
+      ...f.config.pikpak.config,
+      url: 'https://dav.pikpak.test/another-original/',
+    }),
+    original = f.config.pikpak;
+  f.config.pikpak = other;
+  f.db.transaction(() => f.store.registerStorageTarget(meta('original-other-pik'), 'pikpak'))();
+  const target = f.target('pikpak');
+  f.config.pikpak = original;
+  appendPhysicalAlias(f, 'backed-alias', {
+    reserved: true,
+    replacement: 'pikpak',
+    replacementTarget: target,
+  });
+  const accepted = f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE);
+  assert.ok(accepted.ticket, '别名自己的已登记Pik uploaded0在原namespace成立');
+  const otherR2 = new R2Storage({ ...f.config.r2.config, bucket: 'different-original-bucket' }),
+    originalR2 = f.config.r2;
+  f.config.r2 = otherR2;
+  f.db.transaction(() => f.store.registerStorageTarget(meta('other-source-r2'), 'r2'))();
+  const otherSource = f.target('r2');
+  f.config.r2 = originalR2;
+  appendPhysicalAlias(f, 'different-physical-namespace', { sourceTarget: otherSource });
+  assert.doesNotThrow(() => f.store.assertArtifactReleaseTicket(accepted.ticket, LATE));
+  const state = databaseState(f.db);
+  const rollback = new Error('rollback synthetic damaged projection');
+  assert.throws(
+    () =>
+      f.db.transaction(() => {
+        f.db
+          .prepare(
+            "UPDATE artifact_replicas SET encoding='gzip' WHERE artifact_id='backed-alias' AND storage_target_id=?",
+          )
+          .run(f.target('r2'));
+        const damaged = databaseState(f.db);
+        assert.throws(
+          () => f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE),
+          /原事实|不一致|冲突/,
+        );
+        assert.equal(databaseState(f.db), damaged);
+        throw rollback;
+      })(),
+    (error) => error === rollback,
+  );
+  assert.equal(
+    databaseState(f.db),
+    state,
+    '损坏投影只作owner-layer反例并整笔回滚，不冒称合法ready',
+  );
+});
+
+test('每个Local引用需自身R2验证；同一物理引用检查进入公共回放且原receipt不再删除', async (t) => {
+  const f = await setup(t),
+    local = f.store.beginArtifactRelease(ARTIFACT, 'local', LATE),
+    retained = await createRetainedReleaseFixture(t, f.db, f.dir, { r2: f.config.r2 });
+  // 已封存source在先；新增current alias由本次SQL guard独立保护，不能借旧cut的集合。
+  appendPhysicalAlias(f, 'local-alias', { kind: 'local', replacement: 'r2', replacementAt: 0 });
+  assert.doesNotThrow(() => f.store.assertArtifactReleaseTicket(local.ticket, LATE));
+  let saved;
+  await withRetainedArtifactRelease(
+    retained.registry,
+    local.claim,
+    async (permit) => {
+      saved = f.db.transaction(() => release(f, 'local-group-delete', local, permit))();
+      appendPhysicalAlias(f, 'new-unbacked-after-receipt', { kind: 'local' });
+      const before = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() n').get().n;
+      assert.equal(
+        f.db.transaction(() => release(f, 'local-group-delete', local, permit))().replayed,
+        true,
+      );
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+    },
+    { r2: f.config.r2 },
+  );
+  assert.ok(saved, '真实retained lease callback已进入并提交');
+  const restored = replay(t, f);
+  assert.equal(
+    restored
+      .prepare(
+        'SELECT deleted_at n FROM artifact_replicas WHERE artifact_id=? AND storage_target_id=?',
+      )
+      .get(ARTIFACT, f.target('local')).n,
+    LATE,
+  );
+  const prefix = replay(t, f, String(BigInt(saved.commitSeq) - 1n));
+  appendPhysicalAlias(f, 'unbacked-before-replay', { kind: 'local' }, prefix);
+  const state = databaseState(prefix),
+    command = readRelationalCommit(f.db, saved.commitSeq).command;
+  prefix.transaction(() => {
+    assert.throws(
+      () => new RelationalCommitReplayer(prefix).appendCommit(command),
+      /自身已登记替代/,
+    );
+    assert.equal(databaseState(prefix), state, '事实已append后共同投影拒绝并由外层catch全回滚');
+  })();
+});
+
+test('真实pending与失败后未发布prepared责任不能由idle回调或别的持久副本绕过', async (t) => {
+  const f = await setup(t),
+    ticket = f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE);
+  await f.accept('pending-blocker', { now: NOW + 20000 });
+  const before = databaseState(f.db);
+  assert.equal(f.config.idle(), true, '特意保留调用者idle误报以检验真实SQL责任');
+  assert.throws(() => f.store.assertArtifactReleaseTicket(ticket.ticket, LATE), /未完成/);
+  assert.equal(databaseState(f.db), before);
+  const g = await setup(t);
+  await g.accept('prepared-blocker', { now: NOW + 20000 });
+  g.dispatch('prepared-blocker-0', NOW + 20001);
+  const descriptor = describeStoredResult('unpublished-prepared', 'generate', {
+    buffer: image,
+    mimeType: 'image/webp',
+  });
+  g.db.transaction(() =>
+    g.generations.prepareGenerationResult(
+      meta('prepare-blocker', NOW + 20003),
+      'prepared-blocker-0',
+      descriptor,
+      g.response(NOW + 20003),
+    ),
+  )();
+  g.fail('prepared-blocker-0', { aborted: false, evidence: { requestStarted: true } }, NOW + 20005);
+  assert.equal(
+    g.db
+      .prepare(
+        "SELECT COUNT(*) n FROM generation_jobs WHERE status IN ('queued','pending','running')",
+      )
+      .get().n,
+    0,
+  );
+  const preparedState = databaseState(g.db);
+  assert.throws(() => g.store.beginArtifactRelease(ARTIFACT, 'r2', LATE), /准备结果/);
+  assert.equal(databaseState(g.db), preparedState);
+  await publishStoredResult(g.dir, descriptor, image);
+  g.db.transaction(() =>
+    g.generations.completeGeneration(
+      meta('late-blocker', NOW + 20006),
+      'prepared-blocker-0',
+      descriptor,
+    ),
+  )();
+  assert.doesNotThrow(() => g.store.beginArtifactRelease(ARTIFACT, 'r2', LATE));
 });

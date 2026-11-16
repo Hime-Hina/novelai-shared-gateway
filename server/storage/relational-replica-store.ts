@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { RelationalGenerationStore } from './relational-generation-store.ts';
 import {
   assertRetainedArtifactReleasePermit,
   type RetainedArtifactReleaseClaim,
@@ -886,6 +887,63 @@ export class RelationalReplicaStore {
       fail('副本票据已被另一提交替换');
     }
   }
+  private assertCurrentReleaseReferences(
+    artifact: ReturnType<RelationalReplicaStore['readArtifact']>,
+    sourceTarget: ReturnType<RelationalReplicaStore['readStorageTarget']>,
+    source: NonNullable<ReturnType<RelationalReplicaStore['readArtifactReplica']>>,
+  ) {
+    // 重领已提交删除的原回执不再次删除；仍由外层核当前授权、原双票据和完整回执。
+    if (source.deletedAt !== null) {
+      return;
+    }
+    // 复用生成 owner 的未完责任口；prepared 不能由别的产物副本声明替代。
+    if (
+      new RelationalGenerationStore(this.sqlite, this.env).hasActiveGenerationResponsibilities()
+    ) {
+      fail('未完成生成或准备结果仍占用副本责任');
+    }
+    const destinationKind = sourceTarget.kind === 'local' ? 'r2' : 'pikpak';
+    for (const row of this.sqlite
+      .prepare<[string, string, string], { artifactId: string; targetId: string }>(
+        `SELECT r.artifact_id AS artifactId,r.storage_target_id AS targetId
+       FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id
+       WHERE s.kind=? AND s.namespace=? AND r.object_key=? AND r.deleted_at IS NULL`,
+      )
+      .all(sourceTarget.kind, sourceTarget.namespace, source.objectKey)) {
+      const owner = this.readArtifact(row.artifactId),
+        target = this.readStorageTarget(row.targetId),
+        reference = this.readArtifactReplica(row.artifactId, row.targetId)!;
+      if (
+        target.kind !== sourceTarget.kind ||
+        target.namespace !== sourceTarget.namespace ||
+        reference.encoding !== source.encoding ||
+        owner.sha256 !== artifact.sha256 ||
+        owner.byteLength !== artifact.byteLength
+      ) {
+        fail('同一物理副本的原内容或编码有冲突');
+      }
+      // 退休/预留/未知presence行也属于当前引用；只能沿各自已登记的原冷热链向下释放。
+      const replacement = this.sqlite
+        .prepare<[string], { id: string }>(
+          'SELECT storage_target_id AS id FROM artifact_replicas WHERE artifact_id=? AND deleted_at IS NULL',
+        )
+        .all(row.artifactId)
+        .some(({ id }) => {
+          const candidateTarget = this.readStorageTarget(id),
+            candidate = this.readArtifactReplica(row.artifactId, id)!;
+          return (
+            candidateTarget.kind === destinationKind &&
+            candidate.lastErrorCode === null &&
+            (destinationKind === 'r2'
+              ? candidate.encoding === 'identity' && candidate.verifiedAt !== null
+              : candidate.encoding === 'br' && candidate.uploadedAt !== null)
+          );
+        });
+      if (!replacement) {
+        fail('同一物理副本的当前引用缺少自身已登记替代');
+      }
+    }
+  }
   private releasePair(
     artifactId: string,
     sourceId: string,
@@ -922,6 +980,7 @@ export class RelationalReplicaStore {
     ) {
       fail('删除副本缺少同产物的持久目的或原定位');
     }
+    this.assertCurrentReleaseReferences(artifact, sourceTarget, source);
     const claim: RetainedArtifactReleaseClaim = {
       artifactId,
       sha256: artifact.sha256,
