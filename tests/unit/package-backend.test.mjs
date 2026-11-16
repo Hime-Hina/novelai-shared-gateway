@@ -9,7 +9,11 @@ import { packageBackend } from '../../scripts/package-backend.mjs';
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'nai-package-closure-')),
     output = path.join(root, '.output/backend');
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    assert.equal(path.dirname(path.resolve(root)), path.resolve(tmpdir()));
+    assert.ok(path.basename(root).startsWith('nai-package-closure-'));
+    await rm(root, { recursive: true, force: true });
+  });
   await writeFile(
     path.join(root, 'package.json'),
     JSON.stringify({
@@ -41,6 +45,10 @@ async function fixture(t) {
   await put('server/storage/sqlite-store.js', 'throw new Error("unreachable old owner");');
   await put('server/migrations/old.sql', 'not a normal runtime asset');
   await put('scripts/replay-events.mjs', 'throw new Error("unreachable old tool");');
+  await put(
+    'scripts/resolve-legacy-retained-dependencies.mjs',
+    'throw new Error("offline producer");',
+  );
   return { root, output, put };
 }
 

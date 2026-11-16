@@ -28,6 +28,8 @@ import {
   NOW,
 } from '../helpers/relational-generation.mjs';
 import { authenticateMemberApiKey } from '../../server/members/authentication.ts';
+import { R2Storage, r2Config } from '../../server/storage/r2-storage.ts';
+import { createRetainedReleaseFixture } from '../helpers/retained-release.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url)),
   databaseModule = import.meta.resolve('better-sqlite3'),
@@ -147,6 +149,7 @@ async function launch(t, f, { env = {}, hook = '', port = 0 } = {}) {
         TEMP: process.env.TEMP,
         TMP: process.env.TMP,
         HOME: process.env.HOME,
+        NODE_OPTIONS: process.env.NODE_OPTIONS,
         ...f.env,
         HOST: '127.0.0.1',
         PORT: String(port),
@@ -308,7 +311,7 @@ async function acceptQueued(f) {
   return { db, generations, result };
 }
 
-async function replicaSource(t, { pause = true } = {}) {
+async function replicaSource(t, { pause = true, retained = false } = {}) {
   const children = [];
   t.after(async () => {
     for (const state of children) {
@@ -336,13 +339,7 @@ async function replicaSource(t, { pause = true } = {}) {
     )();
   }
   await installReady(f);
-  f.db.close();
-  return {
-    ...f,
-    dataDir: f.dir,
-    filename: path.join(f.dir, 'library.sqlite'),
-    children,
-    env: {
+  const env = {
       DATA_DIR: f.dir,
       ADMIN_TOKEN: randomUUID() + randomUUID(),
       R2_ACCOUNT_ID: 'a'.repeat(32),
@@ -350,14 +347,39 @@ async function replicaSource(t, { pause = true } = {}) {
       R2_ACCESS_KEY_ID: 'synthetic-access',
       R2_SECRET_ACCESS_KEY: 'synthetic-secret',
     },
+    r2 = retained ? new R2Storage(r2Config(env)) : null;
+  if (r2) {
+    r2.listBackups = async () => [];
+  }
+  const protection = retained ? await createRetainedReleaseFixture(t, f.db, f.dir, { r2 }) : null;
+  f.db.close();
+  return {
+    ...f,
+    dataDir: f.dir,
+    filename: path.join(f.dir, 'library.sqlite'),
+    children,
+    protection,
+    env: {
+      ...env,
+      ...(protection ? { RETAINED_SOURCES_DIR: protection.registry } : {}),
+    },
   };
 }
-function replicaClockHook(f, hold = false, ignoreGenerationAbort = false) {
+function replicaClockHook(f, hold = false, ignoreGenerationAbort = false, releaseSources = false) {
   return `
     import {mock} from 'node:test';
     import Database from ${JSON.stringify(databaseModule)};
     import {getPatcher} from ${JSON.stringify(import.meta.resolve('webdav'))};
     mock.timers.enable({apis:['setTimeout','Date'],now:${NOW + 2 * 86400000}});
+    if(${releaseSources})registerHooks({load(url,context,next){
+      const result=next(url,context);if(!url.endsWith('/server/gateway-runtime.ts'))return result;
+      let source=result.source;
+      for(const [marker,observation] of [
+        ['replicaCopy = (async () => {','process.send?.({replicaRoundStarted:true});'],
+        ['scheduleReplicaCopy(progress ? 1000 : 60000);','process.send?.({replicaRoundDone:true,replicaProgress:progress});'],
+      ]){if(source.split(marker).length!==2)throw Error('replica round observation marker missing');source=source.replace(marker,marker+observation);}
+      return {...result,source};
+    }});
     let release; const objects=new Map();
     process.on('message',message=>{
       if(message?.tick){mock.timers.tick(message.tick);process.send?.({tick:message.tick});}
@@ -376,11 +398,19 @@ function replicaClockHook(f, hold = false, ignoreGenerationAbort = false) {
         ${ignoreGenerationAbort ? "url.pathname.includes('generate')?{...options,signal:undefined}:options" : 'options'});
       const cold=url.hostname==='dav.pikpak.test';
       if(!cold&&!url.hostname.endsWith('.r2.cloudflarestorage.com'))throw Error('Unexpected external endpoint');
+      if(!cold&&url.searchParams.get('list-type')==='2'){
+        process.send?.({replica:'LIST'});
+        return new Response('<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>',{headers:{'content-type':'application/xml'}});
+      }
       process.send?.({replica:(cold?'pikpak:':'')+options.method});
       if(options.method==='PUT'){
         objects.set(url.href,Buffer.from(options.body));
-        if(${hold})await new Promise(resolve=>release=resolve);
+        if(${hold && !releaseSources})await new Promise(resolve=>release=resolve);
         return new Response(null,{status:204});
+      }
+      if(${releaseSources}&&options.method==='DELETE'){
+        if(${hold})await new Promise(resolve=>release=resolve);
+        objects.delete(url.href);return new Response(null,{status:204});
       }
       if(options.method!=='GET')throw Error('No source deletion');
       const bytes=objects.get(url.href);return new Response(bytes,{headers:{'content-length':String(bytes.length)}});
@@ -397,6 +427,62 @@ async function tickReplicaClock(server, messages, n) {
   const previous = messages.filter((m) => m.tick === n).length;
   server.child.send({ tick: n });
   await waitFor(() => messages.filter((m) => m.tick === n).length === previous + 1);
+}
+
+async function tickReplicaRound(server, messages, n) {
+  const previous = messages.filter((message) => message.replicaRoundDone).length;
+  await tickReplicaClock(server, messages, n);
+  await waitFor(
+    () => messages.filter((message) => message.replicaRoundDone).length === previous + 1,
+    'the actual replica IO and scheduling round must settle',
+  );
+}
+
+async function releaseRuntime(t, hold = false) {
+  const f = await replicaSource(t, { retained: true }),
+    server = await launch(t, f, {
+      hook: replicaClockHook(f, hold, false, true),
+      env: {
+        PIKPAK_WEBDAV_URL: 'https://dav.pikpak.test/archive/',
+        PIKPAK_WEBDAV_USERNAME: 'synthetic-user',
+        PIKPAK_WEBDAV_PASSWORD: 'synthetic-password',
+      },
+    }),
+    messages = replicaMessages(server);
+  await server.ready();
+  assert.equal(
+    messages.some((message) => message.replicaRoundStarted),
+    false,
+  );
+  await tickReplicaRound(server, messages, 60000);
+  assert.equal(messages.at(-1).replicaProgress, true);
+  await tickReplicaRound(server, messages, 1000);
+  assert.equal(messages.at(-1).replicaProgress, false, 'the Local-only retained source pins Local');
+  const before = messages.filter((message) => message.replicaRoundStarted).length;
+  await tickReplicaClock(server, messages, 1000);
+  assert.equal(messages.filter((message) => message.replicaRoundStarted).length, before);
+  await tickReplicaRound(server, messages, 7 * 86400000 + 1);
+  assert.equal(messages.filter((message) => message.replica === 'pikpak:PUT').length, 1);
+  const current = new Database(f.filename, { readonly: true, fileMustExist: true });
+  try {
+    current.pragma('query_only=ON');
+    await f.protection.addSnapshot(current, f.dir);
+  } finally {
+    current.close();
+  }
+  await tickReplicaRound(server, messages, 1000);
+  assert.equal(
+    messages.at(-1).replicaProgress,
+    false,
+    'adding a newer source does not clear the old Local hold',
+  );
+  const selected = query(
+    f,
+    "SELECT s.kind,r.deleted_at FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE r.artifact_id='artifact-cold-runtime-0'",
+  );
+  assert.equal(selected.find((row) => row.kind === 'local').deleted_at, null);
+  assert.equal(selected.find((row) => row.kind === 'r2').deleted_at, null);
+  return { f, server, messages };
 }
 
 for (const independentIO of ['replica', 'quota']) {
@@ -553,9 +639,22 @@ for (const independentIO of ['replica', 'quota']) {
 
 test('复制timer只在真实listen后60s启动，进展后1s收敛且保留所有源', async (t) => {
   const f = await replicaSource(t),
-    server = await launch(t, f, {
-      hook: replicaClockHook(f),
+    platformRoot = process.platform === 'win32' ? path.join(f.dir, 'platform-retained') : null;
+  if (platformRoot) {
+    await mkdir(platformRoot);
+  }
+  const server = await launch(t, f, {
+      hook:
+        replicaClockHook(f) +
+        `
+        import {RelationalReplicaStore} from ${JSON.stringify(new URL('../../server/storage/relational-replica-store.ts', import.meta.url).href)};
+        const queryRelease=RelationalReplicaStore.prototype.readDueArtifactRelease;
+        RelationalReplicaStore.prototype.readDueArtifactRelease=function(...args){
+          process.send?.({releaseSelectorAttempt:true});return queryRelease.apply(this,args);
+        };
+      `,
       env: {
+        ...(platformRoot ? { RETAINED_SOURCES_DIR: platformRoot } : {}),
         PIKPAK_WEBDAV_URL: 'https://dav.pikpak.test/archive/',
         PIKPAK_WEBDAV_USERNAME: 'synthetic-user',
         PIKPAK_WEBDAV_PASSWORD: 'synthetic-password',
@@ -603,6 +702,15 @@ test('复制timer只在真实listen后60s启动，进展后1s收敛且保留所�
     'Pik upload policy does not add a pre-deletion GET',
   );
   assert.equal(
+    messages.some((m) => ['DELETE', 'pikpak:DELETE'].includes(m.replica)),
+    false,
+    'missing authority or Win32 durability must keep copy enabled without attempting release',
+  );
+  assert.equal(
+    messages.some((message) => message.releaseSelectorAttempt),
+    false,
+  );
+  assert.equal(
     query(f, 'SELECT COUNT(*) n FROM artifact_replicas WHERE deleted_at IS NOT NULL')[0].n,
     0,
   );
@@ -610,6 +718,80 @@ test('复制timer只在真实listen后60s启动，进展后1s收敛且保留所�
   await server.stop();
   assert.ok(messages.some((m) => m.replica === 'dbclosed'));
 });
+
+test(
+  '保留源pin不伪造1s进展，同artifact的R2后继仍释放且copy不被pin饿死',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'runtime source release requires Linux directory durability'
+        : false,
+  },
+  async (t) => {
+    const { f, server, messages } = await releaseRuntime(t),
+      previous = messages.filter((message) => message.replicaRoundStarted).length;
+    await tickReplicaClock(server, messages, 1000);
+    assert.equal(messages.filter((message) => message.replicaRoundStarted).length, previous);
+    await tickReplicaRound(server, messages, 59000);
+    assert.equal(messages.filter((message) => message.replica === 'DELETE').length, 1);
+    assert.equal(messages.at(-1).replicaProgress, true);
+    assert.equal(
+      messages.some((message) => message.replica === 'pikpak:DELETE'),
+      false,
+    );
+    const rows = query(
+      f,
+      "SELECT s.kind,r.deleted_at FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE r.artifact_id='artifact-cold-runtime-0'",
+    );
+    assert.equal(rows.find((row) => row.kind === 'local').deleted_at, null);
+    assert.equal(typeof rows.find((row) => row.kind === 'r2').deleted_at, 'number');
+    assert.equal(rows.find((row) => row.kind === 'pikpak').deleted_at, null);
+    assert.deepEqual(
+      await readFile(path.join(f.dir, 'images/artifact-cold-runtime-0.webp')),
+      image,
+    );
+    await server.stop();
+    assert.ok(messages.some((message) => message.replica === 'dbclosed'));
+  },
+);
+
+test(
+  'shutdown等待真实R2释放IO，未完成DELETE前不关库或伪确认',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'runtime source release requires Linux directory durability'
+        : false,
+  },
+  async (t) => {
+    const { f, server, messages } = await releaseRuntime(t, true);
+    await tickReplicaClock(server, messages, 60000);
+    await waitFor(() => messages.some((message) => message.replica === 'DELETE'));
+    assert.equal(
+      query(
+        f,
+        "SELECT r.deleted_at FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='r2'",
+      )[0].deleted_at,
+      null,
+    );
+    server.child.send('shutdown');
+    await waitFor(() => server.stdout.includes('SIGTERM received'));
+    await delay(50);
+    assert.equal(server.exit, null);
+    assert.equal(
+      messages.some((message) => message.replica === 'dbclosed'),
+      false,
+    );
+    server.child.send('release-replica');
+    await server.finished;
+    assert.equal(server.exit.code, 0, server.stderr);
+    assert.ok(messages.some((message) => message.replica === 'dbclosed'));
+    assert.deepEqual(
+      await readFile(path.join(f.dir, 'images/artifact-cold-runtime-0.webp')),
+      image,
+    );
+  },
+);
 
 test('真实EADDR拒绝时没有复制目标预留或云IO', async (t) => {
   const f = await replicaSource(t);

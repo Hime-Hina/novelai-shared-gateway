@@ -65,6 +65,7 @@ test('independent migration package excludes ignored private sources and runs co
     'verify',
   ]);
   assert.ok(names.includes('scripts/materialize-legacy-originals.mjs'));
+  assert.ok(names.includes('scripts/resolve-legacy-retained-dependencies.mjs'));
   assert.equal(packageJson.main, undefined);
   assert.equal(packageJson.devDependencies, undefined);
   const verified = run(
@@ -83,6 +84,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { migrateLegacyDatabase } from './scripts/migrate-legacy-database.mjs';
 import { materializeLegacyOriginals } from './scripts/materialize-legacy-originals.mjs';
+import { resolveLegacyRetainedDependencies } from './scripts/resolve-legacy-retained-dependencies.mjs';
+assert.equal(typeof resolveLegacyRetainedDependencies, 'function');
 const require = createRequire(new URL('./package.json', import.meta.url));
 const db = new (require('better-sqlite3'))(':memory:');
 assert.equal(db.pragma('integrity_check', {simple:true}), 'ok');

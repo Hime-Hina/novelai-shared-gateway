@@ -17,9 +17,12 @@ import {
   retainedFileSha256,
   inspectRetainedLease,
   recoverRetainedLease,
+  adoptRetainedInventory,
 } from '../server/storage/retained-sources.ts';
+import { R2Storage, r2Config } from '../server/storage/r2-storage.ts';
 // 只派生原owner声明；不实读/删除对象，不把未知旧格式解释成空依赖。
 export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
+  const physicalDataDir = dataDir ? path.resolve(realpathSync(dataDir)) : null;
   const [
     { default: Database },
     { openRelationalSnapshot, readRelationalRecoveryState },
@@ -63,7 +66,7 @@ export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
           break;
         }
         for (const row of rows) {
-          await emit({ kind: 'artifact', ...row });
+          await emit({ kind: 'artifact', ...row, dataDir: physicalDataDir });
           after = row.id;
         }
       }
@@ -81,7 +84,7 @@ export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
             jobId,
             attemptId,
             sourceEventId: event.eventId,
-            dataDir: dataDir ? path.resolve(dataDir) : null,
+            dataDir: physicalDataDir,
             descriptor,
           });
           after = jobId;
@@ -106,12 +109,14 @@ export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
   return { ...description, dependenciesSha256: await retainedFileSha256(output) };
 }
 async function main() {
-  const [mode, registry, expectedAuditSha256, ...extra] = process.argv.slice(2);
+  const [mode, registry, expectedAuditSha256, expectedResolvedSha256, ...extra] =
+    process.argv.slice(2);
   if (
     !mode ||
     !registry ||
     extra.length ||
-    (expectedAuditSha256 !== undefined && mode !== 'archive')
+    (expectedAuditSha256 !== undefined && !['archive', 'adopt-inventory'].includes(mode)) ||
+    (expectedResolvedSha256 !== undefined && mode !== 'archive')
   ) {
     throw Error('Mode and registry are required.');
   }
@@ -159,6 +164,16 @@ async function main() {
     result = await checkpointRetainedSources(registry, request.output);
   } else if (mode === 'restore') {
     result = await restoreRetainedSources(registry, request.checkpoint, request.sha256);
+  } else if (mode === 'adopt-inventory') {
+    if (!expectedAuditSha256 || Object.hasOwn(request, 'checkpointSha256')) {
+      throw Error('Inventory requires an independently selected positional checkpoint SHA.');
+    }
+    const config = r2Config();
+    result = await adoptRetainedInventory(
+      registry,
+      { ...request, checkpointSha256: expectedAuditSha256 },
+      { r2: config ? new R2Storage(config) : null },
+    );
   } else if (mode === 'lease') {
     result = await inspectRetainedLease(registry);
   } else if (mode === 'recover-lease') {
@@ -236,12 +251,46 @@ async function main() {
       request.location,
     );
   } else if (mode === 'archive') {
-    const created = await beginRetainedCapture(registry, 'archive', path.resolve(request.source));
+    if (
+      Boolean(request.resolvedDependencies) !== Boolean(expectedResolvedSha256) ||
+      Object.hasOwn(request, 'resolvedDependenciesSha256')
+    ) {
+      throw Error('Resolved dependencies require their separately selected positional SHA.');
+    }
+    let created;
+    if (request.sourceId !== undefined) {
+      if (!request.resolvedDependencies || typeof request.sourceId !== 'string') {
+        throw Error(
+          'Existing archive refinement requires its original source ID and selected proof.',
+        );
+      }
+      const catalog = await readRetainedSourceProtection(registry),
+        selected = catalog.sources.find((row) => row.id === request.sourceId);
+      if (
+        !selected ||
+        selected.category !== 'archive' ||
+        selected.origin !== path.resolve(request.source) ||
+        !selected.holds.some(
+          (hold) =>
+            hold.kind === 'archive' &&
+            hold.location === path.resolve(request.source) &&
+            hold.state !== 'retired',
+        )
+      ) {
+        throw Error('Original archive selection differs.');
+      }
+      created = { sourceId: request.sourceId };
+    } else {
+      created = await beginRetainedCapture(registry, 'archive', path.resolve(request.source));
+    }
     const binding = await readRetainedArchiveBinding(
       request.source,
       request.manifest,
       request.dependencies,
       expectedAuditSha256,
+      request.resolvedDependencies
+        ? { file: request.resolvedDependencies, sha256: expectedResolvedSha256 }
+        : undefined,
     );
     await bindRetainedCapture(
       registry,
@@ -249,13 +298,18 @@ async function main() {
       request.manifest,
       binding,
       request.dependencies,
+      undefined,
+      request.resolvedDependencies,
     );
-    result = await publishRetainedArchive(
-      registry,
-      created.sourceId,
-      path.resolve(request.source),
-      request.manifest,
-    );
+    result =
+      request.sourceId !== undefined
+        ? { sourceId: request.sourceId }
+        : await publishRetainedArchive(
+            registry,
+            created.sourceId,
+            path.resolve(request.source),
+            request.manifest,
+          );
   } else {
     throw Error('Unknown retained source operation.');
   }

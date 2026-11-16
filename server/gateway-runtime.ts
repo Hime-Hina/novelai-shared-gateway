@@ -58,7 +58,10 @@ import {
   RelationalReplicaStore,
   type RelationalReplicaConfiguration,
 } from './storage/relational-replica-store.ts';
-import { copyRelationalArtifactReplica } from './storage/relational-replica-io.ts';
+import {
+  copyRelationalArtifactReplica,
+  releaseRelationalArtifactReplica,
+} from './storage/relational-replica-io.ts';
 import type { GenerationPayloadClaim } from './generation/admission.ts';
 
 type Request = IncomingMessage & { generationPayloadClaim?: GenerationPayloadClaim };
@@ -413,6 +416,9 @@ async function start(handler: http.RequestListener) {
       pikpak = pikpakConfig(env),
       replicas: RelationalReplicaConfiguration = {
         dataDir,
+        ...(env.RETAINED_SOURCES_DIR
+          ? { retainedSources: path.resolve(env.RETAINED_SOURCES_DIR) }
+          : {}),
         ...(r2 ? { r2: new R2Storage(r2) } : {}),
         ...(pikpak ? { pikpak: new PikPakStorage(pikpak) } : {}),
         idle() {
@@ -492,30 +498,63 @@ async function start(handler: http.RequestListener) {
         createRelationalRequestHttp(shared),
         createRelationalQuotaHttp(shared),
       ];
-    const replicaStore = new RelationalReplicaStore(sqlite, replicas);
+    const replicaStore = new RelationalReplicaStore(sqlite, replicas),
+      releaseEnabled = process.platform !== 'win32' && Boolean(replicas.retainedSources);
+    let preferRelease = false,
+      releaseAfterId = '',
+      releaseAfterKind: 'local' | 'r2' | undefined;
     function scheduleReplicaCopy(delay: number) {
-      if (closing || !replicas.r2) {
+      if (closing || (!replicas.r2 && !releaseEnabled)) {
         return;
       }
       replicaTimer = setTimeout(() => {
         replicaTimer = undefined;
-        let progress = false;
+        let progress = false,
+          releasing = false;
         replicaCopy = (async () => {
           if (!replicas.idle()) {
             return;
           }
-          const due = replicaStore.readDueArtifactReplica(Date.now());
-          if (due) {
-            const current = await copyRelationalArtifactReplica(
+          const now = Date.now(),
+            copy = replicas.r2 ? replicaStore.readDueArtifactReplica(now) : null,
+            release = releaseEnabled
+              ? replicaStore.readDueArtifactRelease(now, releaseAfterId, releaseAfterKind)
+              : null;
+          if (!release) {
+            releaseAfterId = '';
+            releaseAfterKind = undefined;
+          }
+          if (release && (preferRelease || !copy)) {
+            releasing = true;
+            preferRelease = false;
+            // pin/错误也推进本轮游标，不能反复占住队首；它们不构成持久进展。
+            releaseAfterId = release.artifactId;
+            releaseAfterKind = release.kind;
+            const current = await releaseRelationalArtifactReplica(
               sqlite,
-              due.artifactId,
-              due.kind,
+              release.artifactId,
+              release.kind,
               replicas,
             );
-            progress = current.sourceEventId !== due.sourceEventId;
+            progress = current !== null && current.sourceEventId !== release.sourceEventId;
+          } else if (copy) {
+            preferRelease = true;
+            const current = await copyRelationalArtifactReplica(
+              sqlite,
+              copy.artifactId,
+              copy.kind,
+              replicas,
+            );
+            progress = current.sourceEventId !== copy.sourceEventId;
           }
         })()
-          .catch(() => console.error('[runtime] Replica copy or verification failed.'))
+          .catch(() =>
+            console.error(
+              releasing
+                ? '[runtime] Replica source release failed.'
+                : '[runtime] Replica copy or verification failed.',
+            ),
+          )
           .finally(() => {
             replicaCopy = undefined;
             scheduleReplicaCopy(progress ? 1000 : 60000);

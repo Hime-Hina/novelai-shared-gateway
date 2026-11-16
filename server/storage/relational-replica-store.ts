@@ -1,5 +1,11 @@
 import path from 'node:path';
 import type Database from 'better-sqlite3';
+import { RelationalGenerationStore } from './relational-generation-store.ts';
+import {
+  assertRetainedArtifactReleasePermit,
+  type RetainedArtifactReleaseClaim,
+  type RetainedArtifactReleasePermit,
+} from './retained-sources.ts';
 import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
@@ -65,8 +71,22 @@ export interface RelationalReplicaReadConfiguration {
 }
 export interface RelationalReplicaConfiguration extends RelationalReplicaReadConfiguration {
   idle(): boolean;
+  retainedSources?: string;
 }
 type Ticket = Readonly<{ artifactId: string; storageTargetId: string }>;
+type ReleaseEvidence = {
+  sourceEventId: string;
+  destinationEventId: string;
+  destinationStorageTargetId: string;
+  registryId: string;
+  revision: number;
+  proofSha256: string;
+  claimSha256: string;
+};
+function publicReleaseClaim(claim: RetainedArtifactReleaseClaim) {
+  const { dataDir: _dataDir, ...source } = claim.source;
+  return { ...claim, source };
+}
 type Phase = 'reserved' | 'uploaded' | 'verified' | 'local_verified' | 'failed';
 export const relationalReplicaFacts = new Set<RelationalEvent['eventType']>([
   'StorageTargetRegistered',
@@ -132,7 +152,7 @@ function assertTarget(target: Target) {
   }
 }
 
-// 只拥有目标及副本事实；部署秘密、网络、文件及源副本删除不属于业务 replay。
+// 只拥有目标及副本事实；部署秘密、网络、文件及物理删除不属于业务 replay。
 export class RelationalReplicaStore {
   private sqlite: Database.Database;
   private configuration?: RelationalReplicaReadConfiguration;
@@ -145,6 +165,14 @@ export class RelationalReplicaStore {
       targetSource: string;
       replicaSource: string | null;
       background: boolean;
+    }
+  >();
+  private releaseTickets = new WeakMap<
+    Ticket,
+    {
+      source: Ticket;
+      destination: Ticket;
+      claim: RetainedArtifactReleaseClaim;
     }
   >();
   constructor(
@@ -384,6 +412,16 @@ export class RelationalReplicaStore {
         };
       });
   }
+  private r2Bytes(storageTargetId: string) {
+    return this.sqlite
+      .prepare<[string], { bytes: bigint }>(
+        `SELECT COALESCE(SUM(bytes),0) AS bytes FROM (
+          SELECT MAX(a.byte_length) AS bytes FROM artifact_replicas r JOIN artifacts a ON a.id=r.artifact_id
+          WHERE r.storage_target_id=? AND r.deleted_at IS NULL AND r.encoding='identity' GROUP BY r.object_key)`,
+      )
+      .safeIntegers()
+      .get(storageTargetId)!.bytes;
+  }
   readDueArtifactReplica(now: number): {
     artifactId: string;
     kind: 'r2' | 'pikpak';
@@ -401,14 +439,7 @@ export class RelationalReplicaStore {
       retry = now - 3600000;
     if (configuration.pikpak) {
       // 本站当前目标的 identity 登记/预留按物理对象去重；不是全云或未知压缩长度的容量。
-      const bytes = this.sqlite
-        .prepare<[string], { bytes: bigint }>(
-          `SELECT COALESCE(SUM(bytes),0) AS bytes FROM (
-          SELECT MAX(a.byte_length) AS bytes FROM artifact_replicas r JOIN artifacts a ON a.id=r.artifact_id
-          WHERE r.storage_target_id=? AND r.deleted_at IS NULL AND r.encoding='identity' GROUP BY r.object_key)`,
-        )
-        .safeIntegers()
-        .get(hot)!.bytes;
+      const bytes = this.r2Bytes(hot);
       const cold = this.configuredTarget('pikpak').target.storageTargetId,
         candidate = this.sqlite
           .prepare<
@@ -453,7 +484,7 @@ export class RelationalReplicaStore {
         WHERE a.retired_at IS NULL AND a.mime_type IN ('image/png','image/jpeg','image/webp')
           AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.encoding='identity'
             AND d.object_key='images/'||a.id||'/'||a.sha256
-            AND (d.last_error_code IS NULL OR (e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
+            AND (d.last_error_code IS NULL OR (d.last_error_code!='REPLICA_RELEASE_FAILED' AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
           AND (((d.uploaded_at IS NOT NULL OR d.verified_at IS NOT NULL) AND (d.verified_at IS NULL OR d.last_error_code IS NOT NULL))
             OR (origin.event_type='ArtifactPublished' AND a.published_at<?
               AND l.deleted_at IS NULL AND l.verified_at IS NOT NULL
@@ -463,6 +494,77 @@ export class RelationalReplicaStore {
       )
       .get(local, hot, retry, now - 86400000, retry);
     return candidate ? { ...candidate, kind: 'r2' } : null;
+  }
+  readDueArtifactRelease(
+    now: number,
+    afterId = '',
+    afterKind?: 'local' | 'r2',
+  ): {
+    artifactId: string;
+    kind: 'local' | 'r2';
+    sourceEventId: string;
+  } | null {
+    if (
+      !Number.isSafeInteger(now) ||
+      now < 0 ||
+      typeof afterId !== 'string' ||
+      afterId.length > 128 ||
+      (afterKind !== undefined && afterKind !== 'local' && afterKind !== 'r2')
+    ) {
+      fail('副本删除调度缺少有效时间或原游标');
+    }
+    const configuration = this.active();
+    if (!configuration.r2) {
+      return null;
+    }
+    const local = this.configuredTarget('local').target.storageTargetId,
+      hot = this.configuredTarget('r2').target.storageTargetId,
+      cold = configuration.pikpak ? this.configuredTarget('pikpak').target.storageTargetId : '',
+      pressure = this.r2Bytes(hot) >= BigInt(R2_PIKPAK_THRESHOLD_BYTES) ? 1 : 0;
+    return (
+      this.sqlite
+        .prepare<unknown[], { artifactId: string; kind: 'local' | 'r2'; sourceEventId: string }>(
+          `SELECT * FROM (
+        SELECT a.id AS artifactId,'local' AS kind,s.source_event_id AS sourceEventId
+        FROM artifacts a JOIN artifact_replicas s ON s.artifact_id=a.id AND s.storage_target_id=?
+        JOIN artifact_replicas d ON d.artifact_id=a.id AND d.storage_target_id=?
+        JOIN domain_events e ON e.event_id=s.source_event_id
+        WHERE a.retired_at IS NULL AND a.published_at<?
+          AND a.mime_type IN ('image/png','image/jpeg','image/webp')
+          AND s.deleted_at IS NULL AND s.verified_at IS NOT NULL AND s.encoding='identity'
+          AND (s.last_error_code IS NULL OR (s.last_error_code='REPLICA_RELEASE_FAILED'
+            AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))
+          AND d.deleted_at IS NULL AND d.verified_at IS NOT NULL AND d.last_error_code IS NULL
+          AND d.encoding='identity' AND d.object_key='images/'||a.id||'/'||a.sha256
+        UNION ALL
+        SELECT a.id AS artifactId,'r2' AS kind,s.source_event_id AS sourceEventId
+        FROM artifacts a JOIN artifact_replicas s ON s.artifact_id=a.id AND s.storage_target_id=?
+        JOIN artifact_replicas d ON d.artifact_id=a.id AND d.storage_target_id=?
+        JOIN domain_events e ON e.event_id=s.source_event_id
+        WHERE a.retired_at IS NULL AND a.mime_type IN ('image/png','image/jpeg','image/webp')
+          AND s.verified_at IS NOT NULL AND (s.verified_at<? OR ?)
+          AND s.deleted_at IS NULL AND s.encoding='identity' AND s.object_key='images/'||a.id||'/'||a.sha256
+          AND (s.last_error_code IS NULL OR (s.last_error_code='REPLICA_RELEASE_FAILED'
+            AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))
+          AND d.deleted_at IS NULL AND d.uploaded_at IS NOT NULL AND d.last_error_code IS NULL
+          AND d.encoding='br' AND d.object_key=a.sha256||'.br')
+        WHERE artifactId>? OR (artifactId=? AND kind>?) ORDER BY artifactId,kind LIMIT 1`,
+        )
+        .get(
+          local,
+          hot,
+          now - 86400000,
+          now - 3600000,
+          hot,
+          cold,
+          now - 7 * 86400000,
+          pressure,
+          now - 3600000,
+          afterId,
+          afterId,
+          afterKind ?? 'r2',
+        ) ?? null
+    );
   }
   readStorageTarget(storageTargetId: string) {
     const row = this.sqlite
@@ -534,7 +636,12 @@ export class RelationalReplicaStore {
     }
     return row;
   }
-  private append(metadata: Metadata, fact: ReplicaFact, memberId: string | null) {
+  private append(
+    metadata: Metadata,
+    fact: ReplicaFact,
+    memberId: string | null,
+    release?: ReleaseEvidence,
+  ) {
     const streamId =
       fact.eventType === 'StorageTargetRegistered'
         ? `storage:${fact.payload.storageTargetId}`
@@ -551,6 +658,7 @@ export class RelationalReplicaStore {
       expectedVersions: { [streamId]: version },
       receipt: {
         storageTargetId: fact.payload.storageTargetId,
+        ...(release ? { release } : {}),
         ...(fact.eventType === 'ArtifactReplicaRecorded'
           ? { artifactId: fact.payload.artifactId }
           : {}),
@@ -744,7 +852,7 @@ export class RelationalReplicaStore {
     }
     return replica;
   }
-  private checkedTicket(ticket: Ticket) {
+  private checkedTicket(ticket: Ticket, allowDeleted = false) {
     const issued = this.tickets.get(ticket);
     if (!issued) {
       fail('副本票据不属于当前后台');
@@ -768,7 +876,9 @@ export class RelationalReplicaStore {
       issued,
       artifact,
       target,
-      replica: this.readTicketReplica(ticket.artifactId, ticket.storageTargetId),
+      replica: allowDeleted
+        ? this.readArtifactReplica(ticket.artifactId, ticket.storageTargetId)
+        : this.readTicketReplica(ticket.artifactId, ticket.storageTargetId),
     };
   }
   assertArtifactReplicaTicket(ticket: Ticket) {
@@ -776,6 +886,325 @@ export class RelationalReplicaStore {
     if ((replica?.sourceEventId || null) !== issued.replicaSource) {
       fail('副本票据已被另一提交替换');
     }
+  }
+  private assertCurrentReleaseReferences(
+    artifact: ReturnType<RelationalReplicaStore['readArtifact']>,
+    sourceTarget: ReturnType<RelationalReplicaStore['readStorageTarget']>,
+    source: NonNullable<ReturnType<RelationalReplicaStore['readArtifactReplica']>>,
+  ) {
+    // 重领已提交删除的原回执不再次删除；仍由外层核当前授权、原双票据和完整回执。
+    if (source.deletedAt !== null) {
+      return;
+    }
+    // 复用生成 owner 的未完责任口；prepared 不能由别的产物副本声明替代。
+    if (
+      new RelationalGenerationStore(this.sqlite, this.env).hasActiveGenerationResponsibilities()
+    ) {
+      fail('未完成生成或准备结果仍占用副本责任');
+    }
+    const destinationKind = sourceTarget.kind === 'local' ? 'r2' : 'pikpak';
+    for (const row of this.sqlite
+      .prepare<[string, string, string], { artifactId: string; targetId: string }>(
+        `SELECT r.artifact_id AS artifactId,r.storage_target_id AS targetId
+       FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id
+       WHERE s.kind=? AND s.namespace=? AND r.object_key=? AND r.deleted_at IS NULL`,
+      )
+      .all(sourceTarget.kind, sourceTarget.namespace, source.objectKey)) {
+      const owner = this.readArtifact(row.artifactId),
+        target = this.readStorageTarget(row.targetId),
+        reference = this.readArtifactReplica(row.artifactId, row.targetId)!;
+      if (
+        target.kind !== sourceTarget.kind ||
+        target.namespace !== sourceTarget.namespace ||
+        reference.encoding !== source.encoding ||
+        owner.sha256 !== artifact.sha256 ||
+        owner.byteLength !== artifact.byteLength
+      ) {
+        fail('同一物理副本的原内容或编码有冲突');
+      }
+      // 退休/预留/未知presence行也属于当前引用；只能沿各自已登记的原冷热链向下释放。
+      const replacement = this.sqlite
+        .prepare<[string], { id: string }>(
+          'SELECT storage_target_id AS id FROM artifact_replicas WHERE artifact_id=? AND deleted_at IS NULL',
+        )
+        .all(row.artifactId)
+        .some(({ id }) => {
+          const candidateTarget = this.readStorageTarget(id),
+            candidate = this.readArtifactReplica(row.artifactId, id)!;
+          return (
+            candidateTarget.kind === destinationKind &&
+            candidate.lastErrorCode === null &&
+            (destinationKind === 'r2'
+              ? candidate.encoding === 'identity' && candidate.verifiedAt !== null
+              : candidate.encoding === 'br' && candidate.uploadedAt !== null)
+          );
+        });
+      if (!replacement) {
+        fail('同一物理副本的当前引用缺少自身已登记替代');
+      }
+    }
+  }
+  private releasePair(
+    artifactId: string,
+    sourceId: string,
+    destinationId: string,
+    allowDeleted = false,
+  ) {
+    const artifact = this.readArtifact(artifactId),
+      sourceTarget = this.readStorageTarget(sourceId),
+      destinationTarget = this.readStorageTarget(destinationId),
+      source = this.readArtifactReplica(artifactId, sourceId),
+      destination = this.readArtifactReplica(artifactId, destinationId);
+    if (
+      artifact.retiredAt !== null ||
+      (sourceTarget.kind !== 'local' && sourceTarget.kind !== 'r2') ||
+      destinationTarget.kind === 'local' ||
+      (sourceTarget.kind === 'local'
+        ? destinationTarget.kind !== 'r2'
+        : destinationTarget.kind !== 'pikpak') ||
+      !source ||
+      (!allowDeleted && !hasArtifactReplicaPresence(source)) ||
+      source.verifiedAt === null ||
+      (source.lastErrorCode !== null && source.lastErrorCode !== 'REPLICA_RELEASE_FAILED') ||
+      !destination ||
+      !hasArtifactReplicaPresence(destination) ||
+      destination.lastErrorCode !== null ||
+      (sourceTarget.kind === 'local'
+        ? destination.verifiedAt === null
+        : destination.uploadedAt === null) ||
+      source.objectKey !== replicaLocation(artifact.descriptor, sourceTarget.kind).objectKey ||
+      source.encoding !== 'identity' ||
+      destination.objectKey !==
+        replicaLocation(artifact.descriptor, destinationTarget.kind).objectKey ||
+      destination.encoding !== (sourceTarget.kind === 'local' ? 'identity' : 'br')
+    ) {
+      fail('删除副本缺少同产物的持久目的或原定位');
+    }
+    this.assertCurrentReleaseReferences(artifact, sourceTarget, source);
+    const claim: RetainedArtifactReleaseClaim = {
+      artifactId,
+      sha256: artifact.sha256,
+      byteLength: artifact.byteLength,
+      source: {
+        kind: sourceTarget.kind,
+        namespace: sourceTarget.namespace,
+        objectKey: source.objectKey,
+        encoding: 'identity',
+      },
+      destination: {
+        kind: destinationTarget.kind,
+        namespace: destinationTarget.namespace,
+        objectKey: destination.objectKey,
+        encoding: sourceTarget.kind === 'local' ? 'identity' : 'br',
+      },
+    };
+    return {
+      artifact,
+      source: { target: sourceTarget, replica: source },
+      destination: { target: destinationTarget, replica: destination },
+      claim,
+    };
+  }
+  private assertReleasePolicy(
+    pair: ReturnType<RelationalReplicaStore['releasePair']>,
+    now: number,
+  ) {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      fail('副本删除缺少有效确认时间');
+    }
+    const { artifact, source } = pair,
+      failure =
+        source.replica.lastErrorCode === 'REPLICA_RELEASE_FAILED'
+          ? this.source(source.replica.sourceEventId)
+          : null;
+    if (
+      !['image/png', 'image/jpeg', 'image/webp'].includes(artifact.mimeType) ||
+      (source.target.kind === 'local' &&
+        (artifact.publishedAt === null || artifact.publishedAt >= now - 86400000)) ||
+      (source.target.kind === 'r2' &&
+        (source.replica.verifiedAt === null ||
+          (source.replica.verifiedAt >= now - 7 * 86400000 &&
+            this.r2Bytes(source.target.storageTargetId) < BigInt(R2_PIKPAK_THRESHOLD_BYTES)))) ||
+      (failure &&
+        (failure.eventType !== 'ArtifactReplicaRecorded' || failure.occurredAt >= now - 3600000))
+    ) {
+      fail('副本尚未达到原保留期或删除重试期限');
+    }
+  }
+  beginArtifactRelease(artifactId: string, kind: 'local' | 'r2', now: number) {
+    this.active();
+    if (kind !== 'local' && kind !== 'r2') {
+      fail('只有Local或R2副本可以释放');
+    }
+    const source = this.configuredTarget(kind),
+      destination = this.configuredTarget(kind === 'local' ? 'r2' : 'pikpak'),
+      pair = this.releasePair(
+        artifactId,
+        source.target.storageTargetId,
+        destination.target.storageTargetId,
+      ),
+      sourceTicket = this.beginTicket(artifactId, source.target.storageTargetId, true).ticket,
+      destinationTicket = this.beginTicket(
+        artifactId,
+        destination.target.storageTargetId,
+        true,
+      ).ticket;
+    this.assertReleasePolicy(pair, now);
+    if (kind === 'local') {
+      pair.claim.source.dataDir = path.resolve(this.configuration!.dataDir);
+    }
+    const ticket = Object.freeze({ artifactId, storageTargetId: source.target.storageTargetId });
+    this.releaseTickets.set(ticket, {
+      source: sourceTicket,
+      destination: destinationTicket,
+      claim: structuredClone(pair.claim),
+    });
+    return {
+      ...pair,
+      source: { ...pair.source, ticket: sourceTicket },
+      destination: { ...pair.destination, ticket: destinationTicket },
+      ticket,
+    };
+  }
+  private checkedReleaseTicket(ticket: Ticket, allowDeleted = false) {
+    const issued = this.releaseTickets.get(ticket);
+    if (!issued) {
+      fail('删除票据不属于当前后台');
+    }
+    const source = this.checkedTicket(issued.source, allowDeleted),
+      destination = this.checkedTicket(issued.destination),
+      pair = this.releasePair(
+        ticket.artifactId,
+        issued.source.storageTargetId,
+        issued.destination.storageTargetId,
+        allowDeleted,
+      );
+    if (
+      destination.replica?.sourceEventId !== destination.issued.replicaSource ||
+      (!allowDeleted && source.replica?.sourceEventId !== source.issued.replicaSource)
+    ) {
+      fail('删除票据的源或目的已被另一提交替换');
+    }
+    if (pair.source.target.kind === 'local') {
+      pair.claim.source.dataDir = path.resolve(this.configuration!.dataDir);
+    }
+    if (canonicalJson(pair.claim) !== canonicalJson(issued.claim)) {
+      fail('删除票据的原对象或物理位置已变化');
+    }
+    return { ...pair, issued, sourceIssued: source.issued };
+  }
+  assertArtifactReleaseTicket(ticket: Ticket, now: number) {
+    this.assertReleasePolicy(this.checkedReleaseTicket(ticket), now);
+  }
+  recordArtifactRelease(metadata: Metadata, ticket: Ticket, permit: RetainedArtifactReleasePermit) {
+    return this.owned(() => {
+      this.authorize(metadata);
+      const pair = this.checkedReleaseTicket(ticket, true),
+        evidence = assertRetainedArtifactReleasePermit(permit, pair.issued.claim),
+        claimSha256 = domainDigest(publicReleaseClaim(pair.claim)),
+        release: ReleaseEvidence = {
+          sourceEventId: pair.sourceIssued.replicaSource!,
+          destinationEventId: pair.destination.replica.sourceEventId,
+          destinationStorageTargetId: pair.destination.target.storageTargetId,
+          ...evidence,
+          claimSha256,
+        },
+        command = {
+          ...metadata,
+          fingerprint: domainDigest([
+            metadata.fingerprint,
+            release.sourceEventId,
+            release.destinationEventId,
+            claimSha256,
+          ]),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        if (
+          pair.source.replica.deletedAt === null ||
+          this.source(pair.source.replica.sourceEventId).commitSeq !== prior.commitSeq
+        ) {
+          fail('原删除回执与当前来源不符');
+        }
+        return prior;
+      }
+      if (
+        pair.source.replica.deletedAt !== null ||
+        pair.source.replica.sourceEventId !== release.sourceEventId
+      ) {
+        fail('删除票据已被另一提交替换');
+      }
+      this.assertReleasePolicy(pair, metadata.recordedAt);
+      const { sourceEventId: _eventId, ...original } = pair.source.replica;
+      return this.append(
+        command,
+        {
+          eventType: 'ArtifactReplicaRecorded',
+          payload: {
+            ...original,
+            deletedAt: metadata.recordedAt,
+            lastErrorCode: null,
+          },
+        },
+        pair.artifact.memberId,
+        release,
+      );
+    });
+  }
+  private assertReleaseCommit(event: RelationalEvent, stored: StoredRelationalCommit) {
+    if (event.eventType !== 'ArtifactReplicaRecorded') {
+      fail('删除确认必须保存原副本事实');
+    }
+    const p = event.payload,
+      receipt = stored.command.receipt;
+    if (
+      !receipt ||
+      typeof receipt !== 'object' ||
+      Array.isArray(receipt) ||
+      receipt.artifactId !== p.artifactId ||
+      receipt.storageTargetId !== p.storageTargetId ||
+      !receipt.release ||
+      typeof receipt.release !== 'object' ||
+      Array.isArray(receipt.release) ||
+      stored.events.length !== 1 ||
+      stored.events[0].eventId !== event.eventId ||
+      stored.command.recordedAt !== event.occurredAt
+    ) {
+      fail('副本删除缺少唯一完整原回执');
+    }
+    const proof = receipt.release;
+    if (
+      Object.keys(receipt).sort().join(',') !== 'artifactId,release,storageTargetId' ||
+      Object.keys(proof).sort().join(',') !==
+        'claimSha256,destinationEventId,destinationStorageTargetId,proofSha256,registryId,revision,sourceEventId' ||
+      typeof proof.destinationStorageTargetId !== 'string' ||
+      typeof proof.registryId !== 'string' ||
+      !/^[a-f0-9-]{36}$/.test(proof.registryId) ||
+      typeof proof.revision !== 'number' ||
+      !Number.isSafeInteger(proof.revision) ||
+      proof.revision < 0 ||
+      typeof proof.proofSha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(proof.proofSha256)
+    ) {
+      fail('副本删除保留源证据无效');
+    }
+    const pair = this.releasePair(
+      p.artifactId,
+      p.storageTargetId,
+      proof.destinationStorageTargetId,
+    );
+    if (
+      pair.source.replica.sourceEventId !== proof.sourceEventId ||
+      pair.destination.replica.sourceEventId !== proof.destinationEventId ||
+      domainDigest(publicReleaseClaim(pair.claim)) !== proof.claimSha256 ||
+      p.uploadedAt !== pair.source.replica.uploadedAt ||
+      p.verifiedAt !== pair.source.replica.verifiedAt ||
+      p.deletedAt !== event.occurredAt ||
+      p.lastErrorCode !== null
+    ) {
+      fail('副本删除与原来源、目的或确认不一致');
+    }
+    this.assertReleasePolicy(pair, event.occurredAt);
   }
   recordArtifactReplica(
     metadata: Metadata,
@@ -808,6 +1237,12 @@ export class RelationalReplicaStore {
       const previous = this.readArtifactReplica(ticket.artifactId, ticket.storageTargetId);
       if ((previous?.sourceEventId || null) !== issued.replicaSource) {
         fail('副本票据已被另一提交替换');
+      }
+      if (
+        previous?.lastErrorCode === 'REPLICA_RELEASE_FAILED' &&
+        (phase !== 'failed' || errorCode !== 'REPLICA_RELEASE_FAILED')
+      ) {
+        fail('副本删除未决，不能以复制或验证覆盖');
       }
       const row: Replica = {
         artifactId: ticket.artifactId,
@@ -866,6 +1301,16 @@ export class RelationalReplicaStore {
           canonicalJson(source) !== canonicalJson(event)
         ) {
           fail('副本投影与原完整提交不符');
+        }
+        const receipt = original.command.receipt;
+        if (
+          receipt &&
+          typeof receipt === 'object' &&
+          !Array.isArray(receipt) &&
+          Object.hasOwn(receipt, 'release') &&
+          (event.eventType !== 'ArtifactReplicaRecorded' || event.payload.deletedAt === null)
+        ) {
+          fail('副本删除回执缺少原删除决定');
         }
         if (event.eventType === 'ArtifactHistoryRetired') {
           assertHistoryRetirementCommit(this.sqlite, event, 'artifacts');
@@ -934,26 +1379,33 @@ export class RelationalReplicaStore {
             ((previous.verifiedAt === null && p.verifiedAt === event.occurredAt) ||
               (previous.verifiedAt !== null &&
                 previous.lastErrorCode !== null &&
+                previous.lastErrorCode !== 'REPLICA_RELEASE_FAILED' &&
                 p.verifiedAt === previous.verifiedAt));
           const failed =
             previous &&
             p.uploadedAt === previous.uploadedAt &&
             p.verifiedAt === previous.verifiedAt &&
             p.lastErrorCode !== null &&
+            (previous.lastErrorCode !== 'REPLICA_RELEASE_FAILED' ||
+              p.lastErrorCode === 'REPLICA_RELEASE_FAILED') &&
             /^[A-Z0-9_]{1,64}$/.test(p.lastErrorCode);
+          const release = !opening && p.deletedAt !== null;
+          if (release) {
+            this.assertReleaseCommit(event, original);
+          }
           if (
             event.memberId !== artifact.memberId ||
             event.accountId !== null ||
             (opening
               ? previous !== null
               : artifact.retiredAt !== null ||
-                p.deletedAt !== null ||
+                (!release && p.deletedAt !== null) ||
                 p.objectKey !== location.objectKey ||
                 p.encoding !== location.encoding ||
                 (previous !== null &&
                   (previous.objectKey !== p.objectKey || previous.encoding !== p.encoding)) ||
                 previous?.deletedAt != null ||
-                !(firstReservation || firstLocal || upload || verification || failed))
+                !(release || firstReservation || firstLocal || upload || verification || failed))
           ) {
             fail('副本来源、编码或状态迁移不一致');
           }
@@ -968,7 +1420,7 @@ export class RelationalReplicaStore {
           this.sqlite
             .prepare(
               `INSERT INTO artifact_replicas(artifact_id,storage_target_id,object_key,encoding,uploaded_at,verified_at,deleted_at,last_error_code,source_event_id) VALUES(?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(artifact_id,storage_target_id) DO UPDATE SET uploaded_at=excluded.uploaded_at,verified_at=excluded.verified_at,last_error_code=excluded.last_error_code,source_event_id=excluded.source_event_id`,
+          ON CONFLICT(artifact_id,storage_target_id) DO UPDATE SET uploaded_at=excluded.uploaded_at,verified_at=excluded.verified_at,deleted_at=excluded.deleted_at,last_error_code=excluded.last_error_code,source_event_id=excluded.source_event_id`,
             )
             .run(
               p.artifactId,
