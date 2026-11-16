@@ -628,9 +628,14 @@ async function packageReleaseRuntime(t, hold = false) {
   });
   assert.equal(paused.status, 200, paused.text);
   await warm.stop();
-  const { artifact_id: artifactId, object_key: localPath } = query(
-      "SELECT r.artifact_id,r.object_key FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='local'",
+  const {
+      artifact_id: artifactId,
+      object_key: localKey,
+      namespace: localNamespace,
+    } = query(
+      "SELECT r.artifact_id,r.object_key,s.namespace FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='local'",
     )[0],
+    localPath = path.join(localNamespace, localKey),
     { R2Storage, r2Config } = await load('server/storage/r2-storage.js'),
     storage = {
       R2_ACCOUNT_ID: 'a'.repeat(32),
@@ -810,7 +815,7 @@ test(
 );
 
 test(
-  '普通 JS 发布包：shutdown等待真实held R2 DELETE后才确认释放并关闭主库',
+  '普通 JS 发布包：shutdown等待真实held R2 DELETE后关库，保留未确认供重试',
   {
     timeout: 90000,
     skip:
@@ -848,7 +853,15 @@ test(
     assert.deepEqual(server.exit, { code: 0, signal: null }, server.stderr);
     assert.ok(messages.some((message) => message.removeImageCompleted));
     assert.ok(messages.some((message) => message.replica === 'dbclosed'));
-    assert.equal(typeof releasedAt(), 'number');
+    assert.ok(
+      messages.findIndex((message) => message.removeImageCompleted) <
+        messages.findIndex((message) => message.replica === 'dbclosed'),
+    );
+    assert.equal(
+      releasedAt(),
+      null,
+      'closing rejects the SQL acknowledgement; existing retry owns confirmation',
+    );
     assert.deepEqual(await readFile(path.join(f.env.DATA_DIR, localPath)), image);
   },
 );
