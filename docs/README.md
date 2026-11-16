@@ -40,8 +40,9 @@
 - [正式发布与回退](operations/production-release.md)：当前发布记录、生产配置、备份及回退依据。
 - [隔离测试部署](operations/test-deployment.md)：测试环境、模拟上游、发布产物和阶段验收。
 - [关系格式离线恢复](operations/relational-recovery.md)：完整提交与保护内容重建、所选私有快照及合法 ready 安装；不解释旧格式或执行生产切换。
+- [数据库模型 B 切换操作单](operations/database-model-cutover.md)：最终 cut、排空、转换/恢复、实际包启动及失败处置的待签收步骤；当前未授权或执行生产切换。
 - [独立旧归档精确查询](operations/legacy-archive-lookup.md)：固定旧包的原身份、原回执、保护输入与本地图审计，不接入在线运行时。
-- [B 迁移选定原图准备](operations/legacy-original-materialization.md)：选定 R2/已取本地原图与同一离线转换入口的来源绑定，不构成旧远端承诺或 ready。
+- [B 迁移选定原图准备](operations/legacy-original-materialization.md)：选定 R2/PikPak/已取本地原图与同一离线转换入口的来源绑定，不构成旧远端承诺或 ready。
 
 ## 历史与证据
 
