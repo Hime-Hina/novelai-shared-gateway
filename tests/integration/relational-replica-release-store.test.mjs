@@ -528,6 +528,7 @@ function appendPhysicalAlias(
     replacement = null,
     replacementTarget = null,
     replacementAt = 0,
+    replacementObjectKey = null,
     sourceTarget = null,
   } = {},
   db = f.db,
@@ -576,11 +577,13 @@ function appendPhysicalAlias(
       payload: {
         artifactId: id,
         storageTargetId: replacementTarget ?? f.target(replacement),
-        objectKey: {
-          pikpak: original.sha256 + '.br',
-          r2: 'images/' + id + '/' + original.sha256,
-          local: id + '.webp',
-        }[replacement],
+        objectKey:
+          replacementObjectKey ??
+          {
+            pikpak: original.sha256 + '.br',
+            r2: 'images/' + id + '/' + original.sha256,
+            local: id + '.webp',
+          }[replacement],
         encoding: replacement === 'pikpak' ? 'br' : 'identity',
         uploadedAt: replacement === 'pikpak' ? replacementAt : null,
         verifiedAt: replacement === 'pikpak' ? null : replacementAt,
@@ -807,6 +810,7 @@ test('物理源的退休/预留别名必须各有原下一层替代，等待后�
     { retiredAt: null, reserved: true },
     { replacement: 'pikpak', replacementAt: null },
     { replacement: 'local' },
+    { replacement: 'pikpak', replacementObjectKey: 'historical-unreadable-cold.br' },
   ]) {
     const f = await setup(t),
       issued = f.store.beginArtifactRelease(ARTIFACT, 'r2', LATE),

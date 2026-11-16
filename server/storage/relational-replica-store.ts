@@ -937,6 +937,7 @@ export class RelationalReplicaStore {
             candidate = this.readArtifactReplica(row.artifactId, id)!;
           return (
             candidateTarget.kind === destinationKind &&
+            candidate.objectKey === replicaLocation(owner.descriptor, destinationKind).objectKey &&
             candidate.lastErrorCode === null &&
             (destinationKind === 'r2'
               ? candidate.encoding === 'identity' && candidate.verifiedAt !== null
