@@ -1,4 +1,4 @@
-# 数据库模型 B 切换操作单（待填最终证据）
+# 数据库模型 B 切换操作单（待生产授权）
 
 本单用于 [#53](https://github.com/Hime-Hina/novelai-shared-gateway/issues/53) 的执行准备，**尚未批准或执行生产停机、迁移、外存写删及切换**。命令按执行顺序供维护者逐项复核，不是可以整段无人值守运行的脚本。任何 `SELECTED_*`、大写路径变量或未签收门禁尚未填写时，停止在该步。
 
@@ -23,7 +23,9 @@
 
 `NODE` 为选定包自带且已校验的 Node 绝对路径；`LEGACY`、`MIGRATION`、`BACKEND` 为各自已校验解包根。`WORK` 是全新、独占、私有工作目录；`SOURCE`、`B_OUTPUT`、`READY_DATA`、`READY_DB`、`REGISTRY` 等路径只从上述 manifest 取得。Linux 目录/文件分别限制为 0700/0600，Windows 演练先核 ACL；不要将秘密作为命令参数或写入公开日志。
 
-空间预算按仍保留的原件，加 B 全部输出、恢复库/原图、installer shadow、临时工作区及压缩/加密/回读的同时占用计算，不预扣去重或 CoW 收益。执行前记录 `df -B1`、`free -b` 和实际 unit/cgroup 限额；工具失败须保现场，因此另留失败余量。代表性 B 的 463.651 秒/约 1.55 GB 峰值、联合恢复的 562.015 秒及最终输出 684,820,315 B 只是该次测量；5 秒采样未捕获临时峰值，原外存逻辑字节也不等于物理占用。这些都不能充当最终维护窗口或磁盘上限。未取得同候选、同规模及实际目标文件系统的预算证据时，不进入授权节点 B。
+空间预算按仍保留的原件，加 B 全部输出、恢复库/原图、installer shadow、临时工作区及压缩/加密/回读的同时占用计算，不预扣去重或 CoW 收益。执行前记录 `df -B1`、`free -b` 和实际 unit/cgroup 限额；工具失败须保现场，因此另留失败余量。[完整材料实测](../history/database-model-final-acceptance-20261118.md)的 B 为 401.467 s／OS 峰值 1,635,426,304 B，联合恢复 430.774 s，唯一 installer 41,873.893 s（约 11 h 38 min）；16 h 运行预算不是整段维护窗口。此前较小材料测量只作历史证据，不能承诺秒级切换。
+
+最近 Bob 清理后可用盘 3,575,296,000 B，不能再复制整套 4,232,262,764 B Local。当前发行验收已证明可复用独立数据目录内的完整 Local，但这不自动给生产目录搬移权限。最终 manifest 须列出新 cut 的每个 Local 来源、保留位置、实际 data 安装／权限步骤和同时存在的各份 DB／压缩／加密／shadow；新事实所在当前验收库也须独立保存。若按这些步骤和失败余量核算仍不足，停在节点 B 前补足空间，不能先删旧图、原库、归档或恢复依据腾空间。
 
 先核 tar 的独立 SHA，再在相应包目录核包内文件：
 
@@ -49,9 +51,13 @@ curl --fail --silent --show-error --config "$ADMIN_CURL" \
   'http://127.0.0.1:18082/api/admin/summary?fresh=1'
 ```
 
-18082 来自现部署模板，执行前按实际 unit 核实。前者的 `shared.queued/pending/running` 来自当前共享成员任务；后者提供账户观察和汇总，**其 `jobs` 实际只返回最近 50 条 failed，不是活动全集**。组外任务、SQL 已 failed 但仍持有真实执行 control、官方直连任务均不能由这些计数排除。不要用停用成员/账户、重分配权益或修改 SQL 来“排空”。原 `member-admission` 命令会取消 queued/pending，并非纯暂停；确需取消必须逐项使用原业务命令并保存原回执，不能无声改成退款。
+18082 已按旧实际 Linux unit／监听核实，执行窗口仍须重核。前者的 `shared.queued/pending/running` 来自当前共享成员任务；后者提供账户观察和汇总，**其 `jobs` 实际只返回最近 50 条 failed，不是活动全集**。组外任务、SQL 已 failed 但仍持有真实执行 control、官方直连任务均不能由这些计数排除。不要用停用成员/账户、重分配权益或修改 SQL 来“排空”。原 `member-admission` 命令会取消 queued/pending，并非纯暂停；确需取消必须逐项使用原业务命令并保存原回执，不能无声改成退款。
 
-**当前真实前置缺口：易失官方队列与物理完成证明。** 旧 `protocols/official-key-jobs.ts` 的 `jobs/queue/running` 独立存在内存，只有原 PST 对已知 `job_pst_*` 的 `GET /api/jobs/<ID>`，没有全局管理员枚举/drain 端点。旧 SIGTERM 等待共享 `runningJobControls.done`、quota/review/cold IO，却不等待这个官方队列；逻辑失败/超时也不能证明它的实际 IO 已结束。因此须在停旧 writer 前提交该**实际实例**的易失任务全集、完成/存储收尾与真实在途资格证据。已知调用方可沿原身份查询原 ID，但它不能证明未知任务不存在。现有只读管理 API 不足以单独交付这一证据；维护者须先补齐经审查的实例观察/排空办法及具体调用，或提供独立完整来源证明。未补齐时停在本节，不能凭持久 0、等待一段时间、进程退出或以往样本的 D4=0 放行。本单不虚构新管理 API、注入程序或控制 daemon。
+**实际实例观察已准备，生产观察／排空待授权执行。** 旧 `protocols/official-key-jobs.ts` 的 `jobs/queue/running` 独立存在内存，没有全局管理员枚举/drain 端点；旧 SIGTERM 也不等待该官方队列。已知原 ID 查询、持久 0、逻辑失败／超时及进程退出都不能替代真实全集和物理 IO 收尾证明。
+
+选定私有 `observer.mjs` SHA `b3dfb0364f2fd40fbe7a5cc893c005c5f9769acc69522e4d0d2f53d08795585f`，`PREPARED.json` SHA `3e2bbd4ab4df99051a547c934504cf50377fb20ff9de584cb5f3c4094f8ce502`；固定旧源码、Node、原生三 ENV、Main PID／start ticks／Invocation 与有效窗口均须匹配。105 个无生产副作用的反例及 Linux 六项真实 transport 检查已通过；这不表示生产实例已经观测。维护者须审阅 capsule 的生产前提和逐条调用；窗口中显式批准 inspector endpoint／必要信号后才运行其 `observer.mjs --selection FILE --selection-bytes N --selection-sha256 SHA --output NEW_PRIVATE_DIR`。不得把 synthetic loopback qualifier 用于生产。
+
+observer 只在授权窗口按实际旧 class／script／断点核实例元数据，原管理员 ping 为一次 loopback GET；arm 最长 15 s，暂停最多 2 s，并在 finally 清断点／关闭 inspector／核真实连接分离。保存输出和清理回执，再按实际成员／官方任务、control、prepared 与 IO 清单自然排空；仍有未知或在途时停在本节。当前实际 cloudflared 为共享路由，操作前另取完整实际配置，仅改正式业务 hostname，保其他 origin；先前接受版本的日志不能冒充当前管理配置或写入权限。
 
 默认让已受理共享队列自然完成再停派发；若有 queued/pending、预扣、pending review、prepared 责任需要跨窗口保留，先逐项验证其原输入/代次/期限与 B 支持的映射，列入最终 cut 清单。不能为便于切换清零、补默认或自动结算；无法解释的责任阻止转换放行。原图发布、迟到结果、官方观察、备份及归档也必须完成当前 IO 收尾，不能仅看上游 HTTP 已返回。
 
@@ -68,6 +74,8 @@ sudo ss -ltnp
 ```
 
 记录原 PID 真退出、端口释放、正常刷盘及所有写入者结束。旧程序自带宽限到期退出，unit 另有停止超时；退出码 0 不等于全部 IO 完成。不得靠强杀、放大超时掩盖未决或删除 WAL/SHM/journal 来凑封存要求；强制退出须保现场并进入故障处置。
+
+格式门禁拒绝旧程序的业务和 schema 写入，但不构成文件写保护：旧版存储初始化可能先切换 SQLite 日志模式，再因版本不兼容拒绝启动，不能把这种报错退出记为“零文件写入”通过。反向验证只在独立可写副本执行，原封存源不得交旧程序打开；版本拒绝不能替代停旧 writer 和新数据目录独占。
 
 使用已核定的现有备份入口制作固定保留的停机 cutover 副本，再校验它：
 
@@ -209,4 +217,4 @@ sudo systemctl show novelai-gateway.service novelai-gateway-web.service \
 | 启动或烟测后失败                           | 立即阻断新受理并正常停止新 writer，保留新库/cut、所选私有状态、所有新回执/账务及外部对象/IO 记录；用兼容候选向前修复、恢复和重核                                                 |
 | 评估恢复旧服务                             | 只有证明没有必须保留的新业务/认证事实、消费或对象变化，才可在明确授权下整体评估旧 cutover 来源。不能让旧程序打开新库，不能用旧快照覆盖新增事实；已有新事实或外存变化时不走该回退 |
 
-最终签收逐项保存：最终 manifest/批准、真实停止与易失 drain、最终 cut 和私有 namespace 来源、原导出四元组、B 来源核对、同结果联合恢复与 ready receipt、实际包 HTTP/调度/重启、备份/归档/外存及资源测量、返还路由和遗留限制。当前[代表性 B 记录](../history/database-model-b-migration-acceptance-20261116.md)证明真实转换 `complete` 和同结果公共/私有联合恢复；它明确仍为 building，不代替上述生产与最终候选证据。
+最终签收逐项保存：最终 manifest/批准、真实停止与易失 drain、最终 cut 和私有 namespace 来源、原导出四元组、B 来源核对、同结果联合恢复与 ready receipt、实际包 HTTP/调度/重启、备份/归档/外存及资源测量、返还路由和遗留限制。[完整材料与实际 normal 记录](../history/database-model-final-acceptance-20261118.md)已证明全量 B、同结果联合恢复、9642 原图唯一安装、合法 ready、真实 HTTP／dirty-WAL 重启和独立归档；其未完成项逐项保留。旧[代表性 B 记录](../history/database-model-b-migration-acceptance-20261116.md)只证明当时固定材料与 building 结果；两者都不代替生产最终新 cut 或实际切换签收。
