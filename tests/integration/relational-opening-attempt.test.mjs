@@ -119,6 +119,9 @@ function open(f, options = {}) {
       ...(options.request ?? {}),
     });
     const job = event('OpeningJobRecorded', {
+      diagnosticId: null,
+      sourceOrder: null,
+      displayCost: null,
       jobId,
       requestId,
       createdAt: null,

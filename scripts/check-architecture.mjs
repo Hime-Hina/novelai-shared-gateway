@@ -8,6 +8,8 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 // Shared transport guards contain no database or command assembly.
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
+  'migrateLegacyDatabase',
+  'migrateLegacyPrivate',
   'JsonStore',
   'emitStoreEvent',
   'relationalStateNotificationsFor',
@@ -40,6 +42,7 @@ const mutations = new Set([
   'stageGenerationDiagnostic',
   'stageOpeningInput',
   'stageOpeningContext',
+  'stageOpeningDiagnostic',
   'initializeGatewayConfiguration',
   'stageNormalizationDefaultsProfile',
   'createNormalizationDefaultsProjector',
@@ -96,10 +99,16 @@ const mutations = new Set([
   'registerStorageTarget',
   'beginArtifactReplica',
   'recordArtifactReplica',
+  'beginArtifactRelease',
+  'recordArtifactRelease',
+  'createReplicaProjector',
   'applyReplicaEvents',
   'replayReplicaCommit',
   'copyRelationalArtifactReplica',
   'verifyRelationalArtifactReplica',
+  'releaseRelationalArtifactReplica',
+  'adoptRetainedInventory',
+  'withRetainedArtifactRelease',
   'planLocalArtifactPublication',
   'retireJobHistory',
   'retireArtifactHistory',
@@ -177,9 +186,23 @@ export function checkSource(filename, text) {
     errors.push(`${filename}:${line + 1}: ${dependency}; use ${alternative}.`);
   };
   function dependency(node, specifier, names = []) {
-    const target = specifier.startsWith('.')
-      ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), specifier))
-      : specifier;
+    // ESM query/fragment 改变模块实例身份，不改变依赖的物理路径。
+    const modulePath = specifier.split(/[?#]/, 1)[0];
+    const target = modulePath.startsWith('.')
+      ? path.posix.normalize(path.posix.join(path.posix.dirname(filename), modulePath))
+      : modulePath;
+    if (
+      /^(?:server|web|executor)\//.test(filename) &&
+      /(?:^|\/)scripts\/(?:migrate-legacy-(?:database|finance|private|artifacts)|reconcile-legacy-database|materialize-legacy-originals|resolve-legacy-retained-dependencies)\.mjs$/.test(
+        target,
+      )
+    ) {
+      report(
+        node,
+        `offline migration runtime dependency ${specifier}`,
+        'the independent offline tool',
+      );
+    }
     if (pure.has(filename) && !pure.has(target)) {
       report(
         node,
@@ -209,7 +232,7 @@ export function checkSource(filename, text) {
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
           // 混合 owner 的整模块含已登记写命令；明确的纯 named reader 继续允许。
-          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events|state-notifications)|storage\/sqlite-store)\.(?:ts|js)$/.test(
+          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events|state-notifications)|storage\/(?:sqlite-store|retained-sources))\.(?:ts|js)$/.test(
             target,
           ) &&
             names.includes('*')) ||
@@ -234,11 +257,12 @@ export function checkSource(filename, text) {
         bindings && ts.isNamedImports(bindings)
           ? bindings.elements.filter((item) => !item.isTypeOnly)
           : null;
-      if (!clause?.isTypeOnly && !(named?.length === 0 && !clause?.name)) {
+      if (!clause?.isTypeOnly) {
+        // verbatimModuleSyntax 保留空绑定和 inline type-only 的模块加载。
         dependency(
           node,
           node.moduleSpecifier.text,
-          named ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
+          named?.length ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
         );
       }
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier && !node.isTypeOnly) {
@@ -246,13 +270,11 @@ export function checkSource(filename, text) {
         node.exportClause && ts.isNamedExports(node.exportClause)
           ? node.exportClause.elements.filter((item) => !item.isTypeOnly)
           : null;
-      if (!named || named.length) {
-        dependency(
-          node,
-          node.moduleSpecifier.text,
-          named ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
-        );
-      }
+      dependency(
+        node,
+        node.moduleSpecifier.text,
+        named?.length ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
+      );
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
       let name = '';

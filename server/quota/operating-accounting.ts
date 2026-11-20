@@ -620,9 +620,12 @@ export function applyOperatingFunding(
       !loss ||
       loss.accountId !== s.boundAccountId ||
       loss.resource !== resource ||
-      !['resource_gap_observed', 'resource_gap_reconciled', 'v5_capacity_observed'].includes(
-        loss.type,
-      )
+      ![
+        'resource_gap_observed',
+        'resource_gap_reconciled',
+        'v5_capacity_observed',
+        'opening_operating_gap',
+      ].includes(loss.type)
     ) {
       error('损耗记录不存在或资源不符');
     }

@@ -24,6 +24,40 @@ async function listen(server) {
   return server.address().port;
 }
 
+function selectsProtectedContent(sql) {
+  // AS 命名的是结果，不是读取列；COUNT(*) 也不读取保护内容。
+  const columns = sql.replace(/\bAS\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)/gi, '');
+  return (
+    /\bselect\b/i.test(columns) &&
+    /\b(?:generation_inputs|input_assets|normalization_contexts)\b/i.test(columns) &&
+    /\bbody\b|\bbytes\b|select\s+\*|\*(?=\s*(?:,|from\b))/i.test(columns)
+  );
+}
+
+test('查询spy按读取列区分logical-size元数据与保护正文/BLOB，不按输出别名判定', () => {
+  for (const sql of [
+    'SELECT logical_bytes AS bytes FROM generation_inputs WHERE id=?',
+    'SELECT i.logical_bytes AS "body" FROM generation_inputs i WHERE id=?',
+    'SELECT COUNT(*) AS bytes FROM input_assets',
+  ]) {
+    assert.equal(selectsProtectedContent(sql), false, sql);
+  }
+  for (const sql of [
+    'SELECT body FROM generation_inputs LIMIT 1',
+    'SELECT i.body AS bytes FROM generation_inputs AS i',
+    'SELECT CAST(body AS BLOB) AS metadata FROM generation_inputs',
+    'SELECT bytes FROM input_assets LIMIT 1',
+    'SELECT a.bytes AS metadata FROM input_assets a',
+    'SELECT * FROM generation_inputs LIMIT 1',
+    'SELECT * /* ordinary comment */ FROM generation_inputs LIMIT 1',
+    'SELECT i.* FROM generation_inputs i',
+    'SELECT i.id,i.* FROM generation_inputs i',
+    'SELECT body FROM normalization_contexts LIMIT 1',
+  ]) {
+    assert.equal(selectsProtectedContent(sql), true, sql);
+  }
+});
+
 test(
   '请求 API 的 Bearer/Cookie 跨秒同归属查询、CSRF 取消、真实签名领取与受理请求 ID',
   { timeout: 20000 },
@@ -68,17 +102,23 @@ test(
     const trace = `
       import Database from ${JSON.stringify(import.meta.resolve('better-sqlite3'))};
       const prepare = Database.prototype.prepare;
+      const selectsProtectedContent = ${selectsProtectedContent.toString()};
       let armed = false, reads = [];
       Database.prototype.prepare = function(sql) {
-        if (armed && /\\bselect\\b/i.test(sql) && /generation_inputs|input_assets|normalization_contexts/i.test(sql)
-          && /\\bbody\\b|\\bbytes\\b|select\\s+\\*/i.test(sql)) reads.push(sql);
+        if (armed && selectsProtectedContent(sql)) reads.push(sql);
         return prepare.call(this, sql);
       };
       process.on('message', message => {
         if (message === 'trace-prove') {
           reads = []; armed = true;
           const db = new Database(process.env.DATA_DIR + '/library.sqlite', {readonly:true});
-          try { db.prepare('SELECT body FROM generation_inputs LIMIT 1').get(); } finally { db.close(); }
+          try {
+            db.prepare('SELECT logical_bytes AS bytes FROM generation_inputs LIMIT 1').get();
+            db.prepare('SELECT COUNT(*) AS bytes FROM input_assets').get();
+            db.prepare('SELECT body FROM generation_inputs LIMIT 1').get();
+            db.prepare('SELECT bytes FROM input_assets LIMIT 1').get();
+            db.prepare('SELECT i.* FROM generation_inputs i LIMIT 1').get();
+          } finally { db.close(); }
           armed = false; process.send({trace:'proved', count:reads.length}); reads = [];
         }
         if (message === 'trace-begin') { reads = []; armed = true; process.send({trace:'begun'}); }
@@ -89,7 +129,12 @@ test(
     const start = async () => {
       server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, {
         OPENAI_CHAT_TIMEOUT_MS: '100',
-        NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(trace)}`,
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--import=data:text/javascript,${encodeURIComponent(trace)}`,
+        ]
+          .filter(Boolean)
+          .join(' '),
       });
       base = server.origin;
     };
@@ -203,7 +248,7 @@ test(
     });
     assert.equal(login.status, 200);
     const cookie = login.headers.get('set-cookie').split(';')[0];
-    assert.deepEqual(await traceMessage('trace-prove'), { trace: 'proved', count: 1 });
+    assert.deepEqual(await traceMessage('trace-prove'), { trace: 'proved', count: 3 });
     assert.deepEqual(await traceMessage('trace-begin'), { trace: 'begun' });
     const bearerStartedAt = Date.now(),
       bearer = await call(`/api/requests/${ownedParent}`, { key: newKey });

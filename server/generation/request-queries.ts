@@ -105,7 +105,7 @@ export function publicRelationalJob(
     routedSteps: input.steps,
     accountId: job.accountId,
     accountRouteId: null,
-    cost: job.currentAccepted ? generationCost() : null,
+    cost: job.currentAccepted ? generationCost() : job.displayCost,
     accountCost: null,
     generationProgress: options.generationProgress ?? {},
     imageId: job.imageId ?? '',

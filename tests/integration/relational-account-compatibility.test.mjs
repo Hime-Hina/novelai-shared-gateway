@@ -275,12 +275,12 @@ test('管理员组合proxy与enable实际发起只用目标连接，最终单提
   assert.equal(new Set(result.events.map((e) => e.commitSeq)).size, 1);
 });
 
-test('新76事实真实注册、配置和原观察完整回放，不安装私有代理/PST或触发网络', async (t) => {
+test('新80事实真实注册、配置和原观察完整回放，不安装私有代理/PST或触发网络', async (t) => {
   const f = await fixture(t),
     { configure } = setup(f);
   configure('name-weight', { displayName: 'x'.repeat(79) + '😀'.slice(0, 1), weight: 1.125 });
   configure('proxy-change', { proxyUrl: 'socks5://127.0.0.1:19001' });
-  assert.equal(relationalReplayFacts().size, 76);
+  assert.equal(relationalReplayFacts().size, 80);
   const target = new Database(':memory:');
   t.after(() => target.close());
   initializeRelationalStorage(target, 'generation-history');
@@ -304,7 +304,7 @@ test('新76事实真实注册、配置和原观察完整回放，不安装私有
   assert.equal(deny.mock.callCount(), 0);
 });
 
-test('新配置真实完整提交与唯一ready安装均要求已注册owner，缺owner零写拒绝而非只改76清单', async (t) => {
+test('新配置真实完整提交与唯一ready安装均要求已注册owner，缺owner零写拒绝而非只改事实清单', async (t) => {
   const f = await fixture(t),
     { configure } = setup(f),
     result = configure('real-configuration', { displayName: 'real', weight: 2.5 }).result;

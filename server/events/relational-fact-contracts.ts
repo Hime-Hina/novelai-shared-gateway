@@ -268,6 +268,14 @@ export const relationalPayloadParsers = {
     byteLength: positive,
     createdAt: integer,
   }),
+  OpeningDiagnosticRecorded: fields({
+    diagnosticId: id,
+    jobId: id,
+    sha256: hash,
+    byteLength: integer,
+    createdAt: nullable(integer),
+    origin,
+  }),
   RequestAccepted: fields({
     requestId: id,
     memberId: id,
@@ -650,7 +658,63 @@ export const relationalPayloadParsers = {
     origin,
   }),
   OpeningChargeRecorded: fields({ ...chargeFields, origin }),
+  OpeningQuotaObservationRecorded: fields({
+    ...officialQuotaV5Fields,
+    accountId: id,
+    credentialEpoch: choices(null),
+    sequence: choices(null),
+    observedAt: nullable(integer),
+    v5: nullable(amount),
+    anlasFixed: nullable(amount),
+    anlasPurchased: nullable(amount),
+    secondsPerPercent: nullable(number),
+    origin,
+  }),
   OpeningQuotaRecorded: fields({ ...quotaFields, origin }),
+  OpeningOperatingGapRecorded: fields({
+    accountId: id,
+    resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+    remaining: nonnegative,
+    originalGapId: nullable(id),
+    originalType: nullable(
+      choices('resource_gap_observed', 'resource_gap_reconciled', 'v5_capacity_observed'),
+    ),
+    occurredAt: nullable(integer),
+    origin,
+  }),
+  OpeningFundingReceiptRecorded: fields({
+    accountId: id,
+    receipt: id,
+    resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+    amount: nullable(nonnegative),
+    originalType: choices(
+      'operating_funding_registered',
+      'operating_funding_received',
+      'operating_loss_covered',
+      'resource_gap_reconciled',
+      'operating_debits_confirmed',
+    ),
+    occurredAt: nullable(integer),
+    request: nullable(
+      fields({
+        action: choices(
+          'operating-contribute',
+          'operating-register-funding',
+          'operating-cover-loss',
+          'operating-reconcile-return',
+          'operating-confirm-debits',
+        ),
+        actorId: id,
+        resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
+        amount: nonnegative,
+        destination: choices('members', 'operating'),
+        fromUnattributed: bool,
+        lossEventId: nullable(id),
+      }),
+    ),
+    result: nullable(fields({ eventId: id, duplicate: bool })),
+    origin,
+  }),
   OpeningOperatingRecorded: fields({ ...operatingFields, origin }),
   OpeningFundingRecorded: fields({ ...fundingFields, origin }),
   OpeningInputRecorded: fields({
@@ -681,6 +745,10 @@ export const relationalPayloadParsers = {
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
+    diagnosticId: nullable(id),
+    // 原来源的排序/显示值，不是 queueSeq 或收费资源金额。
+    sourceOrder: nullable(number),
+    displayCost: nullable(number),
     createdAt: nullable(integer),
     sampleIndex: nullable(integer),
     actualSeed: nullable(number),
@@ -756,9 +824,10 @@ export const relationalPayloadParsers = {
     operation,
     keyHash: hash,
     intentFingerprint: hash,
-    originalRequestId: id,
+    // 旧键可能只保存 job；未知 parent/原 POST 只在不可领取的归档事实中保留 NULL。
+    originalRequestId: nullable(id),
     originalJobId: id,
-    originalCommandId: id,
+    originalCommandId: nullable(id),
     noCache: nullable(bool),
     seedMode: nullable(choices('fixed', 'random', 'not_applicable')),
     requestId: nullable(id),
@@ -826,6 +895,9 @@ export const relationalFactStreams = {
     'OpeningAccountRecorded',
     'OpeningWalletRecorded',
     'OpeningChargeRecorded',
+    'OpeningQuotaObservationRecorded',
+    'OpeningOperatingGapRecorded',
+    'OpeningFundingReceiptRecorded',
     'OpeningQuotaRecorded',
     'OpeningOperatingRecorded',
     'OpeningFundingRecorded',
@@ -848,6 +920,7 @@ export const relationalFactStreams = {
     'JobHistoryRetired',
     'RequestAliasRegistered',
     'DiagnosticRecorded',
+    'OpeningDiagnosticRecorded',
     'OpeningRequestRecorded',
     'OpeningJobRecorded',
     'OpeningAttemptRecorded',
@@ -952,7 +1025,9 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     if (
       row.commitSeq !== null ||
       (row.resolution === 'live' &&
-        (row.requestId === null ||
+        (row.originalRequestId === null ||
+          row.originalCommandId === null ||
+          row.requestId === null ||
           row.contextId === null ||
           row.archivedReceipt === null ||
           row.noCache === null ||
@@ -1010,6 +1085,50 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     parseAmount(row.amount as string) <= 0n
   ) {
     invalid();
+  }
+  if (header.eventType === 'OpeningFundingReceiptRecorded') {
+    const p = payload as RelationalPayloads['OpeningFundingReceiptRecorded'];
+    if (
+      !/^[A-Za-z0-9_-]{8,100}$/.test(p.receipt) ||
+      p.origin.originalId !== `operating-receipt:${p.receipt}` ||
+      (p.result !== null && p.result.eventId !== p.origin.originalId)
+    ) {
+      invalid();
+    }
+    if (p.request !== null) {
+      const r = p.request,
+        types = {
+          'operating-contribute': 'operating_funding_received',
+          'operating-register-funding': r.fromUnattributed
+            ? 'operating_funding_received'
+            : 'operating_funding_registered',
+          'operating-cover-loss': 'operating_loss_covered',
+          'operating-reconcile-return': 'resource_gap_reconciled',
+          'operating-confirm-debits': 'operating_debits_confirmed',
+        };
+      if (
+        p.amount === null ||
+        r.resource !== p.resource ||
+        parseAmount(r.amount) <= 0n ||
+        types[r.action] !== p.originalType ||
+        (r.action !== 'operating-reconcile-return' && r.amount !== p.amount) ||
+        (r.action !== 'operating-register-funding' &&
+          (r.destination !== 'operating' || r.fromUnattributed)) ||
+        (['operating-cover-loss', 'operating-reconcile-return'].includes(r.action) &&
+          r.lossEventId === null) ||
+        (r.resource !== 'v5' &&
+          (parseAmount(r.amount) % AMOUNT_SCALE !== 0n ||
+            parseAmount(r.amount) > BigInt(Number.MAX_SAFE_INTEGER) * AMOUNT_SCALE)) ||
+        (r.resource === 'v5' &&
+          [
+            'operating-register-funding',
+            'operating-confirm-debits',
+            'operating-reconcile-return',
+          ].includes(r.action))
+      ) {
+        invalid();
+      }
+    }
   }
   if (header.eventType === 'OpeningAttemptRecorded') {
     const prepared = [

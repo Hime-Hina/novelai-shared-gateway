@@ -138,6 +138,9 @@ function recordRetainedRows(f, source) {
           origin: { sourceId, originalId: parent?.id ?? original.id },
         }),
         event('OpeningJobRecorded', `request:${requestId}`, {
+          diagnosticId: null,
+          sourceOrder: null,
+          displayCost: null,
           jobId: original.id,
           requestId,
           createdAt: stamp(original, 'createdAt'),
@@ -410,6 +413,9 @@ function opening(f, name, createdAt, { model = null, charge = false, lateResultA
     job = {
       jobId: `${name}-0`,
       requestId: name,
+      diagnosticId: null,
+      sourceOrder: null,
+      displayCost: null,
       createdAt,
       sampleIndex: 0,
       actualSeed: null,

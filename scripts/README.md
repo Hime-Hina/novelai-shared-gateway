@@ -2,7 +2,7 @@
 
 首次启动前在项目根目录运行 `pnpm run bootstrap`。先使用 `pnpm install --frozen-lockfile` 安装锁定依赖；只使用新数据目录，不会覆盖现有数据库，详见仓库根目录 README.md。
 
-bootstrap 只建立全新关系库：真实注册四成员、配置四组、注册并暂停上游、显式初始化当前默认值，再以独立同切点保护源完成唯一 ready 安装并无覆盖发布。没有旧格式模式、上游观察或生成请求。一次性凭据先保存，失败不更换身份重试；保留的 `.bootstrap.lock`、`bootstrap-credentials.json` 与 `.bootstrap-*` 私有暂存目录须由部署者核查。新空库的有效 Opus 验证由后续账户启用的原两阶段命令完成。不能把本 CLI 的源码验证当成同候选普通发布包、HTTP 和调度的整体验收；实现和验收边界见[数据库计划第 9.65 节](../docs/plans/database-model-redesign.md#965-新空库的唯一离线-bootstrap)。
+bootstrap 只建立全新关系库：真实注册四成员、配置四组、注册并暂停上游、显式初始化当前默认值，再以独立同切点保护源完成唯一 ready 安装并无覆盖发布。没有旧格式模式、上游观察或生成请求。一次性凭据先保存，失败不更换身份重试；保留的 `.bootstrap.lock`、`bootstrap-credentials.json` 与 `.bootstrap-*` 私有暂存目录须由部署者核查。新空库的有效 Opus 验证由后续账户启用的原两阶段命令完成。不能把本 CLI 的源码验证当成同候选普通发布包、HTTP 和调度的整体验收；实现和验收边界见[新空库初始化契约](../docs/operations/relational-recovery.md#新空库初始化)。
 
 完整后端测试使用 `pnpm test`，默认最多并行运行 4 个测试文件。各文件会创建 SQLite、读 worker 及测试网关进程，按全部逻辑 CPU 同时启动会争抢资源，导致旧历史开账超过测试的 10 秒启动等待；该等待和业务断言保持不变。此限制只作用于测试文件，不改变用例内部的并发请求或服务的队列并发。CI 复用同一个命令，无须另外指定参数。
 

@@ -2,6 +2,22 @@
 
 `scripts/restore-relational.mjs` 从一份明确选定的当前关系格式 SQLite 快照恢复到**全新输出**。它逐完整提交恢复业务，使用同一来源的保护正文和私有认证，再调用唯一 `verifyAndInstallRelationalStorage()` 核验全部表、实际对象和未决准备文件并安装 `ready`。它不解释旧格式、不选择 A/B 迁移路线，也不决定会话保留政策；选定私有快照的授权与会话取舍必须在运行前完成。
 
+## 格式、完整提交与私有恢复
+
+唯一 DDL 归 `relational-schema.ts`，格式门禁核源码 hash、实际表/索引/trigger、writer/minimumWriter 与外键开启；仅空目标可初始化为 building。字段/封套由 fact contracts 校验，完整提交另核原 event_count、事件顺序与精确 64 位游标，业务关系仍由各原 owner 验证。初始化、字段合法或源/目标两库相等均不能代替 ready 验收。
+
+业务回放只恢复公共决定，按完整原提交顺序在共同保存点写事实、回执、流头、游标与投影。保护 input/context/diagnostic/configuration 必须与来源的原完整 commit 相同，并核实际正文/附件的归属、长度与 SHA；重复仍验证源和目标，缺失或损坏直接拒绝，不补写修复。全业务新提交回放须 private-empty，私有恢复留在最终业务 cut。
+
+私有恢复要求目标为 building，来源只接受明确选定 SHA 的普通封存 SQLite 单文件、DELETE header、无 sidecar，拒绝源/目标相同真实文件及符号链接。核对相同 history、连续完整 cut、stream heads、稳定成员和账户代次/连接来源后，复制成员 `auth_epoch/note_json` 及密码、Key、Discord、invite、owner绑定、Cookie、上游凭据的原私有表。`note_json` 已知空也属于非空私有状态；不同的非空私有目标拒绝覆盖，相同状态重复零写入。保留原期限，不按当前时间续期；撤销、停用和移除仍受原成员状态/认证 owner 约束，业务事件不得复活旧 Key/Cookie/PST。
+
+唯一 `verifyAndInstallRelationalStorage()` 从空 shadow 经过真实完整 replayer 与所选私有源重建，枚举唯一 DDL 的全部表逐项比较；公共比较只由私有 owner 的列/表清单排除私有值。选定 cut 必须有真实有效 current configuration，两边都缺 current 也拒绝。对象与准备结果的实际字节 IO 在 SQL 外，结束后以同一最终 immediate 事务重验 source/cut、全部业务表、目标私有指纹和选定源 SHA，再恢复私有并装 ready；shadow 关闭/清理失败也回滚安装。失败被外层捕获后，事实、回执、游标、正文、私有值和状态均须保留原样。
+
+## 新空库初始化
+
+`scripts/bootstrap.mjs` 复用真实成员注册、首次 `SharingConfigured`、账户首次注册/绑定及显式 Configuration 初始化，不生成 Opening/ImportSource，不解释旧库或自动查询/启用上游。四组及一次性用户名/密码/Key 按原语义交付；账户暂停、代次 1、零权益和未知官方观察。后续启用必须走实际 prepare/query/complete 的当前授权、代次与有效 Opus 核验。
+
+预检、持久独占锁和先保存一次性私有凭据保护现有文件。初始化只写本次私有 staging，以同最终 cut 的独立封存源经唯一 installer 核完整 shadow、profile、全表与私有状态，再封存并无覆盖发布 `library.sqlite`。失败保留锁/凭据供核查，不换身份重试、覆盖旧输出或手写 ready；Windows 须预先限制父目录 ACL，POSIX mode 不能充当 Windows 权限证明。入口说明见 [scripts](../../scripts/README.md)。
+
 ## 输入准备
 
 - 使用获准的一致性数据库副本；快照必须已封存为单个普通 SQLite 文件，使用 DELETE journal header，且没有同名 `-wal`、`-shm`、`-journal`。不要直接指向运行中的数据库或软链接，不要在恢复期间修改快照、产物或配置。

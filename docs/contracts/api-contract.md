@@ -1,6 +1,6 @@
 # API 契约与迁移基线（C02/C03）
 
-未发布的关系候选现由普通 `server/index.ts` 与 Nitro 共享的 `gateway-runtime.ts` 装配关系 HTTP factories，删除旧在线 Store 分支。此阶段仅接已有真实能力，`/api/admin/summary`（含旧 revealTokens）和尚未交付的管理 action 仍明确不可用，不补旧集合或虚构统计；后继必须完成真实调用者和发布物验收才能上线。Host、Origin、CORS、PUBLIC 的 STA1N Key 前缀和 admin header 门禁仍由原 helper/factory 维护，Cookie/Discord/原 epoch 授权不被平台 admin 或官方 PST 代替。OpenAI 返回绝对限时签名 URL，所有入口共用一个进程签名密钥；签名可转交、重启失效。新入口的实际范围和反例见[第 9.75 节](../plans/database-model-redesign.md#975-唯一关系运行入口装配)。
+未发布的关系候选现由普通 `server/index.ts` 与 Nitro 共享的 `gateway-runtime.ts` 装配关系 HTTP factories，删除旧在线 Store 分支。接口范围由实际关系 factory 与共享白名单决定，管理摘要及 action 遵守下文各自契约；缺来源不补旧集合或虚构统计，上线须完成同候选调用者和发布物验收。Host、Origin、CORS、PUBLIC 的 STA1N Key 前缀和 admin header 门禁仍由原 helper/factory 维护，Cookie/Discord/原 epoch 授权不被平台 admin 或官方 PST 代替。OpenAI 返回绝对限时签名 URL，所有入口共用一个进程签名密钥；签名可转交、重启失效。新入口的实际范围和反例见[关系入口的启动与关闭](../architecture/result-recovery.md#事件权威与启动)。
 
 在途生成请求的正文、缓存或认证 IO 可能晚于关闭结束：所有新 accept/reuse 在原当前授权事务、原键回执检查后复核同一 runtime phase，不因旧授权或一次通知继续入队；原合法回执仍按实际终态领取。drained 只唤醒读取，晚注册的领取同样从当前 stopped phase 结束非终态等待；已 done 字节继续真实读取，不统一改成 503。内部不可用保持各原协议包装，Direct 为 HTTP200+x-error 且非 x-timeout。HTTP 领取期限沿原 Direct 60 秒/Native 与 OpenAI 10 分钟和其原环境配置，HTTP 截止不释放物理任务或伪造退款。
 
@@ -12,7 +12,7 @@
 
 ## 证据与使用边界
 
-新格式中 direct/OpenAI 所需当前默认值由显式配置 owner 提供，限原 `defaultModel/defaultArtist/defaultNegative` 与八项 defaults；公共成员地址仍按部署 `PUBLIC_BASE_URL`、已保存回退值、`PUBLIC_HOST` 的原顺序读取。当前 profile 与请求首次 context 不同：旧操作键继续解释原首次值，新请求捕获本次 Native 定义，缺当前配置不从最近请求补造。保护 profile 不进入领域事件正文，不作为缺少 Native 的生成 context；无当前配置编辑路由或 PromptAPI 执行功能。实现与恢复边界见[数据库计划第 9.47 节](../plans/database-model-redesign.md#947-当前规范化配置的显式来源和保护恢复)。
+新格式中 direct/OpenAI 所需当前默认值由显式配置 owner 提供，限原 `defaultModel/defaultArtist/defaultNegative` 与八项 defaults；公共成员地址仍按部署 `PUBLIC_BASE_URL`、已保存回退值、`PUBLIC_HOST` 的原顺序读取。当前 profile 与请求首次 context 不同：旧操作键继续解释原首次值，新请求捕获本次 Native 定义，缺当前配置不从最近请求补造。保护 profile 不进入领域事件正文，不作为缺少 Native 的生成 context；无当前配置编辑路由或 PromptAPI 执行功能。实现与恢复边界见[当前规范化配置](../plans/database-model-redesign.md#43-当前规范化配置)。
 
 | 证据                                                                                                                                                                | 能证明什么                                                 | 不能证明什么                                                   |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- |
@@ -42,9 +42,9 @@ MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。预�
 
 Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。普通接口超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；流式尚未发送首帧时保留 HTTP 错误状态，已发送预览或 final 时用 error 帧结束。这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
 
-上述批次的关系子进程夹具与同切点公共/选定私有恢复证据见[第 9.89 节](../plans/database-model-redesign.md#989-native-批次真实-child-来源迁移)。它使用真实本地 HTTP 和模拟上游，不代表真实 NAI 端点验收，也不把当前正常受理的 parent/child 当作旧 Opening 来源的等价迁移证明。
+上述批次的关系子进程夹具与同切点公共/选定私有恢复证据见[第 9.89 节](../history/database-model-execution-records.md#989-native-批次真实-child-来源迁移)。它使用真实本地 HTTP 和模拟上游，不代表真实 NAI 端点验收，也不把当前正常受理的 parent/child 当作旧 Opening 来源的等价迁移证明。
 
-当前新格式的强杀恢复先处理原 prepared 文件，再处理中断尝试；缺失或损坏的 prepared 字节保留预扣与未决责任并拒绝监听，不自动退款或重新请求上游。完整结果、迟到 Vibe 和冷历史来源的真实 child 验证范围见[结果恢复](../architecture/result-recovery.md#事件权威与启动)及[计划 9.96](../plans/database-model-redesign.md#996-结果恢复-http-child-的关系夹具)，模拟上游不代表真实 NAI 或实云验收。
+当前新格式的强杀恢复先处理原 prepared 文件，再处理中断尝试；缺失或损坏的 prepared 字节保留预扣与未决责任并拒绝监听，不自动退款或重新请求上游。完整结果、迟到 Vibe 和冷历史来源的真实 child 验证范围见[结果恢复](../architecture/result-recovery.md#事件权威与启动)及[计划 9.96](../history/database-model-execution-records.md#996-结果恢复-http-child-的关系夹具)，模拟上游不代表真实 NAI 或实云验收。
 
 ### 输入范围与规范化
 
@@ -197,7 +197,9 @@ Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在�
 
 管理摘要的 `errorLogs` 由 `reports/generation-errors.ts` 选择和展示，鉴权继续归原管理入口。没有保存的来源、账户路由、重试/队列次数、旧积分费用、原时间、诊断及请求字段返回 `null`；原本明确保存的 `0`、空文本和合法 number 保留其含义。`request.requestedSteps` 只来自原请求字段，不能用实际路由步数填充；缺少原完成时间时，`completedAt` 和终态 `durationMs` 不使用最后更新时刻推算。其他任务展示也复用同一耗时 owner，真实 Unix 时间 `0` 和已知零耗时有效，未知或负时长为 `null`。管理员诊断只展示已保存的详情并保留既有长度限制，不用公开错误文案补造详情。这些可空字段适用于旧在线读取与后续关系 DTO，读取不改写历史。
 
-新关系格式的失败诊断由原 generation 事务捕获，仅接受 system/null 和首次真实派发返回的不可变私有对象；核对其持久原派发事实、原 attempt 和原 credentialEpoch，不要求原在途凭据仍为当前账户凭据。实际原 PST 在 `errorDetailMessage` 中精确替换后再限长，正文归受保护内容，事件和回执不携正文或 PST。失败退款、诊断引用与正文同笔回滚，原回执重领仍先核票据而不重捕获。该易失对象不由历史恢复重建；完整提交恢复依赖匹配的受保护源、原摘要和长度，并且不恢复当前认证。具体关系与验收见[重构 9.30](../plans/database-model-redesign.md#930-t6真实关系错误损耗读取与受保护诊断)。
+新关系格式的失败诊断由原 generation 事务捕获，仅接受 system/null 和首次真实派发返回的不可变私有对象；核对其持久原派发事实、原 attempt 和原 credentialEpoch，不要求原在途凭据仍为当前账户凭据。实际原 PST 在 `errorDetailMessage` 中精确替换后再限长，正文归受保护内容，事件和回执不携正文或 PST。失败退款、诊断引用与正文同笔回滚，原回执重领仍先核票据而不重捕获。该易失对象不由历史恢复重建；完整提交恢复依赖匹配的受保护源、原摘要和长度，并且不恢复当前认证。具体关系与验收见[重构 9.30](../history/database-model-execution-records.md#930-t6真实关系错误损耗读取与受保护诊断)。
+
+离线历史诊断由 `OpeningDiagnosticRecorded` 声明原 ID、Job、UTF-8 摘要/长度、原时间及已登记来源，正文只归 InputStore。`OpeningJobRecorded.diagnosticId` 明确为原引用或 NULL；同一完整提交须先有唯一原 Job，再有同成员、同来源的唯一诊断，不能借正常 `JobFailed` 再次失败或退款。暂存、事实和投影必须位于调用者的同一保存点；保护行的 deferred Job 外键仅允许这一原子次序，不给孤立正文提交资格。原时间可知为 0，未知为 NULL，不借导入时刻填充。Opening 原正文不做 trim、UTF-8 替换或再次截断，保留 16000 UTF-8 字节技术界；正常捕获仍保留原 4000 字符规则。超过技术界、错 Job/来源/摘要或缺正文须拒绝，不能伪 NULL 后 ready。公共回放复制这一受保护正文而不恢复私有认证；管理员展示仍经过现有公开详情 owner 的长度和脱敏规则。
 
 关系错误读取在 `RelationalReportStore.readErrorLogs()` 中按原失败事实时间选取，迟到结果不改变原失败时间；Opening 使用原 `completedAt`，未知不能当开账当天。输入和诊断共用 `RelationalInputStore` 原归属/摘要校验，只有管理入口已鉴权且经过原错误过滤的请求才冷读，不加载附件 BLOB。complete v1 规范输入的显示字段由原去重编码解释：未保存独立 `displayPrompt` / `requestedSteps` 时，分别表示与原正文 / 原规范步数相同；读取和执行共用此解码。partial 或旧 DTO 没有该保证，仍保留 NULL。关系格式没有旧原 Key 标签或路由/积分次数来源时，不借当前 Key/路由/报价补造。
 
@@ -273,7 +275,7 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 | `GET /api/images/:id/content` | 所属成员、管理员或有效限时签名才能读取；不存在404、无权403。公网签名有效期15分钟且进程重启失效；签名本身是可转交的访问凭据                                                                                              |
 | `GET /api/jobs/events`        | 成员 Key 的 SSE 预览订阅，消息是 `{jobId,progress,preview}`；重连只能取得仍在内存的最新预览，没有完整事件历史                                                                                                           |
 
-关系历史图片沿原 child ID 和稳定成员归属领取，原图只从已登记的 Local/R2/PikPak 来源读取并核对字节摘要、长度和媒体类型。当前部署配置及同 SHA 对象不能补造历史副本或 namespace；缺少已声明可读来源时不重新生成、扣费、退款或写回来源。Opening 的原输入、数量、模型、费用和时间缺失值各自保持未知；有可领取原图不等于能恢复原生成请求。已声明原图暂不可读时，content/API 返回 `503` 并保持各入口原有安全中文，不公开内部英文错误、文件路径或凭据；Direct 同步图片及已开始的流式响应仍沿原协议包装。此拒绝不改写原结果承诺或幂等回执，不重新生成或增加上游调用。合成来源的 HTTP 夹具及修正前的状态差异证据见[第 9.97 节](../plans/database-model-redesign.md#997-r2与历史图片-http-来源夹具)。
+关系历史图片沿原 child ID 和稳定成员归属领取，原图只从已登记的 Local/R2/PikPak 来源读取并核对字节摘要、长度和媒体类型。当前部署配置及同 SHA 对象不能补造历史副本或 namespace；缺少已声明可读来源时不重新生成、扣费、退款或写回来源。Opening 的原输入、数量、模型、费用和时间缺失值各自保持未知；有可领取原图不等于能恢复原生成请求。已声明原图暂不可读时，content/API 返回 `503` 并保持各入口原有安全中文，不公开内部英文错误、文件路径或凭据；Direct 同步图片及已开始的流式响应仍沿原协议包装。此拒绝不改写原结果承诺或幂等回执，不重新生成或增加上游调用。合成来源的 HTTP 夹具及修正前的状态差异证据见[第 9.97 节](../history/database-model-execution-records.md#997-r2与历史图片-http-来源夹具)。
 
 原声明的 SHA/key 与实际字节不符时，保留原声明及诊断，由唯一 installer 拒绝并保持 building；不能用新测量覆盖它后声称原来源已恢复。本次合法 Local 清单的核验时点不冒充历史上传或发布时间。原 parent 缺失的 child 仍可按当前归属领取原图，公开 requestId 为 NULL，不由内部容器补出原 parent、输入或执行能力。R2 七行来源的有效、坏声明及安装后 IO 故障范围分列于计划 9.97.1。
 
@@ -285,7 +287,7 @@ OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓�
 
 Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先限量读取 2 MiB 正文，再以 `body.token` 优先于原 header/query Key 来源确定身份；管理员只读凭据、Cookie 和独立 PST 不能替代 writer 的成员 Key。无键 Direct 只复用完成缓存，有键 Direct 与 POST jobs 可合并活动任务，`nocache=1/true` 禁用复用。Direct 显式 seed 保持原任意有限 Number（包括 `0/-1/-2/1.5/4294967296`），省略或空串才是随机意图；NaN/正负 Infinity 沿原错误图片拒绝。这是本地网关语义，模拟上游回归不证明真实 NAI 支持所有取值。
 
-新关系入口没有与旧 `users.balance` 同义的单值，故不发送 `x-balance`，不以 0 或三池折算值代替。移除此 header 不处置历史余额权益；其迁移或封存责任仍按 D4 保留。任务 detail 的 `accountRouteId/accountCost` 无原来源时为 null，`accountId` 只取实际尝试或原产物来源；新接单 `cost=0` 沿原兼容定义，历史未知不套 0。原创建、更新或完成时间缺失时保持 null，不使用开账时间冒充。实际入口接入与未切换范围见[数据库计划第 9.53 节](../plans/database-model-redesign.md#953-52direct-与异步任务-http-关系接入)。
+新关系入口没有与旧 `users.balance` 同义的单值，故不发送 `x-balance`，不以 0 或三池折算值代替。移除此 header 不处置历史余额权益；其迁移或封存责任仍按 D4 保留。任务 detail 的 `accountRouteId/accountCost` 无原来源时为 null，`accountId` 只取实际尝试或原产物来源；新接单 `cost=0` 沿原兼容定义，历史未知不套 0。原创建、更新或完成时间缺失时保持 null，不使用开账时间冒充。实际入口接入与未切换范围见[数据库计划第 9.53 节](../history/database-model-execution-records.md#953-52direct-与异步任务-http-关系接入)。
 
 旧 Native 的 parentless job、web inline 输入、旧键绑定和独立 PNG 的解释由[固定旧归档工具](../operations/legacy-archive-lookup.md)承接，普通新运行时不加载旧 owner。归档保留原输入字节/SHA、稳定成员及保存排序；原 normalization context 为 `{}` 时不补成当前 Native context。原私有失败详情保留在选定源及保护诊断中，公开查询只返回原白名单和摘要，不把原 ENOENT 路径或凭据带入 stdout。原 job 缺父、诊断 ID、模型或完成时间时保持 NULL；原图片没有 jobId/operation/createdAt 也不由当前任务关系猜补。本地图仅在显式 data-dir 实读校验后报告已核原字节。此承接证据不决定 A/B 历史在线范围，也不代替持久 queueSeq 在真实逆物理排序重启中的验收。
 
@@ -299,11 +301,11 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 `me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 在副本中估算额度，不同步钱包或提交额度事件；鉴权、Discord 资格缓存及符合条件的可见访问续期仍有各自的持久化边界。Nuxt 继续通过执行器接口取得鉴权后的响应，不能因额度查询纯读就绕过这些守卫直接读取 SQLite。
 
-关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见数据库计划第 9.49 节。
+关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见[历史 9.49](../history/database-model-execution-records.md#949-52成员-me-的当前授权预算估算与关系历史读取)。
 
 关系 `shared-status` 与 `shared-events` 复用同一 `sharedAccountStatus` 展示规则、状态优先级和公开白名单。账户来源只含当前 bound/official、原观察 baseline、预扣存在性、原 settlement 时点与冷却；PST 只查询当前私有行是否存在且非空，不返回原文。当前 credential epoch 与原观察不符或当前 PST 缺失仍是同步异常，不能因旧 official 或 ready 就报告可用。原 V5 百分比及 negative 标志分别来自原官方事实，未知为 null，不能从金融金额的零值或符号反推。
 
-共享任务数取当前组的稳定成员及未退休 parent/child，不按当前 Key 关联，不加载输入正文或附件。`recentFailures` 是原完成时刻落在闭区间 `[now-1h,now]` 的失败数；当前可见失败历史若存在未知完成时刻，则返回 null，页面沿现未知数值格式展示，不伪装成完整的零失败。真实时刻 0 有效，不借导入 header、父受理日或当前更新时间补值。两个共享 GET 均不续期；在 Discord IO 后以当前 Cookie 和 ready 读取，每轮 SSE 同样复核。统计和可用性查询不提交金融、任务或回执；原认证/Discord 观察仍有各自真实持久化边界。具体接入和验证边界见数据库计划第 9.55 节。
+共享任务数取当前组的稳定成员及未退休 parent/child，不按当前 Key 关联，不加载输入正文或附件。`recentFailures` 是原完成时刻落在闭区间 `[now-1h,now]` 的失败数；当前可见失败历史若存在未知完成时刻，则返回 null，页面沿现未知数值格式展示，不伪装成完整的零失败。真实时刻 0 有效，不借导入 header、父受理日或当前更新时间补值。两个共享 GET 均不续期；在 Discord IO 后以当前 Cookie 和 ready 读取，每轮 SSE 同样复核。统计和可用性查询不提交金融、任务或回执；原认证/Discord 观察仍有各自真实持久化边界。具体接入和验证边界见[历史 9.55](../history/database-model-execution-records.md#955-共享状态薄来源与既有成员-sse-接合)。
 
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 
@@ -319,15 +321,15 @@ owner 管理需会话和角色，管理员路径需本机隧道与管理员凭�
 
 观察票号只代表原 query owner 已取得实际槽并准备调用 raw fetch 的发起；账户准备只保留私有来源，不领取票号。手工、自动、新建与多目标命令共用同一个 query：授权 SQL 成功返回一次激活函数后，先核 deadline 未过、真实运行时仍接单，再同步复核来源、领取原序号并发起网络，不能在 SQL 内提前激活。SQL 尾错、停机、授权等待超时、本机繁忙、缺能力或授权/凭据变化均不是官方失败：不新增观察、提交、回执或 observed-seq，也不作废唯一已发的请求；繁忙为 409。已发后的真实网络失败或超时才沿原失败 owner 保存观察；截止结束不释放尚未 settle 的 raw 物理占用。命中旧回执先通过当前授权，激活前新出现原回执仍零网络返回，繁忙不阻挡零 IO 重领。同 key 的首次查询仍在途且尚无提交回执时，后续调用仍遵守繁忙 409；只有真实已保存的原回执可零 IO 领取。
 
-owner 关系 PATCH 的 `{accountId,enabled}` / `{error:{statusCode,message}}` 保存回执仍为第 9.68 节的外部 DTO 收窄提案，不能称为原 `safeAccount` 字节兼容；现 Web 不消费其正文，最终维护者复核须明确该差异。owner 的 Idempotency-Key 按真实 actor/路径隔离，当前授权后才返回原回执，零 IO 且不按后来配置/余额重造结果。admin 宽配置沿旧实际非 keyed 契约，不因该头产生可领取私有结果或可猜测的代理/PST 公共摘要；新 HTTP 是新管理决定。admin PATCH 返回当前原宽字段和默认 mask；未保存的原历史计数、routeId、trial、stats/时点等为 NULL，不伪造零/默认权重。两角色都不续 Cookie。
+owner 关系 PATCH 的 `{accountId,enabled}` / `{error:{statusCode,message}}` 保存回执仍为[历史 9.68](../history/database-model-execution-records.md#968-当前绑定账户的双角色-patch)的外部 DTO 收窄提案，不能称为原 `safeAccount` 字节兼容；现 Web 不消费其正文，最终维护者复核须明确该差异。owner 的 Idempotency-Key 按真实 actor/路径隔离，当前授权后才返回原回执，零 IO 且不按后来配置/余额重造结果。admin 宽配置沿旧实际非 keyed 契约，不因该头产生可领取私有结果或可猜测的代理/PST 公共摘要；新 HTTP 是新管理决定。admin PATCH 返回当前原宽字段和默认 mask；未保存的原历史计数、routeId、trial、stats/时点等为 NULL，不伪造零/默认权重。两角色都不续 Cookie。
 
 账户内部业务回执另保存最小 `accountIntent`，用于从原序前态验证完整目标及应有注册/绑定/配置/凭据轮换/观察/可用性后果：bulk 保存原规范 ids 与公开 weight/false 意图，配置只声明公开输入与应有连接/凭据变化布尔，注册声明应有 bind。它不含 PST、代理或其可猜测摘要，不存 before/current profile。在线、共同回放与账户窄回放复用账户 owner 的同一规划/校验，不能只凭幸存事实仍合法就接受遗漏。bulk mixed no-op 目标保留于原意图并从前态判定无需事实，全 no-op admin 非 keyed 请求 200 零持久化；原已保存命令重复仍先当前授权后领取原回执。外部 owner 回包仅剥去该内部字段，保留原先保存的外部字段，不读当前账户假装旧结果；admin 仍由当前权限读取 mask DTO。 多目标batch另保存原有序目标、每目标实际观察或真实no-op来源、原安全可用性决定及整组是否应用；同一账户规划器在online/common/narrow校验完整后果，不用幸存事实猜丢失的意图。公开回执不保存秘密或当前profile快照。
 
 `POST /api/member/owner/accounts/quota` 仅接当前绑定账户的单个 ids，返回原 `{checked,ok,failed,ignored}`；刷新不启用已暂停账户。owner 的有事实成功/失败保存原 counts 回执，当前授权后重领不重新查询；原 keyed 过期零事实请求仍为 409。`POST /api/admin/accounts/quota` 保留原非 keyed 及 raw accounts 回包（受当前本机 admin 授权，PST/代理不进公共回执），复用原 ids/accounts 集合解析，缺省/空集合选全部账户，无命中分别为404/400；多个目标的必要实际GET在SQL外完成，最终一个完整提交保存原有序目标全部观察和安全决定；任一未发起busy/缺能力、授权/ready/来源/政策/CAS失效是整笔零持久化前置失败。非绑定账户真实观察使用原官方 snapshot/失败值，但不分配、不切换绑定、不写共享金融状态；绑定账户仍必须保存完整金融同步事实，不能全局跳过来源验证。单目标等待中连接已变仍返回原nonkeyed ignored零事实；多目标同类失效为409整笔零事实，不能只保存其他目标。实际slot busy不领票、不制造观察，也不作废唯一已发请求。
 
-代理只由选定私有来源保存；NULL 未知不能默认为直连，空串表示来源明确无代理。代理 A→B→A 仍取得新事件来源，旧查询和旧 401/403 不影响当前连接；原尝试的收费、退款和同账户容量责任仍归原 owner。完整公共回放不恢复代理或 PST，选定 SHA/同 cut 私有快照经唯一 ready 安装核对；格式升级与 localhost 真 SOCKS/TLS 验证见第 9.80 节。name/proxy/weight 不是 D4 退出项。完整 admin summary/reveal GET 聚合、旧源转换和唯一在线装配仍由父候选接续；只交 accounts 数据不能称为完成 `/api/admin/summary`。
+代理只由选定私有来源保存；NULL 未知不能默认为直连，空串表示来源明确无代理。代理 A→B→A 仍取得新事件来源，旧查询和旧 401/403 不影响当前连接；原尝试的收费、退款和同账户容量责任仍归原 owner。完整公共回放不恢复代理或 PST，选定 SHA/同 cut 私有快照经唯一 ready 安装核对；格式升级与 localhost 真 SOCKS/TLS 验证见[历史 9.80](../history/database-model-execution-records.md#980-账户名称权重与私有代理的单-owner-闭环)。name/proxy/weight 不是 D4 退出项。账户读取遵守本段授权与来源；完整 admin summary/reveal GET 另按下文十三字段契约，旧源转换和发布按当前计划验收。
 
-关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
+关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见[历史 9.57](../history/database-model-execution-records.md#957-管理成员安全目录与单成员资料)。
 
 F04 为这两个成员管理入口新增 `action='member-admission'`、`userId` 与布尔 `acceptingJobs`。停止接单在同一事务设置禁止状态、取消未派发任务并退款；已取得派发资格的 running 任务仍可正常完成。恢复不会复活已取消任务或旧 Native 批次剩余图片，登录与历史查询不受该状态影响。成员 `me` 和管理员成员列表新增 `acceptingJobs`；取消任务仍使用现有 `failed` 状态。默认成员/全局未完成上限分别为4/16，排队等待十分钟，参数和当前只计已创建子任务的边界见 [README](../../README.md#额度语义与限制)。
 
@@ -337,13 +339,13 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 管理入口的 `GET ?view=losses&before=<可选游标>` 提供按资源分开的候选风险、聚合新增差额、运营余额、软告警及每页 50 条审计记录；查询覆盖 SQLite 冷历史，不把不同证据相加为实耗。`POST action=loss-alert-policy` 带 `expectedVersion` 和四项阈值，返回 `{policy}`；版本冲突为 409，配置与操作者审计同事务提交。阈值与原生成准入无关，完整字段见[失败退款与资源核对](../architecture/failure-accounting.md)。
 
-新关系格式只读适配返回 `coverage=retained-facts`，仅统计保留事实，原时间未知的尝试另列 `risk.unknownTimeAttempts`，不宣称完整零历史。原累计金额/纠正后累计金额或 policy before 缺少来源时为 NULL；单次 observedAmount、signed delta 与当前缺口分别展示。游标绑定 history 和原提交/事件序号，非法或跨 history 为 400；没有已恢复绑定账户基线时为 503，不返回假零账。此只读适配还需新 HTTP 总装配接入；管理授权继续由上述 owner/管理员入口承担。
+新关系格式只读适配返回 `coverage=retained-facts`，仅统计保留事实，原时间未知的尝试另列 `risk.unknownTimeAttempts`，不宣称完整零历史。原累计金额/纠正后累计金额或 policy before 缺少来源时为 NULL；单次 observedAmount、signed delta 与当前缺口分别展示。游标绑定 history 和原提交/事件序号，非法或跨 history 为 400；没有已恢复绑定账户基线时为 503，不返回假零账。管理授权继续由上述 owner/管理员入口承担，读取与发布验收分别记录。
 
 关系管理 GET 已提供独立适配：`/api/admin/member-management` 保留本机 Host、私有访问边界和当前管理员 capability；`PUBLIC_MODE=true` 时 query `adminToken` 不授予权限。`/api/member/owner/member-management` 只接受当前 owner Cookie/Discord 身份，外部 IO 后再核对同一稳定 ID、认证代次、当前 owner 与 ready。只有该精确 owner 路径的可见、无 query GET 沿原会话 owner 续期；静态 admin、普通读取、带 query 的 heatmap/losses 都不续期，字面 `/api/member/owner/summary` 不是本接口别名。
 
 默认摘要保留 groups/status/shared/政策版本、公共地址、成员 quota/freeImages 与最近 30 条状态统计。username 只取当前登录名，缺失为 NULL；displayName 单独提供，不能替代登录身份。note 只取当前受保护来源：未知或未恢复为 NULL，已知空字符串仍为空，不借 displayName 或 username 补值。管理窄目录白名单由原七字段显式扩为 id/displayName/status/acceptingJobs/username/discordId/inviteExpiresAt/note 八字段，未加入认证秘密。公共回放仅恢复业务身份、备注仍未知；选定同业务 cut 且 SHA 匹配的私有快照才恢复备注，已有任何已知私有备注的目标不能被不同源覆盖。disabled 成员仍可管理，removed 不在当前名单，原历史按各报告 owner 保留。最近统计按原 Job 创建时间选取，保留真实 0 和未知 NULL，排除退休 parent/child；不以父受理时间或导入时间替代。读取允许真实在途预扣，不提交钱包、任务或配置；Discord 资格观察和可见续期仍有原有私有写入边界。
 
-服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
+服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取的原接入证据见[历史 9.60](../history/database-model-execution-records.md#960-管理摘要热力图与损耗-get-的关系接入)，发布验收按[当前计划](../plans/database-model-redesign.md#74-剩余交付与验收)。
 
 `GET /api/admin/summary` 保留独立的完整十三字段：settings、userCount、accounts、imageCount、imageTotal、cacheImageCount、requestStats1m、generationStats1m、jobStats1h、generationSpeed1h、usageHourlyDays、errorLogs、jobs。只接受当前本机 admin capability；owner Cookie、成员 Key/Bearer 不授予管理员权限，PUBLIC 模式下 query adminToken 仍不授权。统计读取在授权后进行，任何 await 返回后重新断言当前 admin、Host、private/同源、PUBLIC 和 ready，再读取当前账户 PST/proxy。默认沿原函数 mask，只有字面 `revealTokens=1` 显式揭示当前值；没有缓存等待前的旧秘密。GET 不续 Cookie、不刷新官方额度、不清物理 Map、不提交账务/配置或发 commit 通知。关系统计每次读真实 SQL，`fresh=1` 不引入第二套缓存或旧库 fallback。
 
@@ -353,29 +355,29 @@ accounts 保留旧摘要二十八字段，沿 Account owner 当前宽 getter 组
 
 三个图片计数别名共用未退休逻辑 artifact 数，不是副本数、文件数或云容量。其余统计完全复用报告 owner 的原 child/创建时间/终态时间/旧 display cost/排除条件和 UTC+8 桶；当前 generationCost() 的真实 0 与 Opening 未保存的 cost 不混同，不用真实资源预扣或当前报价替换。errorLogs 复用七天安全来源、至多100条；jobs 按原受理序先选至多50条失败任务再冷读输入，未知原顺序仍保留来源限制。任务展示与 Direct 用同一纯映射、同一进程图片签名及瞬时预览，未知费用/route/时间不补值，late 后继不改原失败时点。完整公共回放不恢复认证或私有账户连接，私有内容仍只由选定同切点快照恢复。旧任意设置和缺失历史的补全、sole 与发行物验收继续是迁移和上线条件，不因十三键已接通视为完成。
 
-关系管理 POST 目前接 `fallback-policy`、`free-image-policy`、`loss-alert-policy`、`member-status`、`member-admission`、`groups`、`transfer-quota`、`delete-member` 和下述五个运营资金 action；规则与回包继续归原政策、成员、组和资金 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID `local-admin` 与同名本机管理员作用域独立；重复返回原回包且零写，冲突为 409，缺键的新决定由服务生成命令 ID。POST 不续 Cookie；业务事实与私有当前状态、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原决定，不联网或恢复私有认证；政策字段与版本反例见数据库计划第 9.64 节，其他 action 尚未接入。
+关系管理 POST 目前接 `fallback-policy`、`free-image-policy`、`loss-alert-policy`、`member-status`、`member-admission`、`groups`、`transfer-quota`、`delete-member` 和下述五个运营资金 action；规则与回包继续归原政策、成员、组和资金 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID `local-admin` 与同名本机管理员作用域独立；重复返回原回包且零写，冲突为 409，缺键的新决定由服务生成命令 ID。POST 不续 Cookie；业务事实与私有当前状态、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原决定，不联网或恢复私有认证；政策版本与字段由[原政策 owner](../plans/database-model-redesign.md#335-政策分组与成员权益变更)约束，各 action 的字段按下文执行。
 
 同两个 member-management POST 的 `discord-invite` 保留原非 keyed 私有邀请操作：正文后重验当前 owner/admin、epoch/ready，未启用 Discord 为 409，目标不存在/停用为 404、已绑定为 409；返回原 `{code,expiresAt}`，只保存七天邀请摘要及截止。每次新请求都生成新码并撤销旧码，附带的 Idempotency-Key 不参与该操作，也不生成公共事件、receipt 或私有明文结果缓存。OAuth state、失效与一次性兑现仍由原 Discord owner 校验；公共回放不恢复邀请，匹配选定私有源才能恢复原摘要/截止。管理目录仅因可空 inviteExpiresAt 实际变化在最外层成功提交后通知，同毫秒换码且安全目录未变不额外通知；原码/摘要不放进通知。
 
-`member-status` 接 `userId` 与布尔 `enabled`，返回原 `{id,enabled}`；`member-admission` 接 `userId` 与布尔 `acceptingJobs`，返回原 `{id,acceptingJobs,cancelledJobIds,cancelledCount}`。无效布尔为 400，缺失或不存在目标为 404，不将数字或对象强转成成员 ID。同键重领返回原状态/取消结果，不覆盖后来恢复；停用和恢复不复活旧 Cookie。owner 本人停用 409、未结清任务/预扣的忙碌检查及 admin 原应急能力都复用成员状态 owner。停止接单保留 running 和原预扣，仅由原取消 owner 处理 queued/pending；恢复不复活旧 child，当前 disabled 目标仍可管理。实际 Native/队列、私有与业务回滚及公共回放证据见数据库计划第 9.70 节。
+`member-status` 接 `userId` 与布尔 `enabled`，返回原 `{id,enabled}`；`member-admission` 接 `userId` 与布尔 `acceptingJobs`，返回原 `{id,acceptingJobs,cancelledJobIds,cancelledCount}`。无效布尔为 400，缺失或不存在目标为 404，不将数字或对象强转成成员 ID。同键重领返回原状态/取消结果，不覆盖后来恢复；停用和恢复不复活旧 Cookie。owner 本人停用 409、未结清任务/预扣的忙碌检查及 admin 原应急能力都复用成员状态 owner。停止接单保留 running 和原预扣，仅由原取消 owner 处理 queued/pending；恢复不复活旧 child，当前 disabled 目标仍可管理。实际 Native/队列、私有与业务回滚及公共回放证据见[历史 9.70](../history/database-model-execution-records.md#970-成员启停与接单-post-的关系接入)。
 
-两个精确 `POST /api/admin/member-management`、`POST /api/member/owner/member-management` 另接原只读 `member-key`，正文 `{action:'member-key',userId}` 在 IO 后经相同当前 admin/owner 授权事务读取 exact 当前私有 Key，返回 `{apiKey}` 和 `no-store`，不续 Cookie。已停用目标仍可管理，目标不存在或已移除为 404，私有 Key 未恢复或摘要校验失败为 503。读取不创建或轮换 Key、不追加业务事实/命令/回执，也不因 `Idempotency-Key` 保存或重领秘密；同 header 的下一次调用仍是当前读取，不把后来 Key 伪装成原回执。认证自身依法发生的 Discord 观察或会话撤销仍沿原 owner；业务读取本身零写、零通知，公共回放不会恢复私有 Key。范围及反例见数据库计划第 9.73 节。
+两个精确 `POST /api/admin/member-management`、`POST /api/member/owner/member-management` 另接原只读 `member-key`，正文 `{action:'member-key',userId}` 在 IO 后经相同当前 admin/owner 授权事务读取 exact 当前私有 Key，返回 `{apiKey}` 和 `no-store`，不续 Cookie。已停用目标仍可管理，目标不存在或已移除为 404，私有 Key 未恢复或摘要校验失败为 503。读取不创建或轮换 Key、不追加业务事实/命令/回执，也不因 `Idempotency-Key` 保存或重领秘密；同 header 的下一次调用仍是当前读取，不把后来 Key 伪装成原回执。认证自身依法发生的 Discord 观察或会话撤销仍沿原 owner；业务读取本身零写、零通知，公共回放不会恢复私有 Key。范围及反例见[历史 9.73](../history/database-model-execution-records.md#973-管理成员-key-的只读领取)。
 
 本轮未发布关系候选的管理命令 scope 已加入真实身份类型，旧哈希与新哈希不互相尝试。共同 helper 的两个 legacy caller 也会使用新哈希，不能把此候选作为旧线上库的独立热修升级；旧线上键和回执的解释交独立旧工具及选定迁移保留、核对，不改写旧记录或猜测原角色。最终部署必须随 sole 退出旧运行路径与迁移核对完成，不得因哈希变化静默重复旧线上命令；旧关系原型的 parser/hash parity 也不能冒充本候选结论。
 
-相同两个字面 member-management POST 另接 `preview-groups` 和 `groups`。输入保留原 `groups/expectedConfigVersion/redistributeRemaining`，类型与版本规则由同一 quota owner 校验，不从正文采用 actor、command 或 time。预览不创建命令、回执或事实，也不校验无关的 Idempotency-Key；返回原 configVersion、改后 groups/users quota 与布尔重分意图。提交沿原全正文幂等摘要，当前授权先于旧回执，新决定才核原组版本和空闲/有限来源；预览不是权益预留，后来 held 或组版本变化可使提交拒绝。独立 free/loss/fallback 政策不增加组版本，组决定保留其当前值。两 action 均不续 Cookie，summary/statistics 的 POST 不因此开放；组事实/钱包/回执/通知及完整公共回放见数据库计划第 9.72 节。其余管理写入继续各片接续，不表示 sole 已切换。
+相同两个字面 member-management POST 另接 `preview-groups` 和 `groups`。输入保留原 `groups/expectedConfigVersion/redistributeRemaining`，类型与版本规则由同一 quota owner 校验，不从正文采用 actor、command 或 time。预览不创建命令、回执或事实，也不校验无关的 Idempotency-Key；返回原 configVersion、改后 groups/users quota 与布尔重分意图。提交沿原全正文幂等摘要，当前授权先于旧回执，新决定才核原组版本和空闲/有限来源；预览不是权益预留，后来 held 或组版本变化可使提交拒绝。独立 free/loss/fallback 政策不增加组版本，组决定保留其当前值。两 action 均不续 Cookie，summary/statistics 的 POST 不因此开放；组事实/钱包/回执/通知及完整公共回放见[历史 9.72](../history/database-model-execution-records.md#972-两条管理路径的组预览与提交-http)。发布验收按[当前计划](../plans/database-model-redesign.md#74-剩余交付与验收)。
 
-两个字面 member-management POST 接 `operating-contribute`、`operating-register-funding`、`operating-cover-loss`、`operating-reconcile-return`、`operating-confirm-debits`，返回原 `{eventId,duplicate}`；字段及五类资金决定归[资金来源与核销](../architecture/failure-accounting.md#资金来源与核销)。账户只取当前共享绑定，划入来源固定部署 owner，正文 `accountId/fromUserId/actor/command/time` 不授予来源或权限；旧 `userId` 指向他人时为 403。业务收据与 HTTP 命令键分别防重：首键原结果为 false，另一新键若伴随真实同步事实可首次得到 true，同键始终保留原始结果；无事实的新键为 409，无键重复可零写返回 true。不存在空事实或空提交的特殊通道。POST 不续 Cookie、不扩大 summary/statistics 路径；当前身份/epoch、资金来源、原回执与完整公共回放验收见数据库计划第 9.74 节。
+两个字面 member-management POST 接 `operating-contribute`、`operating-register-funding`、`operating-cover-loss`、`operating-reconcile-return`、`operating-confirm-debits`，返回原 `{eventId,duplicate}`；字段及五类资金决定归[资金来源与核销](../architecture/failure-accounting.md#资金来源与核销)。账户只取当前共享绑定，划入来源固定部署 owner，正文 `accountId/fromUserId/actor/command/time` 不授予来源或权限；旧 `userId` 指向他人时为 403。业务收据与 HTTP 命令键分别防重：首键原结果为 false，另一新键若伴随真实同步事实可首次得到 true，同键始终保留原始结果；无事实的新键为 409，无键重复可零写返回 true。不存在空事实或空提交的特殊通道。POST 不续 Cookie、不扩大 summary/statistics 路径；当前身份/epoch、资金来源、原回执与完整公共回放验收见[历史 9.74](../history/database-model-execution-records.md#974-运营资金-http-接入的原结果与幂等来源)。
 
-完整 admin summary 的底层预发布关系读取约定见数据库计划 9.82，尚未接完整 HTTP 聚合。保留原生产 worker 的 child 数、display cost、排除条件、端到端速度与七天北京时间小时桶口径，不能把真实 Anlas/V5 收费、父请求数或上游耗时冒充这些旧显示指标。新 `JobAccepted` 的 display cost 沿原 owner 明确为 0；Opening 没保存该来源则未知，不使用输入缓存选择价或当前报价补齐。失败排除只对一小时创建窗口内候选按原 classifier 读取实际受保护诊断，每份最多 4000 字符；无输入正文/附件读取，已有诊断损坏明确拒绝。缺诊断且代码不足以证明时，仅对应失败/总量/成功率为 null，已知 done、其他账户及其他指标继续保留。
+完整 admin summary 的底层读取由同一 Report/Request owner 提供，原接合记录见[历史 9.82](../history/database-model-execution-records.md#982-admin-摘要的关系统计逻辑产物数与失败选择)。保留原生产 worker 的 child 数、display cost、排除条件、端到端速度与七天北京时间小时桶口径，不能把真实 Anlas/V5 收费、父请求数或上游耗时冒充这些旧显示指标。新 `JobAccepted` 的 display cost 沿原 owner 明确为 0；Opening 没保存该来源则未知，不使用输入缓存选择价或当前报价补齐。失败排除只对一小时创建窗口内候选按原 classifier 读取实际受保护诊断，每份最多 4000 字符；无输入正文/附件读取，已有诊断损坏明确拒绝。缺诊断且代码不足以证明时，仅对应失败/总量/成功率为 null，已知 done、其他账户及其他指标继续保留。
 
 创建时间、模型、终态时间或 display cost 缺来源时，对应统计值或可定位日/小时桶保留 null；无法定位的终态不能计入导入当天，已知空桶仍为 0。terminal 的更新时间只取原 `completed_at`，保留真实 0 和 null；迟到产物、免费成功计数及结案不移动原终态时间。活动状态仅使用真实受理/入队/派发角色的事件时刻，Opening header 不当原业务时间。最近失败最多 50 条先按新受理事实 commit/index 的原插入序选取，再冷读各自唯一 canonical 输入；Opening 未保存旧集合顺序，当前以稳定 ID 确定性尾序且原顺序标为未知，不冒称与旧 `order_value` 等价。最终迁移仍须保留真实旧排序来源或明确相应行为决定。逻辑产物数只数未退休 published artifact，不数副本、文件或字节。以上未发布 DTO 的必要 nullable 与历史排序限制需随最终完整 summary 由维护者复核，不表示已退役旧 API 或完成 sole 切换。
 
-两个现管理 POST 的权益三 action 直接绑定 `manageMemberQuota`：`transfer-quota` 沿原 fromUserId/toUserId/resource/amount/expectedConfigVersion；删除和预览沿原 userId/transferToUserId/expectedConfigVersion，完整业务字段由原 owner 校验。`preview-delete-member` 跳过管理命令键，只返回原预览 DTO 和原 configVersion，真正零 SQL 写入、零事实/回执/通知；新提交仍需核对该版本。转账和删除在当前授权后才可重领原回执，金额/原账户/角色/组/来源/忙碌规则不在 HTTP 重写。删除同笔转移原权益、保存 removed 身份并撤销当前 epoch/会话；重复不得再转钱或复活凭据。owner 自删/预览自删为 409，本机 admin 保留原应急范围；真实共享 physical Map 仍有 promise 时拒绝调整，不能以逻辑结算释放物理责任。原 DTO 保留 groups/transferred/autoJoined/shareChanges/users 与来源角色，未知和零不补猜值，细节见第 9.43、9.77 节。
+两个现管理 POST 的权益三 action 直接绑定 `manageMemberQuota`：`transfer-quota` 沿原 fromUserId/toUserId/resource/amount/expectedConfigVersion；删除和预览沿原 userId/transferToUserId/expectedConfigVersion，完整业务字段由原 owner 校验。`preview-delete-member` 跳过管理命令键，只返回原预览 DTO 和原 configVersion，真正零 SQL 写入、零事实/回执/通知；新提交仍需核对该版本。转账和删除在当前授权后才可重领原回执，金额/原账户/角色/组/来源/忙碌规则不在 HTTP 重写。删除同笔转移原权益、保存 removed 身份并撤销当前 epoch/会话；重复不得再转钱或复活凭据。owner 自删/预览自删为 409，本机 admin 保留原应急范围；真实共享 physical Map 仍有 promise 时拒绝调整，不能以逻辑结算释放物理责任。原 DTO 保留 groups/transferred/autoJoined/shareChanges/users 与来源角色，未知和零不补猜值，完整原决定见[政策与成员权益](../plans/database-model-redesign.md#335-政策分组与成员权益变更)，HTTP 接合证据见[历史 9.77](../history/database-model-execution-records.md#977-权益转账删除与只读预览的管理-http)。
 
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
-成员 `GET /api/member/history` 按子任务分页，保留 `page/pageSize/total/until` 与创建时间、模型、状态排序；`q` 只按字面搜索任务 ID 和模型，不搜索提示词或输入参数。关系读取的原创建时间、模型或估算标志缺少来源时保持 `null`，已知时间 0 不变；未知原创建时间仍属于保留历史，不借用开账日或父受理日。`GET /api/member/key` 从当前私有 owner 返回 exact 当前 Key 和明确部署配置生成的单个 `/v1` 入口，缺少可恢复 Key 为 503，不通过 GET 创建。关系只读绑定的两个入口均不续期，也不以 Bearer 代替 Cookie；现可见 `me` 与无 query 的 owner 摘要续期规则不变。实际总装配与签名端点验收范围见数据库计划第 9.45 节。
+成员 `GET /api/member/history` 按子任务分页，保留 `page/pageSize/total/until` 与创建时间、模型、状态排序；`q` 只按字面搜索任务 ID 和模型，不搜索提示词或输入参数。关系读取的原创建时间、模型或估算标志缺少来源时保持 `null`，已知时间 0 不变；未知原创建时间仍属于保留历史，不借用开账日或父受理日。`GET /api/member/key` 从当前私有 owner 返回 exact 当前 Key 和明确部署配置生成的单个 `/v1` 入口，缺少可恢复 Key 为 503，不通过 GET 创建。关系只读绑定的两个入口均不续期，也不以 Bearer 代替 Cookie；现可见 `me` 与无 query 的 owner 摘要续期规则不变。实际总装配与签名端点验收范围见[历史 9.45](../history/database-model-execution-records.md#945-52成员历史和当前-key-的真实-http-窄接入)。
 
 F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回显和图片领取契约。新请求将参数与任务在同一事务持久化，执行时按需读取；旧内联排队记录仍可恢复。网页正文上限保持 2 MiB；Native JSON/multipart 正文上限保持 32 MiB。规范化父参数默认上限 32 MiB，活动载荷默认合计 64 MiB，单次超限为 413，暂满为 429。Native 完整父参数只存一份，各图片子任务不复制输入图片；multipart 展开后仍须满足规范化上限。
 
@@ -395,7 +397,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 
 新关系 Bearer 适配只认原大小写不敏感的 Authorization Bearer，不从 query/body token、Cookie、admin 或上游 PST 推断成员；现有合法 Key 不另加格式前缀要求。工厂、请求及实际 Key 事务均核 ready，Discord IO 在 SQL 外；首次稳定成员、原 `memberAuth.version` 和当前原 Key 的所属/有效性在 IO 后及取消正文读取后重新核对。跨成员转归或实际认证代次变化拒绝；原私有 owner 同成员换 Key 不撤销 Cookie/认证 epoch，若内部明确将同一 literal 重授原成员且 epoch 未变，仍沿现当前 Key 授权语义，不声称能辨别其历史轮换。
 
-取消正文仍由原平台 JSON 读取能力执行 32768 **字节**上限，空正文沿原能力解释为 `{}`，客户端 metadata/Idempotency-Key 不成为取消回执。Cookie/Bearer 共用一处服务端 metadata、当前请求 ACL 和 `cancelWaitingGeneration` 事务块，重复无 waiting 返回 0、不追加事实或回执。关系 owner 在派发时才预扣，未派发 waiting 无 charge 时不伪造退款；running 的真实预扣保留并在原执行收尾结算。结果 DTO 与签名能力仍用原展示/平台 owner，URL 回调在授权事务结束后调用；未退休的迟到原图可领取，已退休请求沿原查询 owner 返回 404。具体接入与反例见数据库计划 9.59，本段不表示 sole 发布装配已切换。
+取消正文仍由原平台 JSON 读取能力执行 32768 **字节**上限，空正文沿原能力解释为 `{}`，客户端 metadata/Idempotency-Key 不成为取消回执。Cookie/Bearer 共用一处服务端 metadata、当前请求 ACL 和 `cancelWaitingGeneration` 事务块，重复无 waiting 返回 0、不追加事实或回执。关系 owner 在派发时才预扣，未派发 waiting 无 charge 时不伪造退款；running 的真实预扣保留并在原执行收尾结算。结果 DTO 与签名能力仍用原展示/平台 owner，URL 回调在授权事务结束后调用；未退休的迟到原图可领取，已退休请求沿原查询 owner 返回 404。具体接入与反例见[历史 9.59](../history/database-model-execution-records.md#959-bearer-父请求查询与取消)；同候选发布验收按当前计划执行。
 
 ## N03 后的 C03 差异与待核实清单
 
@@ -427,4 +429,4 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 
 这些是当前基线的证据组合，不是“全部官方API契约通过”。OpenAI关键成功/流式路径已在本地隔离HTTP环境覆盖；公网代理的SSE缓冲/断连行为、真实上游非零blur/新模型组合和浏览器兼容性仍需相应迁移/测试部署阶段验收。不能以纯模块测试替代真实HTTP或浏览器证据。
 
-Native HTTP 的新格式真实子进程夹具迁移范围见[数据库计划 9.94](../plans/database-model-redesign.md#994-native-http-正常路径的真实关系子进程夹具)。正常受理任务的权限、诊断、图片领取与重启证据不代替旧 parentless 任务、原 ENOENT/`{}` 幂等上下文或逆物理顺序源的历史恢复验收；这些原样本的归档承接另行记录。
+Native HTTP 的新格式真实子进程夹具迁移范围见[数据库计划 9.94](../history/database-model-execution-records.md#994-native-http-正常路径的真实关系子进程夹具)。正常受理任务的权限、诊断、图片领取与重启证据不代替旧 parentless 任务、原 ENOENT/`{}` 幂等上下文或逆物理顺序源的历史恢复验收；这些原样本的归档承接另行记录。

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
@@ -114,6 +115,10 @@ interface RequestRow {
   confirmation: string | null;
   retired_at: number | null;
 }
+type DiagnosticEvent = Extract<
+  RelationalEvent,
+  { eventType: 'DiagnosticRecorded' | 'OpeningDiagnosticRecorded' }
+>;
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
 }
@@ -618,6 +623,9 @@ export class RelationalInputStore {
     if (!detail) {
       return null;
     }
+    if (!this.sqlite.prepare('SELECT 1 FROM generation_jobs WHERE id=?').get(jobId)) {
+      diagnosticUnavailable();
+    }
     // SQLite TEXT 与摘要必须使用同一有效 UTF-8 表示，保留公共错误 owner 的原截断语义。
     detail = Buffer.from(detail, 'utf8').toString('utf8');
     const sha256 = createHash('sha256').update(detail).digest('hex'),
@@ -631,6 +639,109 @@ export class RelationalInputStore {
     return { diagnosticId, jobId, sha256, byteLength, createdAt };
   }
 
+  // 原正文只作保护内容；不能经过正常失败链的 trim、截断或重新结算。
+  stageOpeningDiagnostic(
+    input: Omit<RelationalPayloads['OpeningDiagnosticRecorded'], 'byteLength'> & {
+      detail: string;
+    },
+  ) {
+    this.assertOpeningStage();
+    const { detail, ...original } = input;
+    if (
+      typeof detail !== 'string' ||
+      Buffer.byteLength(detail) > 16000 ||
+      Buffer.from(detail, 'utf8').toString('utf8') !== detail ||
+      createHash('sha256').update(detail).digest('hex') !== input.sha256
+    ) {
+      diagnosticUnavailable();
+    }
+    const payload = { ...original, byteLength: Buffer.byteLength(detail) };
+    parseRelationalFact({ eventType: 'OpeningDiagnosticRecorded', payload });
+    this.sqlite
+      .prepare(
+        'INSERT INTO generation_diagnostics(id,job_id,detail,sha256,created_at) VALUES(?,?,?,?,?)',
+      )
+      .run(payload.diagnosticId, payload.jobId, detail, payload.sha256, payload.createdAt);
+    return payload;
+  }
+
+  private assertOpeningDiagnosticSource(
+    event: Extract<DiagnosticEvent, { eventType: 'OpeningDiagnosticRecorded' }>,
+  ) {
+    assertRelationalOpeningSource(this.sqlite, event);
+    const stored = readRelationalCommit(this.sqlite, event.commitSeq),
+      jobs = stored.events.filter(
+        (e) =>
+          e.eventType === 'OpeningJobRecorded' &&
+          e.payload.diagnosticId === event.payload.diagnosticId,
+      ),
+      diagnostics = stored.events.filter(
+        (e) =>
+          e.eventType === 'OpeningDiagnosticRecorded' && e.payload.jobId === event.payload.jobId,
+      ),
+      job = jobs[0];
+    if (
+      stored.command.actorKind !== 'system' ||
+      stored.command.actorId !== null ||
+      jobs.length !== 1 ||
+      diagnostics.length !== 1 ||
+      job.eventType !== 'OpeningJobRecorded' ||
+      job.payload.jobId !== event.payload.jobId ||
+      job.memberId !== event.memberId ||
+      job.accountId !== event.accountId ||
+      job.streamId !== event.streamId ||
+      job.eventIndex >= event.eventIndex ||
+      job.payload.origin.sourceId !== event.payload.origin.sourceId
+    ) {
+      diagnosticUnavailable();
+    }
+    assertRelationalOpeningSource(this.sqlite, job);
+  }
+
+  private diagnosticContent(event: DiagnosticEvent): string {
+    const p = event.payload,
+      row = this.sqlite
+        .prepare<
+          [string, string],
+          {
+            sha256: string;
+            createdAt: number | null;
+            byteLength: number;
+          }
+        >(
+          `SELECT sha256,created_at AS createdAt,length(CAST(detail AS BLOB)) AS byteLength
+        FROM generation_diagnostics WHERE id=? AND job_id=?`,
+        )
+        .get(p.diagnosticId, p.jobId);
+    if (
+      !row ||
+      !Number.isSafeInteger(row.byteLength) ||
+      row.byteLength < 0 ||
+      row.byteLength > 16000 ||
+      row.sha256 !== p.sha256 ||
+      row.createdAt !== p.createdAt ||
+      row.byteLength !== p.byteLength ||
+      (event.eventType === 'DiagnosticRecorded' &&
+        (row.byteLength < 1 || row.byteLength > 16000 || p.createdAt !== event.occurredAt))
+    ) {
+      diagnosticUnavailable();
+    }
+    const body = this.sqlite
+      .prepare<[string, string], { detail: string }>(
+        'SELECT detail FROM generation_diagnostics WHERE id=? AND job_id=?',
+      )
+      .get(p.diagnosticId, p.jobId);
+    if (
+      !body ||
+      Buffer.byteLength(body.detail) !== p.byteLength ||
+      (event.eventType === 'DiagnosticRecorded' && body.detail.length > 4000) ||
+      createHash('sha256').update(body.detail).digest('hex') !== p.sha256
+    ) {
+      diagnosticUnavailable();
+    }
+    return body.detail;
+  }
+
   // 管理详情/离线恢复共用；先按小元数据限制正文，再核原事实及实际 UTF-8 字节。
   readGenerationDiagnostic(diagnosticId: string, jobId: string): string {
     return this.sqlite.transaction(() => {
@@ -641,7 +752,7 @@ export class RelationalInputStore {
             requestId: string;
             memberId: string;
             sha256: string;
-            createdAt: number;
+            createdAt: number | null;
             byteLength: number;
           }
         >(
@@ -651,13 +762,13 @@ export class RelationalInputStore {
         WHERE d.id=? AND d.job_id=?`,
         )
         .get(diagnosticId, jobId);
-      if (!row || row.byteLength < 1 || row.byteLength > 16000) {
+      if (!row) {
         diagnosticUnavailable();
       }
       const matches = this.sqlite
         .prepare<[string, string], { eventId: string; seq: string }>(
           `SELECT event_id AS eventId,CAST(commit_seq AS TEXT) AS seq FROM domain_events
-        WHERE stream_id=? AND event_type='DiagnosticRecorded'
+        WHERE stream_id=? AND event_type IN ('DiagnosticRecorded','OpeningDiagnosticRecorded')
           AND json_extract(payload,'$.diagnosticId')=? LIMIT 2`,
         )
         .all(`request:${row.requestId}`, diagnosticId);
@@ -667,29 +778,23 @@ export class RelationalInputStore {
       const event = readRelationalCommit(this.sqlite, matches[0].seq).events.find(
         (e) => e.eventId === matches[0].eventId,
       );
-      if (event?.eventType !== 'DiagnosticRecorded') {
-        diagnosticUnavailable();
-      }
-      const p = event.payload,
-        body = this.sqlite
-          .prepare<[string, string], { detail: string }>(
-            'SELECT detail FROM generation_diagnostics WHERE id=? AND job_id=?',
-          )
-          .get(diagnosticId, jobId);
       if (
-        event.memberId !== row.memberId ||
-        p.jobId !== jobId ||
-        p.sha256 !== row.sha256 ||
-        p.createdAt !== row.createdAt ||
-        p.createdAt !== event.occurredAt ||
-        p.byteLength !== row.byteLength ||
-        !body ||
-        body.detail.length > 4000 ||
-        createHash('sha256').update(body.detail).digest('hex') !== p.sha256
+        event?.eventType !== 'DiagnosticRecorded' &&
+        event?.eventType !== 'OpeningDiagnosticRecorded'
       ) {
         diagnosticUnavailable();
       }
-      return body.detail;
+      if (
+        event.memberId !== row.memberId ||
+        (event.accountId !== null && event.eventType === 'OpeningDiagnosticRecorded') ||
+        event.payload.jobId !== jobId
+      ) {
+        diagnosticUnavailable();
+      }
+      if (event.eventType === 'OpeningDiagnosticRecorded') {
+        this.assertOpeningDiagnosticSource(event);
+      }
+      return this.diagnosticContent(event);
     })();
   }
 
@@ -712,17 +817,23 @@ export class RelationalInputStore {
     }
     const diagnostics = new Map(
       stored.events
-        .filter((e) => e.eventType === 'DiagnosticRecorded')
-        .map((event) => [
-          event.eventId,
-          {
-            event,
-            detail: source.readGenerationDiagnostic(
+        .filter(
+          (e) =>
+            e.eventType === 'DiagnosticRecorded' || e.eventType === 'OpeningDiagnosticRecorded',
+        )
+        .map((event) => {
+          let detail: string;
+          if (event.eventType === 'OpeningDiagnosticRecorded') {
+            source.assertOpeningDiagnosticSource(event);
+            detail = source.diagnosticContent(event);
+          } else {
+            detail = source.readGenerationDiagnostic(
               event.payload.diagnosticId,
               event.payload.jobId,
-            ),
-          },
-        ]),
+            );
+          }
+          return [event.eventId, { event, detail }] as const;
+        }),
     );
     return (event: RelationalEvent) => {
       if (!this.sqlite.inTransaction) {
@@ -731,7 +842,8 @@ export class RelationalInputStore {
       const original = diagnostics.get(event.eventId);
       if (
         !original ||
-        event.eventType !== 'DiagnosticRecorded' ||
+        (event.eventType !== 'DiagnosticRecorded' &&
+          event.eventType !== 'OpeningDiagnosticRecorded') ||
         canonicalJson(event) !== canonicalJson(original.event)
       ) {
         diagnosticUnavailable();
@@ -1336,37 +1448,39 @@ export class RelationalInputStore {
         this.insertContext(prepared.contextId, prepared.context);
       }
       this.stagePreparedInput(accepted.inputId, accepted.memberId, prepared);
-      this.applyAcceptedEvents(result.events);
+      const applyAccepted = this.createAcceptedProjector();
+      for (const event of result.events) {
+        applyAccepted(event);
+      }
       return result;
     })();
   }
 
-  private applyAcceptedEvents(events: RelationalEvent[]): void {
-    for (const event of events) {
+  private createAcceptedProjector() {
+    const insertRequest = this.sqlite.prepare(
+      `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    );
+    return (event: RelationalEvent): void => {
       if (event.eventType === 'RequestAccepted' || event.eventType === 'OpeningRequestRecorded') {
         const p = event.payload;
-        this.sqlite
-          .prepare(
-            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          )
-          .run(
-            p.requestId,
-            p.memberId,
-            p.inputId,
-            p.contextId,
-            p.source,
-            p.operation,
-            p.model,
-            p.sampleCount,
-            p.seedMode,
-            p.confirmation === null ? null : canonicalJson(p.confirmation),
-            event.eventType === 'OpeningRequestRecorded'
-              ? event.payload.acceptedAt
-              : event.occurredAt,
-            event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
-            event.eventId,
-          );
+        insertRequest.run(
+          p.requestId,
+          p.memberId,
+          p.inputId,
+          p.contextId,
+          p.source,
+          p.operation,
+          p.model,
+          p.sampleCount,
+          p.seedMode,
+          p.confirmation === null ? null : canonicalJson(p.confirmation),
+          event.eventType === 'OpeningRequestRecorded'
+            ? event.payload.acceptedAt
+            : event.occurredAt,
+          event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
+          event.eventId,
+        );
       } else if (event.eventType === 'JobAccepted') {
         const p = event.payload;
         this.sqlite
@@ -1441,7 +1555,7 @@ export class RelationalInputStore {
             event.eventId,
           );
       }
-    }
+    };
   }
 
   createInputProjector(
@@ -1453,10 +1567,11 @@ export class RelationalInputStore {
       throw new Error('Input projection requires the owning import transaction.');
     }
     const commitSeq = stored.events[0]?.commitSeq;
-    if (
-      !commitSeq ||
-      canonicalJson(readRelationalCommit(source.sqlite, commitSeq)) !== canonicalJson(stored)
-    ) {
+    if (!commitSeq) {
+      unavailable();
+    }
+    const original = readRelationalCommit(source.sqlite, commitSeq);
+    if (!isDeepStrictEqual(original, stored) && canonicalJson(original) !== canonicalJson(stored)) {
       unavailable();
     }
     const contexts = new Map<string, RelationalNormalizationContext>();
@@ -1466,6 +1581,10 @@ export class RelationalInputStore {
         event.eventType === 'OpeningInputRecorded' ||
         event.eventType === 'OpeningRequestRecorded' ||
         event.eventType === 'OpeningIdempotencyRecorded',
+    );
+    const inputRegistrations = stored.events.filter(
+      (event) =>
+        event.eventType === 'InputRegistered' || event.eventType === 'OpeningInputRecorded',
     );
     if (
       opening &&
@@ -1536,12 +1655,9 @@ export class RelationalInputStore {
           unavailable();
         }
         if (
-          stored.events.some(
+          inputRegistrations.some(
             (registered) =>
-              registered.eventIndex >= event.eventIndex &&
-              (registered.eventType === 'InputRegistered' ||
-                registered.eventType === 'OpeningInputRecorded') &&
-              registered.payload.inputId === p.inputId,
+              registered.eventIndex >= event.eventIndex && registered.payload.inputId === p.inputId,
           )
         ) {
           unavailable();
@@ -1637,11 +1753,16 @@ export class RelationalInputStore {
         this.insertContext(contextId, context);
       }
     };
-    const byInput = new Map(content.map((input) => [input.inputId, input]));
+    const byInput = new Map(content.map((input) => [input.inputId, input])),
+      verifiedInputs = new Set<string>();
     const copyInput = (inputId: string, existingOnly = false) => {
       const input = byInput.get(inputId);
       if (!input) {
         unavailable();
+      }
+      // 原事实和不可变约束限定保护内容；同笔多次引用只核一遍同一目标正文/附件。
+      if (verifiedInputs.has(inputId)) {
+        return;
       }
       if (replayed || existingOnly || source.sqlite === this.sqlite) {
         const existing = this.input(input.inputId, input.row.member_id);
@@ -1660,10 +1781,13 @@ export class RelationalInputStore {
             unavailable();
           }
         }
+        verifiedInputs.add(inputId);
         return;
       }
       this.insertInput(input);
+      verifiedInputs.add(inputId);
     };
+    const applyAccepted = this.createAcceptedProjector();
     return (event: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Input projection requires the owning import transaction.');
@@ -1684,16 +1808,16 @@ export class RelationalInputStore {
         if (replayed) {
           this.request(p.requestId, p.memberId);
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'RequestAccepted') {
         copyContext(event.payload.contextId);
         if (!replayed) {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'JobAccepted') {
         if (!replayed) {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'OpeningIdempotencyRecorded') {
         if (replayed) {
@@ -1704,7 +1828,7 @@ export class RelationalInputStore {
             true,
           );
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else if (event.eventType === 'RequestAliasRegistered') {
         if (replayed) {
@@ -1725,7 +1849,7 @@ export class RelationalInputStore {
             unavailable();
           }
         } else {
-          this.applyAcceptedEvents([event]);
+          applyAccepted(event);
         }
       } else {
         throw new Error("Input projection cannot apply another owner's facts.");
@@ -1816,8 +1940,8 @@ export class RelationalInputStore {
             operation: string;
             keyHash: string;
             sourceEventId: string;
-            originalCommandId: string;
-            originalRequestId: string;
+            originalCommandId: string | null;
+            originalRequestId: string | null;
             originalJobId: string;
             requestId: string | null;
             contextId: string | null;
@@ -1874,6 +1998,8 @@ export class RelationalInputStore {
       return null;
     }
     if (
+      p.originalRequestId === null ||
+      p.originalCommandId === null ||
       p.noCache === null ||
       p.seedMode === null ||
       p.requestId === null ||

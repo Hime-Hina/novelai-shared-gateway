@@ -232,6 +232,7 @@ test(
       'server/storage/sqlite-migrations.js',
       'server/storage/sqlite-read-worker.js',
       'scripts/replay-events.mjs',
+      'scripts/resolve-legacy-retained-dependencies.mjs',
       'scripts/create-test-copy.mjs',
     ]) {
       assert.equal(before[retired], undefined, retired);
@@ -484,5 +485,383 @@ test(
         assert.equal((await readdir(f.directory)).includes('denied-network'), false);
       });
     }
+  },
+);
+
+function packageReleaseHook(f, hold) {
+  const require = createRequire(path.join(root, 'package.json'));
+  return `
+import { mock } from 'node:test';
+import Database from ${JSON.stringify(pathToFileURL(require.resolve('better-sqlite3')).href)};
+import { getPatcher } from ${JSON.stringify(pathToFileURL(require.resolve('webdav')).href)};
+import { R2Storage } from ${JSON.stringify(pathToFileURL(path.join(root, 'server/storage/r2-storage.js')).href)};
+import { RelationalReplicaStore } from ${JSON.stringify(pathToFileURL(path.join(root, 'server/storage/relational-replica-store.js')).href)};
+mock.timers.enable({apis:['setTimeout','Date'],now:${Date.now() + 2 * 86400000}});
+registerHooks({load(url,context,next){
+  const result=next(url,context);
+  if(url!==${JSON.stringify(pathToFileURL(path.join(root, 'server/gateway-runtime.js')).href)})return result;
+  let source=String(result.source);
+  for(const [marker,observation] of [
+    ['replicaCopy = (async () => {','process.send?.({replicaRoundStarted:true});'],
+    ['scheduleReplicaCopy(progress ? 1000 : 60000);','process.send?.({replicaRoundDone:true,replicaProgress:progress});'],
+  ]){
+    if(source.split(marker).length!==2)throw Error('compiled replica round observation marker missing');
+    source=source.replace(marker,marker+observation);
+  }
+  process.send?.({compiledReplicaHook:true});
+  return {...result,source};
+}});
+const select=RelationalReplicaStore.prototype.readDueArtifactRelease;
+RelationalReplicaStore.prototype.readDueArtifactRelease=function(...args){
+  const row=select.apply(this,args);
+  process.send?.({selector:{afterId:args[1],afterKind:args[2],id:row?.artifactId,kind:row?.kind}});
+  return row;
+};
+const remove=R2Storage.prototype.removeImage;
+R2Storage.prototype.removeImage=async function(...args){
+  process.send?.({removeImageEntered:true});
+  const result=await remove.apply(this,args);
+  process.send?.({removeImageCompleted:true});return result;
+};
+const close=Database.prototype.close;
+Database.prototype.close=function(...args){
+  const main=this.name===${JSON.stringify(f.filename)},result=close.apply(this,args);
+  if(main)process.send?.({replica:'dbclosed'});return result;
+};
+let release;const objects=new Map(),actualFetch=globalThis.fetch;
+process.on('message',message=>{
+  if(message?.tick){mock.timers.tick(message.tick);process.send?.({tick:message.tick});}
+  if(message==='release-replica')release?.();
+});
+getPatcher().patch('fetch',(...args)=>globalThis.fetch(...args));
+globalThis.fetch=async(address,options)=>{
+  const url=new URL(address),cold=url.hostname==='dav.pikpak.test';
+  if(url.hostname==='127.0.0.1')return actualFetch(address,options);
+  if(!cold&&!url.hostname.endsWith('.r2.cloudflarestorage.com'))throw Error('Unexpected package endpoint');
+  if(!cold&&url.searchParams.get('list-type')==='2')
+    return new Response('<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>',{headers:{'content-type':'application/xml'}});
+  process.send?.({replica:(cold?'pikpak:':'')+options.method});
+  if(options.method==='PUT'){objects.set(url.href,Buffer.from(options.body));return new Response(null,{status:204});}
+  if(options.method==='DELETE'){
+    if(cold)throw Error('No PikPak source deletion');
+    if(${hold})await new Promise(resolve=>release=resolve);
+    objects.delete(url.href);return new Response(null,{status:204});
+  }
+  if(options.method!=='GET'||!objects.has(url.href))throw Error('Missing package replica');
+  const bytes=objects.get(url.href);return new Response(bytes,{headers:{'content-length':String(bytes.length)}});
+};
+`;
+}
+
+async function packageReleaseRuntime(t, hold = false) {
+  const f = await fixture(t),
+    boot = run(f, 'scripts/bootstrap.mjs');
+  await boot.finished;
+  assert.deepEqual(boot.exit, { code: 0, signal: null }, boot.stderr);
+  const image = Buffer.from('UklGRhoAAABXRUJQVlA4TA4AAAAvAUAAAJj/+Z///ofCAw==', 'base64'),
+    upstream = createServer(async (req, res) => {
+      for await (const _ of req) {
+      }
+      res.setHeader('content-type', req.url === '/user/data' ? 'application/json' : 'image/webp');
+      res.end(
+        req.url === '/user/data'
+          ? JSON.stringify({
+              subscription: {
+                active: true,
+                tier: 3,
+                trainingStepsLeft: { fixedTrainingStepsLeft: 1000, purchasedTrainingSteps: 0 },
+                usage: { percent: 0, isNegative: false },
+              },
+            })
+          : image,
+      );
+    });
+  upstream.listen(0, '127.0.0.1');
+  await once(upstream, 'listening');
+  t.after(async () => {
+    upstream.closeAllConnections();
+    await new Promise((resolve) => upstream.close(resolve));
+  });
+  const origin = `http://127.0.0.1:${upstream.address().port}`,
+    online = {
+      PACKAGE_LOCAL_UPSTREAM: origin,
+      NOVELAI_API_URL: origin,
+      NOVELAI_ACCOUNT_API_URL: origin,
+      NOVELAI_STREAM_IMAGE: 'false',
+      SHUTDOWN_GRACE_MS: '10000',
+    },
+    credentials = JSON.parse(
+      await readFile(path.join(f.env.DATA_DIR, 'bootstrap-credentials.json'), 'utf8'),
+    );
+  f.filename = path.join(f.env.DATA_DIR, 'library.sqlite');
+  const query = (sql, ...args) => {
+    const db = new Database(f.filename, { readonly: true, fileMustExist: true });
+    try {
+      return db.prepare(sql).all(...args);
+    } finally {
+      db.close();
+    }
+  };
+  const accountId = query('SELECT id FROM upstream_accounts')[0].id,
+    warm = await start(t, f, online);
+  const enabled = await call(warm, `/api/admin/accounts/${accountId}`, {
+    method: 'PATCH',
+    headers: { 'x-admin-token': f.env.ADMIN_TOKEN, 'idempotency-key': 'package-release-enable' },
+    body: { enabled: true },
+  });
+  assert.equal(enabled.status, 200, enabled.text);
+  const generated = await call(warm, '/ai/generate-image', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${credentials.accounts[0].api_key}` },
+    body: {
+      input: 'synthetic package release',
+      model: 'nai-diffusion-4-5-full',
+      action: 'generate',
+      parameters: { width: 128, height: 128, steps: 23, seed: 42 },
+    },
+  });
+  assert.equal(generated.status, 200, generated.text);
+  const paused = await call(warm, `/api/admin/accounts/${accountId}`, {
+    method: 'PATCH',
+    headers: { 'x-admin-token': f.env.ADMIN_TOKEN, 'idempotency-key': 'package-release-pause' },
+    body: { enabled: false },
+  });
+  assert.equal(paused.status, 200, paused.text);
+  await warm.stop();
+  const {
+      artifact_id: artifactId,
+      object_key: localKey,
+      namespace: localNamespace,
+    } = query(
+      "SELECT r.artifact_id,r.object_key,s.namespace FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='local'",
+    )[0],
+    localPath = path.join(localNamespace, localKey),
+    { R2Storage, r2Config } = await load('server/storage/r2-storage.js'),
+    storage = {
+      R2_ACCOUNT_ID: 'a'.repeat(32),
+      R2_BUCKET: 'package-replicas',
+      R2_ACCESS_KEY_ID: 'synthetic-access',
+      R2_SECRET_ACCESS_KEY: 'synthetic-secret',
+      PIKPAK_WEBDAV_URL: 'https://dav.pikpak.test/archive/',
+      PIKPAK_WEBDAV_USERNAME: 'synthetic-user',
+      PIKPAK_WEBDAV_PASSWORD: 'synthetic-password',
+    },
+    r2 = new R2Storage(r2Config(storage));
+  r2.listBackups = async () => [];
+  const retained = await load('server/storage/retained-sources.js'),
+    { describeRetainedSnapshot } = await load('scripts/retained-sources.mjs'),
+    registry = path.join(f.directory, 'registry'),
+    backups = path.join(f.directory, 'backups'),
+    initialized = await retained.initializeRetainedSources(registry);
+  await mkdir(backups);
+  // Same capture -> describe -> immutable binding -> checkpoint -> adopt chain as the source fixture.
+  // The Linux release check mounts only this test file, so every owner comes from the actual package.
+  async function captureSnapshot() {
+    const snapshot = path.join(backups, randomUUID()),
+      capture = await retained.beginRetainedCapture(registry, 'daily', snapshot);
+    await mkdir(path.join(snapshot, 'data'), { recursive: true });
+    await mkdir(path.join(snapshot, 'config'));
+    const filename = path.join(snapshot, 'data/library.sqlite'),
+      current = new Database(f.filename, { readonly: true, fileMustExist: true });
+    try {
+      await current.backup(filename);
+    } finally {
+      current.close();
+    }
+    const sealed = new Database(filename);
+    try {
+      sealed.pragma('wal_checkpoint(TRUNCATE)');
+      sealed.pragma('journal_mode=DELETE');
+    } finally {
+      sealed.close();
+    }
+    const scope = path.join(snapshot, 'config/retained-inventory-scope.json');
+    await writeFile(
+      scope,
+      JSON.stringify({
+        format: 'novelai-retained-inventory-scope-v1',
+        registryId: initialized.registryId,
+        localRoots: [backups],
+        archiveRoots: [],
+        r2Namespaces: [`r2://${r2.config.accountId}/${r2.config.bucket}`],
+      }),
+      { flag: 'wx', mode: 0o600 },
+    );
+    const dependencies = path.join(snapshot, 'retained-dependencies.jsonl'),
+      binding = await describeRetainedSnapshot(filename, dependencies, f.env.DATA_DIR),
+      manifest = path.join(snapshot, 'manifest.json');
+    await writeFile(
+      manifest,
+      JSON.stringify({
+        files: {
+          'data/library.sqlite': binding.sourceSha256,
+          'retained-dependencies.jsonl': binding.dependenciesSha256,
+          'config/retained-inventory-scope.json': await retained.retainedFileSha256(scope),
+        },
+        retainedSource: { ...capture, binding },
+      }),
+      { flag: 'wx', mode: 0o600 },
+    );
+    await retained.bindRetainedCapture(
+      registry,
+      capture.sourceId,
+      manifest,
+      { ...binding, manifestSha256: await retained.retainedFileSha256(manifest) },
+      dependencies,
+    );
+    await retained.publishRetainedLocal(registry, capture.sourceId, snapshot);
+    const checkpoint = path.join(f.directory, 'checkpoint-' + randomUUID()),
+      proof = await retained.checkpointRetainedSources(registry, checkpoint);
+    await retained.adoptRetainedInventory(
+      registry,
+      {
+        checkpoint,
+        checkpointSha256: proof.sha256,
+        scope,
+        scopeSha256: await retained.retainedFileSha256(scope),
+      },
+      { r2 },
+    );
+  }
+  await captureSnapshot();
+  await writeFile(f.preload, (await readFile(f.preload, 'utf8')) + packageReleaseHook(f, hold));
+  const server = await start(t, f, {
+      ...online,
+      ...storage,
+      RETAINED_SOURCES_DIR: registry,
+    }),
+    messages = [];
+  server.child.on('message', (message) => messages.push(message));
+  const tick = async (n, round = true) => {
+    const previous = messages.filter((message) => message.replicaRoundDone).length,
+      acknowledgements = messages.filter((message) => message.tick === n).length;
+    server.child.send({ tick: n });
+    await waitFor(
+      () => messages.filter((message) => message.tick === n).length > acknowledgements,
+      server,
+    );
+    if (round)
+      await waitFor(
+        () => messages.filter((message) => message.replicaRoundDone).length > previous,
+        server,
+      );
+  };
+  assert.equal(
+    messages.some((message) => message.replicaRoundStarted),
+    false,
+  );
+  await tick(60000);
+  assert.equal(messages.at(-1).replicaProgress, true);
+  await tick(1000);
+  assert.equal(messages.at(-1).replicaProgress, false, 'Local-only retained source pins Local');
+  const previous = messages.filter((message) => message.replicaRoundStarted).length;
+  await tick(1000, false);
+  assert.equal(messages.filter((message) => message.replicaRoundStarted).length, previous);
+  await tick(7 * 86400000 + 1);
+  assert.equal(messages.filter((message) => message.replica === 'pikpak:PUT').length, 1);
+  await captureSnapshot();
+  await tick(1000);
+  assert.equal(
+    messages.at(-1).replicaProgress,
+    false,
+    'new capture does not erase the older Local hold',
+  );
+  return { f, server, messages, tick, query, artifactId, localPath, image };
+}
+
+test(
+  '普通 JS 发布包：retained pin不饿死copy，同artifact按(id,kind)继续R2释放',
+  {
+    timeout: 90000,
+    skip:
+      process.platform === 'win32'
+        ? 'compiled source release requires Linux directory durability'
+        : false,
+  },
+  async (t) => {
+    const { f, server, messages, tick, query, artifactId, localPath, image } =
+        await packageReleaseRuntime(t),
+      previous = messages.filter((message) => message.replicaRoundStarted).length;
+    await tick(1000, false);
+    assert.equal(messages.filter((message) => message.replicaRoundStarted).length, previous);
+    await tick(59000);
+    assert.equal(messages.at(-1).replicaProgress, true);
+    assert.equal(messages.filter((message) => message.replica === 'DELETE').length, 1);
+    assert.ok(messages.some((message) => message.removeImageCompleted));
+    assert.ok(
+      messages.some(
+        (message) =>
+          message.selector?.afterId === artifactId &&
+          message.selector.afterKind === 'local' &&
+          message.selector.id === artifactId &&
+          message.selector.kind === 'r2',
+      ),
+    );
+    const rows = query(
+      'SELECT s.kind,r.deleted_at FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE r.artifact_id=?',
+      artifactId,
+    );
+    assert.equal(rows.find((row) => row.kind === 'local').deleted_at, null);
+    assert.equal(typeof rows.find((row) => row.kind === 'r2').deleted_at, 'number');
+    assert.equal(rows.find((row) => row.kind === 'pikpak').deleted_at, null);
+    assert.equal(
+      messages.some((message) => message.replica === 'pikpak:DELETE'),
+      false,
+    );
+    assert.deepEqual(await readFile(path.join(f.env.DATA_DIR, localPath)), image);
+    await server.stop();
+    assert.ok(messages.some((message) => message.replica === 'dbclosed'));
+  },
+);
+
+test(
+  '普通 JS 发布包：shutdown等待真实held R2 DELETE后关库，保留未确认供重试',
+  {
+    timeout: 90000,
+    skip:
+      process.platform === 'win32'
+        ? 'compiled source release requires Linux directory durability'
+        : false,
+  },
+  async (t) => {
+    const { f, server, messages, tick, query, artifactId, localPath, image } =
+      await packageReleaseRuntime(t, true);
+    await tick(60000, false);
+    await waitFor(() => messages.some((message) => message.replica === 'DELETE'), server);
+    assert.ok(messages.some((message) => message.removeImageEntered));
+    const releasedAt = () =>
+      query(
+        "SELECT r.deleted_at FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE r.artifact_id=? AND s.kind='r2'",
+        artifactId,
+      )[0].deleted_at;
+    assert.equal(releasedAt(), null);
+    server.child.send('shutdown');
+    await waitFor(() => server.stdout.includes('SIGTERM received'), server);
+    await delay(50);
+    assert.equal(server.exit, null);
+    assert.equal(
+      messages.some((message) => message.replica === 'dbclosed'),
+      false,
+    );
+    assert.equal(
+      messages.some((message) => message.removeImageCompleted),
+      false,
+    );
+    assert.equal(releasedAt(), null);
+    server.child.send('release-replica');
+    await server.finished;
+    assert.deepEqual(server.exit, { code: 0, signal: null }, server.stderr);
+    assert.ok(messages.some((message) => message.removeImageCompleted));
+    assert.ok(messages.some((message) => message.replica === 'dbclosed'));
+    assert.ok(
+      messages.findIndex((message) => message.removeImageCompleted) <
+        messages.findIndex((message) => message.replica === 'dbclosed'),
+    );
+    assert.equal(
+      releasedAt(),
+      null,
+      'closing rejects the SQL acknowledgement; existing retry owns confirmation',
+    );
+    assert.deepEqual(await readFile(path.join(f.env.DATA_DIR, localPath)), image);
   },
 );

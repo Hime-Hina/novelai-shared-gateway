@@ -1,6 +1,111 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import ts from 'typescript';
 import { checkArchitecture, checkSource } from '../../scripts/check-architecture.mjs';
+
+test('online runtime rejects offline migration imports and re-exports', () => {
+  for (const [filename, prefix] of [
+    ['server/index.ts', '../scripts/'],
+    ['server/generation/request-queries.ts', '../../scripts/'],
+    ['executor/gateway-handler.ts', '../scripts/'],
+    ['web/server/api/example.ts', '../../../scripts/'],
+  ]) {
+    for (const [module, name] of [
+      ['migrate-legacy-database', 'migrateLegacyDatabase'],
+      ['migrate-legacy-finance', 'mapLegacyFinance'],
+      ['migrate-legacy-private', 'migrateLegacyPrivate'],
+      ['migrate-legacy-artifacts', 'mapLegacyArtifacts'],
+      ['reconcile-legacy-database', 'assertLegacyDatabaseProjection'],
+      ['materialize-legacy-originals', 'materializeLegacyOriginals'],
+      ['resolve-legacy-retained-dependencies', 'resolveLegacyRetainedDependencies'],
+    ]) {
+      for (const suffix of ['', '?version=1', '#module']) {
+        const specifier = `${prefix}${module}.mjs${suffix}`;
+        for (const source of [
+          `import { ${name} as run } from '${specifier}';`,
+          `import * as tool from '${specifier}';`,
+          `import '${specifier}';`,
+          `import {} from '${specifier}';`,
+          `import { type Capability } from '${specifier}';`,
+          `export { ${name} as run } from '${specifier}';`,
+          `export * from '${specifier}';`,
+          `export {} from '${specifier}';`,
+          `export { type Capability } from '${specifier}';`,
+          `const tool = await import('${specifier}');`,
+          `const tool = require('${specifier}');`,
+        ]) {
+          assert.ok(
+            checkSource(filename, source).some((error) => error.includes('offline migration')),
+            `${filename}: ${source}`,
+          );
+        }
+      }
+    }
+  }
+  assert.deepEqual(
+    checkSource(
+      'scripts/migrate-legacy-database.mjs',
+      "import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    checkSource(
+      'scripts/resolve-legacy-retained-dependencies.mjs',
+      "import { JsonStore } from '../server/storage/sqlite-store.ts';",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    checkSource(
+      'scripts/offline-import.mjs',
+      "import { resolveLegacyRetainedDependencies } from './resolve-legacy-retained-dependencies.mjs';",
+    ),
+    [],
+  );
+  for (const name of ['migrateLegacyDatabase', 'migrateLegacyPrivate']) {
+    assert.ok(
+      checkSource('server/generation/request-queries.ts', `${name}(input);`).some((error) =>
+        error.includes('write call'),
+      ),
+    );
+  }
+});
+
+test('type erasure preserves empty runtime imports and exports', async () => {
+  const marker = Symbol.for('novelai.architecture.type-erasure');
+  const specifier = '../scripts/migrate-legacy-database.mjs';
+  const declarations = [
+    `import {} from '${specifier}';`,
+    `export {} from '${specifier}';`,
+    `import { type Capability } from '${specifier}';`,
+    `export { type Capability } from '${specifier}';`,
+    `import type { Capability } from '${specifier}';`,
+    `export type { Capability } from '${specifier}';`,
+  ];
+  try {
+    for (const [index, source] of declarations.entries()) {
+      globalThis[marker] = 0;
+      const dependency = `data:text/javascript,${encodeURIComponent(`globalThis[Symbol.for('novelai.architecture.type-erasure')]++; // ${index}`)}`;
+      const emitted = ts.transpileModule(
+        source.replace(`'${specifier}'`, JSON.stringify(dependency)),
+        {
+          compilerOptions: {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.ESNext,
+            verbatimModuleSyntax: true,
+          },
+        },
+      ).outputText;
+      await import(`data:text/javascript,${encodeURIComponent(emitted)}`);
+      const loadsModule = index < 4;
+      assert.equal(globalThis[marker], Number(loadsModule), source);
+      assert.equal(checkSource('server/index.ts', source).length > 0, loadsModule, source);
+    }
+  } finally {
+    delete globalThis[marker];
+  }
+});
 
 const writerFactories = [
   ['createRelationalAccountQuotaRefresh', '../quota/relational-account-refresh.ts'],
@@ -37,6 +142,8 @@ const mixedWriterSources = [
   ['appendDomainCommit', '../events/event-store.ts'],
   ['beginDomainCommand', '../events/domain-events.ts'],
   ['JsonStore', '../storage/sqlite-store.ts'],
+  ['adoptRetainedInventory', '../storage/retained-sources.ts'],
+  ['withRetainedArtifactRelease', '../storage/retained-sources.ts'],
 ];
 
 for (const filename of [
@@ -408,6 +515,7 @@ for (const filename of [
     ['protected defaults stage', 'stageNormalizationDefaultsProfile(values);'],
     ['opening input stage', 'stageOpeningInput(input);'],
     ['opening context stage', 'stageOpeningContext(id,context);'],
+    ['opening diagnostic stage', 'stageOpeningDiagnostic(input);'],
     ['protected defaults projection', 'createNormalizationDefaultsProjector(source,commit,false);'],
     ['configuration projection', 'createConfigurationProjector(commit,source,false);'],
     [
@@ -458,11 +566,29 @@ for (const filename of [
       'registerStorageTarget',
       'beginArtifactReplica',
       'recordArtifactReplica',
+      'beginArtifactRelease',
+      'recordArtifactRelease',
+      'createReplicaProjector',
       'applyReplicaEvents',
       'replayReplicaCommit',
       'copyRelationalArtifactReplica',
       'verifyRelationalArtifactReplica',
+      'releaseRelationalArtifactReplica',
+      'adoptRetainedInventory',
+      'withRetainedArtifactRelease',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
+    ...['beginArtifactRelease', 'recordArtifactRelease', 'createReplicaProjector'].map((name) => [
+      `type-only replica release ${name}`,
+      `import type { RelationalReplicaStore } from '../storage/relational-replica-store.ts'; type Writer = Pick<RelationalReplicaStore, '${name}'>; function run(store: Writer) { store['${name}'](command,input); }`,
+    ]),
+    ...[
+      ['releaseRelationalArtifactReplica', '../storage/relational-replica-io.ts'],
+      ['adoptRetainedInventory', '../storage/retained-sources.ts'],
+      ['withRetainedArtifactRelease', '../storage/retained-sources.ts'],
+    ].map(([name, modulePath]) => [
+      `type-only release capability ${name}`,
+      `import type * as IO from '${modulePath}'; type Writer = Pick<typeof IO, '${name}'>; function run(io: Writer) { io.${name}(command,input); }`,
+    ]),
     ...[
       'acceptGeneration',
       'reuseGeneration',
@@ -547,7 +673,7 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
   for (const [filename, source] of [
     [
       'server/events/quota-projections.ts',
-      "import type { JsonStore } from '../storage/sqlite-store.ts'; import { type AccountingJob } from '../generation/accounting.ts';",
+      "import type { JsonStore } from '../storage/sqlite-store.ts'; import type { AccountingJob } from '../generation/accounting.ts';",
     ],
     [
       'server/generation/request-queries.ts',
@@ -577,7 +703,7 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
     [
       'server/protocols/native-http.ts',
-      "import { type RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberContext'>; function read(inputStore: Reader) { return inputStore.readMemberContext('r','m'); }",
+      "import type { RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberContext'>; function read(inputStore: Reader) { return inputStore.readMemberContext('r','m'); }",
     ],
     [
       'server/protocols/native-http.ts',
@@ -590,6 +716,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/request-queries.ts',
       "import type { RelationalQuotaStore } from '../storage/relational-quota-store.ts'; type Reader = Pick<RelationalQuotaStore, 'readAccountQuota'>; function read(store: Reader) { return store.readAccountQuota('account'); }",
+    ],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalReplicaStore } from '../storage/relational-replica-store.ts'; type Reader = Pick<RelationalReplicaStore, 'assertArtifactReleaseTicket'>; function read(store: Reader) { return store.assertArtifactReleaseTicket(ticket); }",
     ],
     [
       'server/generation/execution.ts',
@@ -648,7 +778,7 @@ test('mixed writer modules retain pure named readers and type-only capability de
     }
     for (const [name, modulePath] of [...writerFactories, ...mixedWriterSources]) {
       assert.deepEqual(
-        checkSource(filename, `import { type ${name} as Capability } from '${modulePath}';`),
+        checkSource(filename, `import type { ${name} as Capability } from '${modulePath}';`),
         [],
       );
       assert.deepEqual(checkSource(filename, `export type * from '${modulePath}';`), []);
@@ -658,6 +788,7 @@ test('mixed writer modules retain pure named readers and type-only capability de
     ['canonicalJson', '../events/domain-events.ts'],
     ['readCommandReceipt', '../events/event-store.ts'],
     ['createId', '../storage/sqlite-store.ts'],
+    ['readRetainedSourceProtection', '../storage/retained-sources.ts'],
   ]) {
     assert.deepEqual(
       checkSource(

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { isDeepStrictEqual } from 'node:util';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
@@ -71,19 +72,25 @@ export class RelationalCommitReplayer {
     }
     return this.sqlite.transaction(() => {
       const stored = readRelationalCommit(this.sqlite, result.commitSeq);
+      // 原事实已实读；结构相等免去序列化，不等仍保留 -0/0 和省略字段的原 JSON 语义。
       if (
         typeof result.replayed !== 'boolean' ||
         canonicalJson(result.receipt) !== canonicalJson(stored.command.receipt) ||
         (result.replayed
           ? result.events.length !== 0
-          : canonicalJson(result.events) !== canonicalJson(stored.events))
+          : !isDeepStrictEqual(result.events, stored.events) &&
+            canonicalJson(result.events) !== canonicalJson(stored.events))
       ) {
         throw new Error('Business projection requires the saved complete original commit.');
       }
       assertSupported(stored.events);
       this.quotas.assertFundingReceipt(result);
       const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
-      const hasDiagnostic = stored.events.some((event) => event.eventType === 'DiagnosticRecorded');
+      const hasDiagnostic = stored.events.some(
+        (event) =>
+          event.eventType === 'DiagnosticRecorded' ||
+          event.eventType === 'OpeningDiagnosticRecorded',
+      );
       const hasConfiguration = stored.events.some((event) =>
         relationalConfigurationFacts.has(event.eventType),
       );
@@ -109,7 +116,10 @@ export class RelationalCommitReplayer {
           }
         }
         for (const event of stored.events) {
-          if (event.eventType === 'DiagnosticRecorded') {
+          if (
+            event.eventType === 'DiagnosticRecorded' ||
+            event.eventType === 'OpeningDiagnosticRecorded'
+          ) {
             applyDiagnostic!(event);
           }
         }
@@ -130,7 +140,8 @@ export class RelationalCommitReplayer {
       this.members.assertMemberRemovalCommit(stored.events);
       this.accounts.assertAccountCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
-        applyQuota = this.quotas.createQuotaProjector(stored.events);
+        applyQuota = this.quotas.createQuotaProjector(stored.events),
+        applyReplica = this.replicas.createReplicaProjector(stored.events);
       for (const event of stored.events) {
         if (relationalConfigurationFacts.has(event.eventType)) {
           applyConfiguration!();
@@ -139,14 +150,17 @@ export class RelationalCommitReplayer {
         } else if (relationalInputFacts.has(event.eventType)) {
           applyInput!(event);
         } else if (relationalGenerationFacts.has(event.eventType)) {
-          if (event.eventType === 'DiagnosticRecorded') {
+          if (
+            event.eventType === 'DiagnosticRecorded' ||
+            event.eventType === 'OpeningDiagnosticRecorded'
+          ) {
             applyDiagnostic!(event);
           }
           applyGeneration(event);
         } else if (relationalQuotaFacts.has(event.eventType)) {
           applyQuota(event);
         } else if (relationalReplicaFacts.has(event.eventType)) {
-          this.replicas.applyReplicaEvents([event]);
+          applyReplica(event);
         } else {
           this.accounts.applyAccountEvent(event);
         }
