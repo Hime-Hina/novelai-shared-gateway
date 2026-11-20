@@ -58,7 +58,7 @@
 - [真实旧归档恢复验证](history/database-model-archive-recovery-20261114.md)：固定旧包的真实源审计、从零事件重建、资源测量及历史查询/审计来源缺口；不代表完整归档或新格式 ready。
 - [数据模型迁移选择](history/database-model-migration-decision.md)：已确认的 B、旧键、会话、缺图四项选择、保留范围及执行顺序。
 - [真实 B 转换与联合恢复](history/database-model-b-migration-acceptance-20261116.md)：固定实际迁移包的完整来源核对、34 表联合恢复、原生 SQL 故障、重复零写和资源测量；目标仍为 building，后续 ready 与整体验收分别记录。
-- [完整 B、ready 与实际发行物验收](history/database-model-final-acceptance-20261118.md)：完整原图材料、唯一合法安装、实际 executor／Nuxt／dirty-WAL 恢复、独立归档及分项容量；真实新派发和生产切换另行签收。
+- [完整 B、ready 与实际发行物验收](history/database-model-final-acceptance-20261118.md)：完整原图材料、唯一合法安装、实际 executor／Nuxt／dirty-WAL 恢复、独立归档、分项容量及 owner 真实派发／原键重启重领；生产切换另行签收。
 - [数据模型完整源码验证](history/database-model-full-source-20261115.md)：固定 df0、b9、0094243 与 147aabd 四轮完整后端的实际失败阶段、封存证据与各轮环境资格；不是最终验收。
 - [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 

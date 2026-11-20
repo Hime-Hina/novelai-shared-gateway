@@ -1,6 +1,6 @@
 # 完整 B、合法 ready 与实际发行物验收（2026-11-18）
 
-本记录交付 [#73](https://github.com/Hime-Hina/novelai-shared-gateway/pull/73) 的真实副本、恢复、发行物运行和容量证据；总状态仍以 [#32](https://github.com/Hime-Hina/novelai-shared-gateway/issues/32) 为准。**生产没有迁移或切换，真实新任务派发与原始 HTTP 提交防重尚未验收。** 不以一次 CI、只读启动或已完成的归档读取代替这些结果。
+本记录交付 [#73](https://github.com/Hime-Hina/novelai-shared-gateway/pull/73) 的真实副本、恢复、发行物运行和容量证据；总状态仍以 [#32](https://github.com/Hime-Hina/novelai-shared-gateway/issues/32) 为准。**生产没有迁移或切换；真实新任务派发、原始 HTTP 提交防重和重启重领已由 2026-11-20 节补齐。** 各节保留其固定版本、来源和测量窗口。
 
 ## 固定代码与来源
 
