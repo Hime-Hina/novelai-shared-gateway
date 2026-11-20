@@ -14,7 +14,7 @@
 
 新格式已有 `ArtifactPrepared` 时，完整 final/part 由 `relational-result-recovery.ts` 完成原尝试；缺失、半写或损坏则保留原准备、预扣与未决责任，由 `relational-queue-runtime.ts` 拒绝监听，不能从缺少本地字节推断上游失败并退款。没有 prepared 的中断尝试才继续原 interrupted 处理。原 owner 的可运行反例见 `tests/integration/relational-result-recovery.test.mjs` 中缺失及损坏字节用例；本轮真实 HTTP 故障夹具的来源迁移见[计划 9.96](../history/database-model-execution-records.md#996-结果恢复-http-child-的关系夹具)。
 
-下文 `event_commits`、`JsonStore`、旧开账/inline 升级及 writer4 的说明属于旧格式的独立解释工具和历史 F10，不能据此启动新入口自动转换。新格式的完整提交、保护内容、选定私有快照与唯一 ready installer 见[离线恢复](../operations/relational-recovery.md)，同候选发布物与切换验收仍未完成。
+下文 `event_commits`、`JsonStore`、旧开账/inline 升级及 writer4 的说明属于旧格式的独立解释工具和历史 F10，不能据此启动新入口自动转换。新格式的完整提交、保护内容、选定私有快照与唯一 ready installer 见[离线恢复](../operations/relational-recovery.md)。与当前候选产品代码一致的 `f245698` 已通过[实际发行物与真实副本验收](../history/database-model-final-acceptance-20261118.md)。生产切换尚未执行，按[切换操作单](../operations/database-model-cutover.md)另行签收。
 
 ### 旧格式解释与历史启动
 
@@ -69,7 +69,9 @@ PikPak 上传确认并持久记录后才删除 R2 原件；上传后不立即回
 
 捕获前pin与释放共用registry lease，授权、有限删除IO与SQL确认期间不能开始新capture。每轮复核当前ready、queue phase、真实controls和queued/pending/running/未发布prepared责任；文件/云IO在SQL外。删除事实仍用ArtifactReplicaRecorded.deletedAt，完整回执绑定原源/目的事件及保留源证明；回放只核原决定，不执行GET/PUT/DELETE。外部已删而SQL尾错时只回滚SQL，保留原未确认行，重试以ENOENT/404完成同来源确认，不重新PUT或假称外部删除已回滚。DELETE回执不明沿原1h重试；保留pin的候选以(id,kind)游标继续，不能阻挡其他复制或释放。复制与释放共用原timer与真实inflight promise。
 
-一次物理删除的决定覆盖同 kind、namespace、objectKey 和 encoding 的全部当前引用，包括退休产物及旧 locator；每条引用必须有自身合格替代。回执绑定完整引用集合、各原来源事件和替代事件，一个完整业务提交记录全部删除事实，保留各产物的独立身份与所有权。共同回放在第一条副本投影前验证整笔集合，不缺项、不重复、不混入其他物理对象；仅经该决定验证的删除事实可确认退休或旧 locator，普通上传/验证仍沿原约束。任一后续投影失败整笔 SQL 回滚，一次外部删除不会因别名数量变成多次 IO。旧单源回执保留原解释，不把旧成功记录改写成新的完整集合验收。
+一次物理删除的决定覆盖同 kind、namespace、objectKey 和 encoding 的全部当前引用，包括退休产物及旧 locator；每条引用必须有自身合格替代。回执绑定完整引用集合、各原来源事件和替代事件，一个完整业务提交记录全部删除事实，保留各产物的独立身份与所有权。共同回放在第一条副本投影前验证整笔集合，不缺项、不重复、不混入其他物理对象；仅经该决定验证的删除事实可确认退休或旧 locator，普通上传/验证仍沿原约束。任一后续投影失败整笔 SQL 回滚，一次外部删除不会因别名数量变成多次 IO。
+
+旧单源回执仅适用于删除前只有一个当前引用的物理对象，回放仍须校验原回执与对应的单条删除事实。未上线实验版本 `9568137` 中仅记录主引用删除的共享对象提交，会因引用集合不完整在投影前被拒绝。此类实验库原样留存供审计，从可信的原迁移来源重建。[复现记录](https://github.com/Hime-Hina/novelai-shared-gateway/pull/73#discussion_r4644836507)
 
 关闭先清timer、阻止新维护，再等真正inflight promise后结束HTTP和关库，不能以逻辑终态、清Map或fake cancel代替物理结束。错误仅输出安全类别。Win32没有同等目录fsync保证，后台只复制、不执行源释放；Windows合成IO检查不能替代Linux实际发布包与断电/恢复验收。人工退休继续只撤下展示/领取，不触发新D8期限或最终内容删除。
 
